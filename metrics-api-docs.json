@@ -1,0 +1,411 @@
+{
+  "title": "Metrics API Documentation",
+  "version": "1.0.0",
+  "description": "Comprehensive API documentation for the enhanced metrics server endpoints. Provides real-time monitoring of API latency, error rates, Kafka consumer lag, request rates, and system resources.",
+  "base_url": "http://127.0.0.1:5000",
+  "production_url": "https://narvas.3dservices.co.ug",
+  
+  "endpoints": [
+    {
+      "name": "Get Server Metrics (Comprehensive)",
+      "method": "GET",
+      "path": "/metrics/server",
+      "description": "Returns comprehensive server metrics including system resources, API performance, error rates, request rates, and Kafka consumer lag. This is the primary endpoint for dashboard monitoring.",
+      "authentication": "None (public endpoint)",
+      "parameters": {
+        "query": [],
+        "path": []
+      },
+      "response": {
+        "status_code": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "ok": true,
+          "timestamp": "2026-03-04T15:30:45.123456",
+          "hostname": "navas-core-server",
+          "system": {
+            "cpu_percent": 31.5,
+            "memory_percent": 55.7,
+            "memory_used_gb": 8.94,
+            "memory_total_gb": 16.0,
+            "disk_percent": 20.41,
+            "disk_used_gb": 102.05,
+            "disk_total_gb": 500.0
+          },
+          "uptime": {
+            "seconds": 2592000,
+            "days": 30.0,
+            "percentage_30d": 99.82,
+            "start_time": "2026-02-02T15:30:45.123456"
+          },
+          "api_latency": {
+            "p50_ms": 45.23,
+            "p95_ms": 320.15,
+            "p99_ms": 1250.89,
+            "avg_ms": 125.45,
+            "min_ms": 5.12,
+            "max_ms": 5000.23,
+            "sample_count": 10000
+          },
+          "error_rates": {
+            "success_rate_percent": 99.3,
+            "error_4xx_rate_percent": 0.5,
+            "error_5xx_rate_percent": 0.2,
+            "error_4xx_count": 50,
+            "error_5xx_count": 20,
+            "success_count": 9930,
+            "total_requests": 10000
+          },
+          "request_rates": {
+            "requests_per_second": 33.33,
+            "requests_per_minute": 2000.0,
+            "total_requests_lifetime": 1000000
+          },
+          "top_endpoints": {
+            "GET /data/stream": 3500,
+            "POST /devices/register": 2200,
+            "GET /statistics/sims/summary": 1800,
+            "GET /veba/status": 1200,
+            "POST /payments/tokens/buy": 800
+          },
+          "kafka": {
+            "consumer_lag": {
+              "total_lag": 482,
+              "by_topic": {
+                "device-telemetry": 320,
+                "payment-events": 100,
+                "system-logs": 62
+              },
+              "consumer_group": "navas-iot-consumers"
+            },
+            "last_update": "2026-03-04T15:30:15.000000",
+            "error": null
+          },
+          "metrics_window_seconds": 300
+        }
+      },
+      "error_responses": [
+        {
+          "status_code": 500,
+          "description": "Internal server error",
+          "body": {
+            "ok": false,
+            "error": "Error message describing the issue",
+            "timestamp": "2026-03-04T15:30:45.123456"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Get API Latency Metrics",
+      "method": "GET",
+      "path": "/metrics/latency",
+      "description": "Returns detailed API latency metrics including percentiles (p50, p95, p99) for the configured time window.",
+      "authentication": "None (public endpoint)",
+      "parameters": {
+        "query": [],
+        "path": []
+      },
+      "response": {
+        "status_code": 200,
+        "body": {
+          "ok": true,
+          "latency": {
+            "p50_ms": 45.23,
+            "p95_ms": 320.15,
+            "p99_ms": 1250.89,
+            "avg_ms": 125.45,
+            "min_ms": 5.12,
+            "max_ms": 5000.23,
+            "sample_count": 10000
+          },
+          "window_seconds": 300,
+          "timestamp": "2026-03-04T15:30:45.123456"
+        }
+      }
+    },
+    {
+      "name": "Get Error Rate Metrics",
+      "method": "GET",
+      "path": "/metrics/errors",
+      "description": "Returns error rate metrics including 4xx and 5xx error percentages and counts for the configured time window.",
+      "authentication": "None (public endpoint)",
+      "parameters": {
+        "query": [],
+        "path": []
+      },
+      "response": {
+        "status_code": 200,
+        "body": {
+          "ok": true,
+          "errors": {
+            "success_rate_percent": 99.3,
+            "error_4xx_rate_percent": 0.5,
+            "error_5xx_rate_percent": 0.2,
+            "error_4xx_count": 50,
+            "error_5xx_count": 20,
+            "success_count": 9930,
+            "total_requests": 10000
+          },
+          "window_seconds": 300,
+          "timestamp": "2026-03-04T15:30:45.123456"
+        }
+      }
+    },
+    {
+      "name": "Get Kafka Consumer Lag",
+      "method": "GET",
+      "path": "/metrics/kafka",
+      "description": "Returns Kafka consumer lag metrics by topic. Updated every 30 seconds by a background thread.",
+      "authentication": "None (public endpoint)",
+      "parameters": {
+        "query": [],
+        "path": []
+      },
+      "response": {
+        "status_code": 200,
+        "body": {
+          "ok": true,
+          "kafka": {
+            "consumer_lag": {
+              "total_lag": 482,
+              "by_topic": {
+                "device-telemetry": 320,
+                "payment-events": 100,
+                "system-logs": 62
+              },
+              "consumer_group": "navas-iot-consumers"
+            },
+            "last_update": "2026-03-04T15:30:15.000000",
+            "error": null
+          },
+          "timestamp": "2026-03-04T15:30:45.123456"
+        }
+      },
+      "notes": [
+        "If kafka-python is not installed, the 'error' field will contain installation instructions",
+        "If Kafka is unreachable, the 'error' field will contain connection error details"
+      ]
+    },
+    {
+      "name": "Get Request Rate Metrics",
+      "method": "GET",
+      "path": "/metrics/requests",
+      "description": "Returns request rate metrics (requests per second/minute) and top endpoints by request count.",
+      "authentication": "None (public endpoint)",
+      "parameters": {
+        "query": [],
+        "path": []
+      },
+      "response": {
+        "status_code": 200,
+        "body": {
+          "ok": true,
+          "request_rates": {
+            "requests_per_second": 33.33,
+            "requests_per_minute": 2000.0,
+            "total_requests_lifetime": 1000000
+          },
+          "top_endpoints": {
+            "GET /data/stream": 3500,
+            "POST /devices/register": 2200,
+            "GET /statistics/sims/summary": 1800,
+            "GET /veba/status": 1200,
+            "POST /payments/tokens/buy": 800
+          },
+          "window_seconds": 300,
+          "timestamp": "2026-03-04T15:30:45.123456"
+        }
+      }
+    },
+    {
+      "name": "Health Check",
+      "method": "GET",
+      "path": "/metrics/health",
+      "description": "Simple health check endpoint returning basic server status and uptime.",
+      "authentication": "None (public endpoint)",
+      "parameters": {
+        "query": [],
+        "path": []
+      },
+      "response": {
+        "status_code": 200,
+        "body": {
+          "ok": true,
+          "status": "healthy",
+          "uptime_seconds": 2592000,
+          "timestamp": "2026-03-04T15:30:45.123456"
+        }
+      }
+    }
+  ],
+  
+  "metrics_details": {
+    "time_window": {
+      "description": "All metrics (except lifetime counters) are calculated over a sliding time window",
+      "default_seconds": 300,
+      "note": "This means metrics show data from the last 5 minutes"
+    },
+    "data_retention": {
+      "description": "Metrics are stored in memory with a maximum sample size",
+      "max_samples": 10000,
+      "note": "Oldest samples are automatically removed when limit is reached"
+    },
+    "latency_tracking": {
+      "description": "Latency is measured for every API request using Flask middleware",
+      "unit": "milliseconds",
+      "percentiles": {
+        "p50": "Median latency - 50% of requests are faster",
+        "p95": "95th percentile - 95% of requests are faster",
+        "p99": "99th percentile - 99% of requests are faster"
+      }
+    },
+    "error_tracking": {
+      "description": "Error rates are calculated based on HTTP status codes",
+      "categories": {
+        "success": "Status codes 200-299",
+        "client_errors": "Status codes 400-499",
+        "server_errors": "Status codes 500-599"
+      }
+    },
+    "kafka_monitoring": {
+      "description": "Kafka consumer lag is monitored by a background thread",
+      "update_interval": "30 seconds",
+      "configuration": {
+        "bootstrap_servers": "Set via KAFKA_BOOTSTRAP_SERVERS environment variable (default: 165.232.128.208:9092)",
+        "consumer_group": "Set via KAFKA_CONSUMER_GROUP environment variable (default: navas-iot-consumers)"
+      }
+    }
+  },
+  
+  "frontend_integration": {
+    "javascript_fetch": {
+      "description": "Using native Fetch API",
+      "code": "// Fetch comprehensive server metrics\nfetch('http://127.0.0.1:5000/metrics/server')\n  .then(response => response.json())\n  .then(data => {\n    console.log('Uptime:', data.uptime.percentage_30d + '%');\n    console.log('API p95:', data.api_latency.p95_ms + 'ms');\n    console.log('5xx Rate:', data.error_rates.error_5xx_rate_percent + '%');\n    console.log('Kafka Lag:', data.kafka.consumer_lag.total_lag);\n  })\n  .catch(error => console.error('Error:', error));\n\n// Fetch specific metric types\nfetch('http://127.0.0.1:5000/metrics/latency')\n  .then(response => response.json())\n  .then(data => console.log('Latency metrics:', data.latency));\n\nfetch('http://127.0.0.1:5000/metrics/errors')\n  .then(response => response.json())\n  .then(data => console.log('Error metrics:', data.errors));\n\nfetch('http://127.0.0.1:5000/metrics/kafka')\n  .then(response => response.json())\n  .then(data => console.log('Kafka lag:', data.kafka.consumer_lag));"
+    },
+    "react_hooks": {
+      "description": "Using React hooks and fetch",
+      "code": "import React, { useState, useEffect } from 'react';\n\nfunction MetricsDashboard() {\n  const [metrics, setMetrics] = useState(null);\n  const [loading, setLoading] = useState(true);\n  const [error, setError] = useState(null);\n\n  useEffect(() => {\n    const fetchMetrics = async () => {\n      try {\n        const response = await fetch('http://127.0.0.1:5000/metrics/server');\n        if (!response.ok) throw new Error('Failed to fetch metrics');\n        const data = await response.json();\n        setMetrics(data);\n        setLoading(false);\n      } catch (err) {\n        setError(err.message);\n        setLoading(false);\n      }\n    };\n\n    fetchMetrics();\n    // Refresh metrics every 10 seconds\n    const interval = setInterval(fetchMetrics, 10000);\n    return () => clearInterval(interval);\n  }, []);\n\n  if (loading) return <div>Loading metrics...</div>;\n  if (error) return <div>Error: {error}</div>;\n\n  return (\n    <div className=\"metrics-dashboard\">\n      <div className=\"metric-card\">\n        <h3>Uptime (30d)</h3>\n        <p>{metrics.uptime.percentage_30d}%</p>\n      </div>\n      <div className=\"metric-card\">\n        <h3>API p95</h3>\n        <p>{metrics.api_latency.p95_ms}ms</p>\n      </div>\n      <div className=\"metric-card\">\n        <h3>5xx Error Rate</h3>\n        <p>{metrics.error_rates.error_5xx_rate_percent}%</p>\n      </div>\n      <div className=\"metric-card\">\n        <h3>Kafka Lag</h3>\n        <p>{metrics.kafka.consumer_lag.total_lag}</p>\n      </div>\n      <div className=\"metric-card\">\n        <h3>Requests/sec</h3>\n        <p>{metrics.request_rates.requests_per_second}</p>\n      </div>\n    </div>\n  );\n}"
+    },
+    "nextjs_server_component": {
+      "description": "Using Next.js 13+ Server Components",
+      "code": "// app/metrics/page.tsx\nimport { Suspense } from 'react';\n\nasync function getMetrics() {\n  const res = await fetch('http://127.0.0.1:5000/metrics/server', {\n    next: { revalidate: 10 } // Revalidate every 10 seconds\n  });\n  if (!res.ok) throw new Error('Failed to fetch metrics');\n  return res.json();\n}\n\nexport default async function MetricsPage() {\n  const metrics = await getMetrics();\n\n  return (\n    <div className=\"metrics-grid\">\n      <MetricCard \n        title=\"Uptime (30d)\" \n        value={`${metrics.uptime.percentage_30d}%`}\n        trend=\"up\"\n      />\n      <MetricCard \n        title=\"API p95\" \n        value={`${metrics.api_latency.p95_ms}ms`}\n        trend={metrics.api_latency.p95_ms < 500 ? 'good' : 'warning'}\n      />\n      <MetricCard \n        title=\"5xx Rate\" \n        value={`${metrics.error_rates.error_5xx_rate_percent}%`}\n        trend={metrics.error_rates.error_5xx_rate_percent < 1 ? 'good' : 'bad'}\n      />\n      <MetricCard \n        title=\"Kafka Lag\" \n        value={metrics.kafka.consumer_lag.total_lag}\n        trend={metrics.kafka.consumer_lag.total_lag < 1000 ? 'good' : 'warning'}\n      />\n    </div>\n  );\n}"
+    },
+    "dashboard_kpi_mapping": {
+      "description": "Mapping metrics data to dashboard KPI cards",
+      "uptime_30d": {
+        "source": "data.uptime.percentage_30d",
+        "format": "percentage",
+        "example": "99.82%"
+      },
+      "api_p95_latency": {
+        "source": "data.api_latency.p95_ms",
+        "format": "milliseconds",
+        "example": "320ms"
+      },
+      "5xx_error_rate": {
+        "source": "data.error_rates.error_5xx_rate_percent",
+        "format": "percentage",
+        "example": "0.7%"
+      },
+      "ingest_p95": {
+        "source": "data.api_latency.p95_ms (filtered by /data/stream endpoint)",
+        "format": "seconds",
+        "example": "22s",
+        "note": "May need separate endpoint filtering"
+      },
+      "kafka_lag": {
+        "source": "data.kafka.consumer_lag.total_lag",
+        "format": "message count",
+        "example": "482 messages"
+      },
+      "kafka_lag_time": {
+        "source": "Calculated from lag and throughput",
+        "format": "seconds",
+        "example": "4.8s",
+        "formula": "total_lag / requests_per_second"
+      },
+      "requests_per_second": {
+        "source": "data.request_rates.requests_per_second",
+        "format": "rate",
+        "example": "33.33 req/s"
+      }
+    }
+  },
+  
+  "configuration": {
+    "environment_variables": {
+      "KAFKA_BOOTSTRAP_SERVERS": {
+        "description": "Kafka bootstrap servers for consumer lag monitoring",
+        "default": "165.232.128.208:9092",
+        "example": "localhost:9092,broker2:9092"
+      },
+      "KAFKA_CONSUMER_GROUP": {
+        "description": "Kafka consumer group to monitor",
+        "default": "navas-iot-consumers",
+        "example": "my-consumer-group"
+      }
+    },
+    "metrics_settings": {
+      "max_samples": {
+        "description": "Maximum number of metric samples to keep in memory",
+        "default": 10000,
+        "location": "endpoints/metrics.py - MetricsCollector class"
+      },
+      "time_window_seconds": {
+        "description": "Time window for metric calculations (sliding window)",
+        "default": 300,
+        "location": "endpoints/metrics.py - MetricsCollector class"
+      }
+    }
+  },
+  
+  "testing": {
+    "curl_commands": {
+      "health_check": "curl http://127.0.0.1:5000/metrics/health",
+      "server_metrics": "curl http://127.0.0.1:5000/metrics/server | python -m json.tool",
+      "latency_only": "curl http://127.0.0.1:5000/metrics/latency | python -m json.tool",
+      "errors_only": "curl http://127.0.0.1:5000/metrics/errors | python -m json.tool",
+      "kafka_only": "curl http://127.0.0.1:5000/metrics/kafka | python -m json.tool",
+      "requests_only": "curl http://127.0.0.1:5000/metrics/requests | python -m json.tool"
+    },
+    "test_script": {
+      "description": "Automated test script to verify all metrics endpoints",
+      "file": "test_metrics.py",
+      "command": "python test_metrics.py"
+    }
+  },
+  
+  "performance": {
+    "metrics_collection_overhead": {
+      "description": "Metrics collection adds minimal overhead to each request",
+      "estimated_latency_impact": "<1ms per request",
+      "memory_usage": "~10MB for 10,000 samples",
+      "cpu_impact": "Negligible (<0.1%)"
+    },
+    "background_tasks": {
+      "kafka_monitoring": {
+        "frequency": "Every 30 seconds",
+        "execution_time": "~100-500ms depending on Kafka cluster size",
+        "impact": "Runs in separate thread, does not block main application"
+      }
+    }
+  },
+  
+  "monitoring_best_practices": {
+    "recommendations": [
+      "Set up alerting when error_5xx_rate_percent > 1%",
+      "Monitor api_latency.p95_ms to detect performance degradation",
+      "Track kafka.consumer_lag.total_lag to prevent data backlog",
+      "Use uptime.percentage_30d for SLA compliance monitoring",
+      "Review top_endpoints to identify hotspots for optimization"
+    ],
+    "refresh_intervals": {
+      "dashboard": "10-30 seconds for live dashboards",
+      "alerting": "60 seconds for alert systems",
+      "reporting": "300-600 seconds for historical reports"
+    }
+  }
+}

@@ -1,0 +1,132 @@
+{
+  "endpoint": {
+    "method": "GET",
+    "path": "/veba/statistics",
+    "description": "Get VEBA (Vehicle Electronic Booking & Authorization) statistics for dashboard monitoring. Returns booking counts, leakage prevention attempts, and settlement performance metrics."
+  },
+  "authentication": "None (public endpoint)",
+  "parameters": {
+    "query": [],
+    "path": []
+  },
+  "response": {
+    "success": {
+      "status_code": 200,
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "status": "success",
+        "message": "VEBA statistics retrieved",
+        "data": {
+          "bookings_today": 184,
+          "leakage_attempts": 17,
+          "settlement_p95": "18m",
+          "settlement_p95_minutes": 18.0
+        }
+      }
+    },
+    "error": {
+      "status_code": 500,
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "status": "error",
+        "message": "Server error: connection to server at \"165.232.128.208\", port 5432 failed",
+        "data": {}
+      }
+    }
+  },
+  "field_descriptions": {
+    "bookings_today": {
+      "type": "integer",
+      "description": "Total number of VEBA bookings recorded today (current date)",
+      "source": "dll_veba_statistics table, event_type='booking', DATE(created_at)=CURRENT_DATE"
+    },
+    "leakage_attempts": {
+      "type": "integer",
+      "description": "Total number of leakage prevention attempts detected today (unauthorized listing/tendering)",
+      "source": "dll_veba_statistics table, event_type='leakage_attempt', DATE(created_at)=CURRENT_DATE"
+    },
+    "settlement_p95": {
+      "type": "string",
+      "description": "95th percentile settlement time formatted as human-readable string (e.g., '18m' for 18 minutes)",
+      "calculation": "PERCENTILE_CONT(0.95) over last 7 days of settlement times"
+    },
+    "settlement_p95_minutes": {
+      "type": "float",
+      "description": "95th percentile settlement time in minutes as numeric value for calculations",
+      "calculation": "PERCENTILE_CONT(0.95) over last 7 days of settlement times"
+    }
+  },
+  "database_schema": {
+    "table": "dll_veba_statistics",
+    "columns": {
+      "id": "SERIAL PRIMARY KEY",
+      "event_type": "VARCHAR(50) - 'booking' or 'leakage_attempt'",
+      "device_imei_number": "VARCHAR(50) - Device identifier",
+      "client_uid": "VARCHAR(100) - Client/organization identifier",
+      "settlement_time_minutes": "INTEGER - Time to settle in minutes (for p95 calculation)",
+      "event_data": "JSONB - Additional event metadata",
+      "created_at": "TIMESTAMP - Event timestamp"
+    }
+  },
+  "frontend_integration": {
+    "react_example": {
+      "description": "Fetch VEBA statistics for dashboard card",
+      "code": "import React, { useState, useEffect } from 'react';\n\nfunction VebaCard() {\n  const [veba, setVeba] = useState(null);\n  const [vebaLoading, setVebaLoading] = useState(true);\n\n  useEffect(() => {\n    const fetchVeba = async () => {\n      try {\n        const response = await fetch('http://127.0.0.1:5000/veba/statistics');\n        const json = await response.json();\n        // IMPORTANT: Extract the 'data' property from the response\n        setVeba(json.data);\n        setVebaLoading(false);\n      } catch (error) {\n        console.error('Error fetching VEBA statistics:', error);\n        setVebaLoading(false);\n      }\n    };\n\n    fetchVeba();\n    const interval = setInterval(fetchVeba, 30000); // Refresh every 30s\n    return () => clearInterval(interval);\n  }, []);\n\n  return (\n    <Card title=\"VEBA Governance • Leakage Prevention\" subtitle={vebaLoading ? \"Loading…\" : \"Listings + tendering\"}>\n      <div className=\"grid grid-cols-2 sm:grid-cols-4 gap-2\">\n        <MiniStat \n          label=\"Bookings today\" \n          value={vebaLoading || !veba || !veba.bookings_today ? \"—\" : veba.bookings_today.toLocaleString()} \n        />\n        <MiniStat \n          label=\"Leakage attempts\" \n          value={vebaLoading || !veba || !veba.leakage_attempts ? \"—\" : veba.leakage_attempts.toLocaleString()} \n        />\n        <MiniStat \n          label=\"Settlement p95\" \n          value={vebaLoading || !veba || !veba.settlement_p95 ? \"—\" : veba.settlement_p95} \n        />\n      </div>\n    </Card>\n  );\n}"
+    },
+    "important_note": "The response wraps data in a {status, message, data} structure. Access statistics via response.data, NOT response directly."
+  },
+  "business_logic": {
+    "bookings_today": {
+      "description": "Counts all booking events recorded in the current day",
+      "reset_time": "Resets at midnight (00:00) server time each day",
+      "use_case": "Monitor daily VEBA transaction volume"
+    },
+    "leakage_attempts": {
+      "description": "Counts unauthorized listing or tendering attempts detected by the system",
+      "reset_time": "Resets at midnight (00:00) server time each day",
+      "use_case": "Monitor governance compliance and fraud prevention effectiveness"
+    },
+    "settlement_p95": {
+      "description": "95th percentile of settlement times over the last 7 days",
+      "window": "Last 7 days of booking data",
+      "use_case": "Track settlement performance - 95% of settlements complete within this time",
+      "interpretation": "Lower is better - indicates faster settlement processing"
+    }
+  },
+  "notes": [
+    "Data is fetched from PostgreSQL database in real-time on each request",
+    "Bookings and leakage attempts count only today's events (DATE(created_at) = CURRENT_DATE)",
+    "Settlement p95 is calculated over the last 7 days to provide a rolling performance metric",
+    "Settlement time is only tracked for 'booking' events, not 'leakage_attempt' events",
+    "Response format differs from /metrics/api/performance - note the 'data' wrapper",
+    "This endpoint is separate from API performance metrics"
+  ],
+  "testing": {
+    "curl": "curl http://127.0.0.1:5000/veba/statistics",
+    "curl_formatted": "curl http://127.0.0.1:5000/veba/statistics | python -m json.tool",
+    "production": "curl https://narvas.3dservices.co.ug/veba/statistics"
+  },
+  "related_endpoints": [
+    {
+      "path": "/metrics/api/performance",
+      "description": "Get API performance metrics (latency, errors, Kafka lag, uptime)"
+    },
+    {
+      "path": "/statistics/veba/tokens/active",
+      "description": "Get all active VEBA token subscriptions"
+    },
+    {
+      "path": "/statistics/veba/units/enabled",
+      "description": "Get enabled VEBA units (devices)"
+    }
+  ],
+  "sample_migration": {
+    "file": "database/migrations/004_create_veba_statistics_tables.sql",
+    "description": "Creates dll_veba_statistics table and populates with sample data",
+    "run_command": "python run_migration_004.py"
+  }
+}

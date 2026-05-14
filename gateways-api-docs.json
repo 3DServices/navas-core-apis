@@ -1,0 +1,196 @@
+{
+  "get-mobile-money-gateways": {
+    "url": "/gateways/mobile-money",
+    "method": "GET",
+    "description": "Get current status for all mobile money payment gateways",
+    "authentication": "Required (Bearer token)",
+    
+    "database_table": "dll_gateway_status",
+    "table_columns": {
+      "id": "Primary key",
+      "telecom": "Gateway/telecom name (e.g., M-Pesa KE, MTN MoMo UG)",
+      "api_status": "Current status (OK, DEGRADED, DOWN, MAINTENANCE)",
+      "message": "Status message with metrics",
+      "is_current_message": "TRUE for current status, FALSE for historical"
+    },
+    
+    "response_format": {
+      "status": "success",
+      "message": "Retrieved status for 4 mobile money gateways",
+      "data": {
+        "gateways": [
+          {
+            "id": 1,
+            "name": "M-Pesa KE",
+            "status": "OK",
+            "meta": "success 98.9% • p95 9.2s",
+            "sev": "green",
+            "updated_at": "2026-03-04T15:30:45.123456"
+          },
+          {
+            "id": 2,
+            "name": "MTN MoMo UG",
+            "status": "OK",
+            "meta": "success 97.6% • p95 11.4s",
+            "sev": "green",
+            "updated_at": "2026-03-04T15:30:45.123456"
+          },
+          {
+            "id": 3,
+            "name": "Airtel UG",
+            "status": "DEGRADED",
+            "meta": "success 91.2% • webhook fail 6.7%",
+            "sev": "alarm",
+            "updated_at": "2026-03-04T15:30:45.123456"
+          },
+          {
+            "id": 4,
+            "name": "Airtel KE",
+            "status": "OK",
+            "meta": "success 96.8% • settle delay 18m",
+            "sev": "green",
+            "updated_at": "2026-03-04T15:30:45.123456"
+          }
+        ],
+        "total_count": 4,
+        "timestamp": "2026-03-04T15:32:15.987654"
+      }
+    },
+    
+    "frontend_usage": {
+      "react_example": "const GatewayCard = () => {\n  const [gateways, setGateways] = useState([]);\n  \n  useEffect(() => {\n    fetch('/gateways/mobile-money', {\n      headers: { 'Authorization': `Bearer ${token}` }\n    })\n    .then(res => res.json())\n    .then(data => setGateways(data.data.gateways));\n  }, []);\n  \n  return (\n    <Card title=\"Payments & Mobile Money Gateways\">\n      <div className=\"grid grid-cols-2 gap-2.5\">\n        {gateways.map(gw => (\n          <MiniGateway\n            key={gw.id}\n            name={gw.name}\n            status={gw.status}\n            meta={gw.meta}\n            sev={gw.sev}\n          />\n        ))}\n      </div>\n    </Card>\n  );\n};"
+    },
+    
+    "status_values": {
+      "OK": "Gateway operating normally",
+      "DEGRADED": "Gateway operational with reduced performance",
+      "DOWN": "Gateway unavailable",
+      "MAINTENANCE": "Gateway under scheduled maintenance"
+    },
+    
+    "severity_mapping": {
+      "green": "Status is OK",
+      "alarm": "Status is DEGRADED",
+      "critical": "Status is DOWN"
+    }
+  },
+  
+  "get-gateway-history": {
+    "url": "/gateways/mobile-money/{telecom_name}",
+    "method": "GET",
+    "description": "Get current and historical status messages for a specific gateway",
+    "authentication": "Required (Bearer token)",
+    
+    "path_parameters": {
+      "telecom_name": {
+        "type": "string",
+        "description": "Gateway/telecom name",
+        "examples": ["M-Pesa KE", "MTN MoMo UG", "Airtel UG", "Airtel KE"]
+      }
+    },
+    
+    "example_request": {
+      "url": "/gateways/mobile-money/M-Pesa%20KE",
+      "note": "URL-encode spaces as %20"
+    },
+    
+    "response_format": {
+      "status": "success",
+      "message": "Retrieved history for gateway 'M-Pesa KE'",
+      "data": {
+        "gateway_name": "M-Pesa KE",
+        "current_status": {
+          "id": 123,
+          "telecom": "M-Pesa KE",
+          "api_status": "OK",
+          "message": "success 98.9% • p95 9.2s",
+          "is_current_message": true,
+          "created_at": "2026-03-04T15:30:45.123456",
+          "updated_at": "2026-03-04T15:30:45.123456"
+        },
+        "history": [
+          {
+            "id": 123,
+            "telecom": "M-Pesa KE",
+            "api_status": "OK",
+            "message": "success 98.9% • p95 9.2s",
+            "is_current_message": true,
+            "created_at": "2026-03-04T15:30:45.123456",
+            "updated_at": "2026-03-04T15:30:45.123456"
+          },
+          {
+            "id": 122,
+            "telecom": "M-Pesa KE",
+            "api_status": "OK",
+            "message": "success 98.5% • p95 9.5s",
+            "is_current_message": false,
+            "created_at": "2026-03-04T15:00:45.123456",
+            "updated_at": "2026-03-04T15:30:45.123456"
+          }
+        ],
+        "timestamp": "2026-03-04T15:35:00.000000"
+      }
+    }
+  },
+  
+  "update-gateway-status": {
+    "url": "/gateways/mobile-money/update",
+    "method": "POST",
+    "description": "Update status for a mobile money gateway. Marks current message as historical and inserts new current message.",
+    "authentication": "Required (API Key or Service Token)",
+    
+    "request_body": {
+      "telecom": "M-Pesa KE",
+      "api_status": "OK",
+      "message": "success 98.9% • p95 9.2s"
+    },
+    
+    "required_fields": ["telecom", "api_status"],
+    "optional_fields": ["message"],
+    
+    "response_format": {
+      "status": "success",
+      "message": "Status updated for gateway 'M-Pesa KE'",
+      "data": {
+        "id": 124,
+        "telecom": "M-Pesa KE",
+        "api_status": "OK",
+        "message": "success 98.9% • p95 9.2s",
+        "created_at": "2026-03-04T15:40:00.123456"
+      }
+    },
+    
+    "behavior": {
+      "description": "This endpoint performs two operations atomically",
+      "steps": [
+        "1. UPDATE existing record: SET is_current_message = FALSE WHERE telecom = {telecom} AND is_current_message = TRUE",
+        "2. INSERT new record: (telecom, api_status, message, is_current_message=TRUE)"
+      ]
+    },
+    
+    "monitoring_integration": {
+      "description": "Call this endpoint to update gateway status from monitoring service",
+      "usage": "POST new status whenever gateway health changes",
+      "example_curl": "curl -X POST http://api/gateways/mobile-money/update -H 'Content-Type: application/json' -d '{\"telecom\":\"M-Pesa KE\",\"api_status\":\"OK\",\"message\":\"success 98.9% • p95 9.2s\"}'"
+    }
+  },
+  
+  "message_format_examples": {
+    "description": "Common message format patterns for the 'message' field",
+    "examples": [
+      "success 98.9% • p95 9.2s",
+      "success 97.6% • p95 11.4s",
+      "success 91.2% • webhook fail 6.7%",
+      "success 96.8% • settle delay 18m",
+      "DOWN • timeout after 30s",
+      "MAINTENANCE • scheduled until 16:00"
+    ],
+    "formatting_rules": [
+      "Use bullet point separator: •",
+      "Include success rate if available",
+      "Include p95 latency if available",
+      "Mention specific issues (webhook fail, settle delay, etc.)",
+      "Keep concise for frontend display"
+    ]
+  }
+}

@@ -1,0 +1,68 @@
+{
+"get-api-performance-stats": {
+    "url": "/metrics/api/performance",
+    "method": "GET",
+    "description": "API performance metrics including latency, error rates, Kafka lag, and request counters",
+    
+    "example_response": {
+      "ok": true,
+      "timestamp": "2026-03-04T15:30:45.123456",
+      "metrics_window_seconds": 300,
+      
+      "api_latency": {
+        "p50_ms": 45.23,
+        "p95_ms": 320.15,
+        "p99_ms": 1250.89,
+        "avg_ms": 125.45,
+        "min_ms": 5.12,
+        "max_ms": 5000.23,
+        "sample_count": 10000
+      },
+      
+      "error_rates": {
+        "success_rate_percent": 99.3,
+        "error_4xx_rate_percent": 0.5,
+        "error_5xx_rate_percent": 0.2,
+        "error_4xx_count": 50,
+        "error_5xx_count": 20,
+        "success_count": 9930,
+        "total_requests": 10000
+      },
+      
+      "request_rates": {
+        "requests_per_second": 33.33,
+        "requests_per_minute": 2000.0,
+        "total_requests_lifetime": 1000000
+      },
+      
+      "top_endpoints": {
+        "GET /data/stream": 3500,
+        "POST /devices/register": 2200,
+        "GET /statistics/sims/summary": 1800
+      },
+      
+      "kafka": {
+        "consumer_lag": {
+          "total_lag": 482,
+          "by_topic": {
+            "device-telemetry": 320,
+            "payment-events": 100,
+            "system-logs": 62
+          },
+          "consumer_group": "navas-iot-consumers"
+        },
+        "last_update": "2026-03-04T15:30:15.000000",
+        "error": null
+      },
+      
+      "uptime": {
+        "seconds": 2592000,
+        "days": 30.0,
+        "percentage_30d": 99.82,
+        "start_time": "2026-02-02T15:30:45.123456"
+      }
+    }
+  }
+}
+
+

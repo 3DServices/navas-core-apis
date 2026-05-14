@@ -1,0 +1,422 @@
+{
+  "title": "Tenant Management API Documentation",
+  "version": "1.0.0",
+  "description": "Comprehensive API documentation for tenant/sub-organization management system. Supports hierarchical organization structure (TOP > DEAL > CLIENT > ORG), soft deletes, and bulk import/export.",
+  "base_url": "http://127.0.0.1:5000",
+  "production_url": "https://narvas.3dservices.co.ug",
+  
+  "endpoints": [
+    {
+      "name": "Create Tenant",
+      "method": "POST",
+      "path": "/tenants/create",
+      "description": "Create a new tenant or sub-organization under a parent tenant. Supports hierarchical tier structure.",
+      "authentication": "None (configure as needed)",
+      "request": {
+        "content_type": "application/json",
+        "body": {
+          "data": {
+            "name": "Kampala_Boda_Fleet",
+            "tier": "TOP | DEAL | CLIENT | ORG",
+            "parent_id": "uuid-string | null",
+            "country": "UG",
+            "currency": "UGX",
+            "timezone": "Africa/Kampala"
+          }
+        },
+        "required_fields": ["name", "tier"],
+        "field_descriptions": {
+          "name": "Unique tenant name (must not already exist)",
+          "tier": "Organization tier - must be one of: TOP, DEAL, CLIENT, ORG",
+          "parent_id": "UUID of parent tenant, or null for top-level organization",
+          "country": "Two-letter country code (default: UG)",
+          "currency": "Three-letter currency code (default: UGX)",
+          "timezone": "IANA timezone identifier (default: Africa/Kampala)"
+        }
+      },
+      "response": {
+        "success": {
+          "status_code": 201,
+          "body": {
+            "status": "success",
+            "message": "Tenant created",
+            "data": {
+              "tenant_id": "uuid-string"
+            }
+          }
+        },
+        "errors": [
+          {
+            "status_code": 400,
+            "description": "Missing required field or invalid tier",
+            "body": {
+              "status": "error",
+              "message": "Missing required field: name",
+              "data": {}
+            }
+          },
+          {
+            "status_code": 404,
+            "description": "Parent tenant not found",
+            "body": {
+              "status": "error",
+              "message": "Parent tenant with ID 'uuid' not found",
+              "data": {}
+            }
+          },
+          {
+            "status_code": 409,
+            "description": "Tenant name already exists",
+            "body": {
+              "status": "error",
+              "message": "Tenant with name 'Kampala_Boda_Fleet' already exists",
+              "data": {}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "List All Tenants",
+      "method": "GET",
+      "path": "/tenants/all",
+      "description": "Get all active tenants with hierarchy information. Used for tenant listings and parent dropdowns in forms.",
+      "authentication": "None (configure as needed)",
+      "response": {
+        "success": {
+          "status_code": 200,
+          "body": {
+            "status": "success",
+            "message": "OK",
+            "data": [
+              {
+                "id": "uuid",
+                "name": "Kampala_Boda_Fleet",
+                "tier": "ORG",
+                "parent_id": "uuid | null",
+                "parent_name": "Kampala Dealer Rights | null",
+                "country": "UG",
+                "currency": "UGX",
+                "timezone": "Africa/Kampala",
+                "health": 88,
+                "burn_rate": "8.6",
+                "veba": true,
+                "status": "active | suspended",
+                "unit_count": 2140,
+                "date_created": "2026-01-15T10:00:00Z"
+              }
+            ]
+          }
+        }
+      },
+      "notes": [
+        "Returns only non-trashed tenants (status != 'trashed')",
+        "Results are ordered by tier then name",
+        "Parent name is resolved via LEFT JOIN"
+      ]
+    },
+    {
+      "name": "Bulk Import Tenants",
+      "method": "POST",
+      "path": "/tenants/import",
+      "description": "Bulk import tenants from CSV or JSON file. Useful for migrating data or initial setup.",
+      "authentication": "None (configure as needed)",
+      "request": {
+        "content_type": "multipart/form-data",
+        "fields": {
+          "file": {
+            "type": "File",
+            "description": "CSV or JSON file containing tenant data",
+            "accepted_formats": [".csv", ".json"]
+          }
+        },
+        "csv_format": {
+          "header": "name,tier,parent_id,country,currency,timezone",
+          "example_row": "Kampala_Boda_Fleet,ORG,uuid-or-empty,UG,UGX,Africa/Kampala"
+        },
+        "json_format": {
+          "structure": "Array of tenant objects",
+          "example": [
+            {
+              "name": "Kampala_Boda_Fleet",
+              "tier": "ORG",
+              "parent_id": "uuid-or-null",
+              "country": "UG",
+              "currency": "UGX",
+              "timezone": "Africa/Kampala"
+            }
+          ]
+        }
+      },
+      "response": {
+        "success": {
+          "status_code": 200,
+          "body": {
+            "status": "success",
+            "message": "Import complete",
+            "data": {
+              "imported": 12,
+              "skipped": 3,
+              "errors": [
+                "Row 5: duplicate name 'Kampala_Boda_Fleet'",
+                "Row 9: invalid country code 'XX'"
+              ]
+            }
+          }
+        },
+        "errors": [
+          {
+            "status_code": 400,
+            "description": "No file provided or invalid format",
+            "body": {
+              "status": "error",
+              "message": "No file provided",
+              "data": {}
+            }
+          }
+        ]
+      },
+      "notes": [
+        "Partial imports are allowed - some rows can succeed while others fail",
+        "Errors array contains detailed information about failed rows",
+        "Row numbers in error messages start at 2 (row 1 is header)"
+      ]
+    },
+    {
+      "name": "Download Import Template",
+      "method": "GET",
+      "path": "/tenants/import/template",
+      "description": "Download a blank CSV template for bulk tenant import.",
+      "authentication": "None (configure as needed)",
+      "response": {
+        "success": {
+          "status_code": 200,
+          "headers": {
+            "Content-Type": "text/csv",
+            "Content-Disposition": "attachment; filename=tenants_import_template.csv"
+          },
+          "body": "name,tier,parent_id,country,currency,timezone"
+        }
+      },
+      "notes": [
+        "Returns raw CSV file, not JSON",
+        "Browser will automatically download the file",
+        "Use this template to prepare bulk import data"
+      ]
+    },
+    {
+      "name": "List Trashed Tenants",
+      "method": "GET",
+      "path": "/tenants/trashed",
+      "description": "Fetch all soft-deleted tenants with age and HITL (Human-In-The-Loop) approval status.",
+      "authentication": "None (configure as needed)",
+      "response": {
+        "success": {
+          "status_code": 200,
+          "body": {
+            "status": "success",
+            "message": "OK",
+            "data": [
+              {
+                "id": "uuid",
+                "name": "Gulu_Schools_Patrol",
+                "tier": "ORG",
+                "trashed_at": "2026-02-10T09:00:00Z",
+                "age": "23d",
+                "hitl_required": true
+              }
+            ]
+          }
+        }
+      },
+      "field_descriptions": {
+        "age": "Human-readable age (e.g., '23d' for 23 days, '5h' for 5 hours)",
+        "hitl_required": "True if tenant has been trashed for >30 days, requiring approval to restore"
+      },
+      "notes": [
+        "Returns only tenants with status = 'trashed'",
+        "Ordered by trashed_at DESC (most recently trashed first)"
+      ]
+    },
+    {
+      "name": "Trash Tenant (Soft Delete)",
+      "method": "PATCH",
+      "path": "/tenants/{id}/trash",
+      "description": "Soft-delete a tenant by marking it as trashed. Data is preserved and can be restored.",
+      "authentication": "None (configure as needed)",
+      "parameters": {
+        "path": [
+          {
+            "name": "id",
+            "type": "UUID",
+            "description": "Tenant ID to trash",
+            "required": true
+          }
+        ]
+      },
+      "request": {
+        "content_type": "application/json",
+        "body": {},
+        "note": "Empty body - no payload required"
+      },
+      "response": {
+        "success": {
+          "status_code": 200,
+          "body": {
+            "status": "success",
+            "message": "Tenant trashed",
+            "data": {
+              "tenant_id": "uuid",
+              "trashed": true
+            }
+          }
+        },
+        "errors": [
+          {
+            "status_code": 400,
+            "description": "Invalid UUID or tenant already trashed",
+            "body": {
+              "status": "error",
+              "message": "Tenant is already trashed",
+              "data": {}
+            }
+          },
+          {
+            "status_code": 404,
+            "description": "Tenant not found",
+            "body": {
+              "status": "error",
+              "message": "Tenant not found",
+              "data": {}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Restore Tenant",
+      "method": "PATCH",
+      "path": "/tenants/{id}/restore",
+      "description": "Restore a soft-deleted tenant back to active status.",
+      "authentication": "None (configure as needed)",
+      "parameters": {
+        "path": [
+          {
+            "name": "id",
+            "type": "UUID",
+            "description": "Tenant ID to restore",
+            "required": true
+          }
+        ]
+      },
+      "request": {
+        "content_type": "application/json",
+        "body": {},
+        "note": "Empty body - no payload required"
+      },
+      "response": {
+        "success": {
+          "status_code": 200,
+          "body": {
+            "status": "success",
+            "message": "Tenant restored",
+            "data": {
+              "tenant_id": "uuid",
+              "restored": true
+            }
+          }
+        },
+        "errors": [
+          {
+            "status_code": 400,
+            "description": "Invalid UUID or tenant not trashed",
+            "body": {
+              "status": "error",
+              "message": "Tenant is not trashed",
+              "data": {}
+            }
+          },
+          {
+            "status_code": 404,
+            "description": "Tenant not found",
+            "body": {
+              "status": "error",
+              "message": "Tenant not found",
+              "data": {}
+            }
+          }
+        ]
+      }
+    }
+  ],
+  
+  "database_schema": {
+    "table": "dll_tenants",
+    "columns": {
+      "tenant_id": "UUID PRIMARY KEY (auto-generated)",
+      "tenant_name": "VARCHAR(255) UNIQUE NOT NULL - Tenant display name",
+      "tenant_tier": "VARCHAR(20) NOT NULL - Organization tier (TOP/DEAL/CLIENT/ORG)",
+      "parent_id": "UUID REFERENCES dll_tenants - Parent tenant for hierarchy",
+      "country_code": "VARCHAR(2) NOT NULL - Two-letter country code",
+      "currency": "VARCHAR(3) NOT NULL - Three-letter currency code",
+      "timezone": "VARCHAR(50) NOT NULL - IANA timezone identifier",
+      "tenant_status": "VARCHAR(20) NOT NULL - active/suspended/trashed",
+      "health_score": "INTEGER (0-100) - Overall health metric",
+      "burn_rate": "DECIMAL(10,2) - Financial burn rate",
+      "veba_enabled": "BOOLEAN - VEBA feature flag",
+      "unit_count": "INTEGER - Number of associated units/devices",
+      "created_at": "TIMESTAMP - Creation timestamp",
+      "updated_at": "TIMESTAMP - Last update timestamp (auto-updated)",
+      "trashed_at": "TIMESTAMP - When tenant was soft-deleted",
+      "trashed_by": "VARCHAR(100) - User who trashed tenant",
+      "metadata": "JSONB - Additional flexible data"
+    },
+    "indexes": [
+      "idx_tenants_status - tenant_status",
+      "idx_tenants_parent - parent_id",
+      "idx_tenants_tier - tenant_tier",
+      "idx_tenants_trashed_at - trashed_at",
+      "idx_tenants_name - tenant_name"
+    ]
+  },
+  
+  "hierarchy_structure": {
+    "description": "Four-tier hierarchical organization structure",
+    "tiers": {
+      "TOP": "Top-level organization (e.g., '3D Services Uganda')",
+      "DEAL": "Dealer/distributor level (e.g., 'Kampala Dealer Rights')",
+      "CLIENT": "Client/customer level (e.g., 'Kampala Municipal Council')",
+      "ORG": "Sub-organization/fleet level (e.g., 'Kampala_Boda_Fleet')"
+    },
+    "example": "TOP → DEAL → CLIENT → ORG"
+  },
+  
+  "testing": {
+    "setup": {
+      "1_run_migration": "python run_migration_005.py",
+      "2_verify_tables": "psql -U flareconnect -d narva_dbl -c 'SELECT COUNT(*) FROM dll_tenants;'"
+    },
+    "curl_examples": {
+      "create_tenant": "curl -X POST http://127.0.0.1:5000/tenants/create -H 'Content-Type: application/json' -d '{\"data\":{\"name\":\"Test_Fleet\",\"tier\":\"ORG\",\"country\":\"UG\"}}'",
+      "list_all": "curl http://127.0.0.1:5000/tenants/all",
+      "download_template": "curl -O http://127.0.0.1:5000/tenants/import/template",
+      "list_trashed": "curl http://127.0.0.1:5000/tenants/trashed",
+      "trash_tenant": "curl -X PATCH http://127.0.0.1:5000/tenants/{uuid}/trash",
+      "restore_tenant": "curl -X PATCH http://127.0.0.1:5000/tenants/{uuid}/restore",
+      "import_csv": "curl -X POST http://127.0.0.1:5000/tenants/import -F 'file=@tenants.csv'"
+    }
+  },
+  
+  "frontend_integration": {
+    "react_example_create": "const createTenant = async (data) => {\n  const response = await fetch('/tenants/create', {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({ data })\n  });\n  const result = await response.json();\n  if (result.status === 'success') {\n    console.log('Tenant created:', result.data.tenant_id);\n  }\n};",
+    "react_example_list": "const [tenants, setTenants] = useState([]);\n\nuseEffect(() => {\n  fetch('/tenants/all')\n    .then(r => r.json())\n    .then(result => {\n      if (result.status === 'success') {\n        setTenants(result.data);\n      }\n    });\n}, []);",
+    "react_example_import": "const importTenants = async (file) => {\n  const formData = new FormData();\n  formData.append('file', file);\n  \n  const response = await fetch('/tenants/import', {\n    method: 'POST',\n    body: formData  // Don't set Content-Type header\n  });\n  \n  const result = await response.json();\n  console.log(`Imported: ${result.data.imported}, Skipped: ${result.data.skipped}`);\n};"
+  },
+  
+  "migration_info": {
+    "file": "database/migrations/005_create_tenants_tables.sql",
+    "runner": "run_migration_005.py",
+    "command": "python run_migration_005.py",
+    "sample_data": "Migration includes 9 sample tenants across all tiers for testing"
+  }
+}

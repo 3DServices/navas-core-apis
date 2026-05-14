@@ -1,0 +1,27 @@
+openpyxl
+pandas
+flask
+requests
+flask-cors
+psycopg2-binary
+psycopg2
+
+cassandra-driver
+reportlab
+xlsxwriter
+weasyprint
+pytz
+
+# Metrics and monitoring
+psutil
+kafka-python
+
+# Auth
+PyJWT
+bcrypt
+flask-limiter
+python-dotenv
+
+# Note: On Linux systems, you may need to install system dependencies:
+# sudo apt install -y libpango-1.0-0 libpango1.0-dev
+# sudo apt install -y libcairo2 libcairo2-dev

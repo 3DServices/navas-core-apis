@@ -1,0 +1,161 @@
+{
+  "endpoint": {
+    "method": "GET",
+    "path": "/metrics/api/performance",
+    "description": "Get comprehensive API performance metrics including latency, error rates, Kafka consumer lag, request rates, and system uptime. This endpoint provides all performance metrics needed for the KPI dashboard."
+  },
+  "authentication": "None (public endpoint)",
+  "parameters": {
+    "query": [],
+    "path": []
+  },
+  "response": {
+    "success": {
+      "status_code": 200,
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "ok": true,
+        "timestamp": "2026-03-05T07:20:11.262103",
+        "metrics_window_seconds": 300,
+        "api_latency": {
+          "p50_ms": 45.23,
+          "p95_ms": 320.15,
+          "p99_ms": 1250.89,
+          "avg_ms": 125.45,
+          "min_ms": 5.12,
+          "max_ms": 5000.23,
+          "sample_count": 10000
+        },
+        "error_rates": {
+          "success_rate_percent": 99.3,
+          "error_4xx_rate_percent": 0.5,
+          "error_5xx_rate_percent": 0.2,
+          "error_4xx_count": 50,
+          "error_5xx_count": 20,
+          "success_count": 9930,
+          "total_requests": 10000
+        },
+        "request_rates": {
+          "requests_per_second": 33.33,
+          "requests_per_minute": 2000.0,
+          "total_requests_lifetime": 1000000
+        },
+        "top_endpoints": {
+          "GET /data/stream": 3500,
+          "POST /devices/register": 2200,
+          "GET /statistics/sims/summary": 1800,
+          "GET /veba/status": 1200,
+          "POST /payments/tokens/buy": 800
+        },
+        "kafka": {
+          "consumer_lag": {
+            "total_lag": 482,
+            "by_topic": {
+              "device-telemetry": 320,
+              "payment-events": 100,
+              "system-logs": 62
+            },
+            "consumer_group": "navas-iot-consumers"
+          },
+          "last_update": "2026-03-05T07:19:44.557570",
+          "error": null
+        },
+        "uptime": {
+          "seconds": 953.16,
+          "days": 0.01,
+          "percentage_30d": 99.5,
+          "start_time": "2026-03-05T07:04:13.852127"
+        }
+      }
+    },
+    "error": {
+      "status_code": 500,
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "ok": false,
+        "error": "Error message describing the issue",
+        "timestamp": "2026-03-05T07:20:11.262103"
+      }
+    }
+  },
+  "field_descriptions": {
+    "api_latency": {
+      "p50_ms": "Median API latency - 50% of requests are faster than this",
+      "p95_ms": "95th percentile latency - 95% of requests are faster than this",
+      "p99_ms": "99th percentile latency - 99% of requests are faster than this",
+      "avg_ms": "Average API latency across all sampled requests",
+      "min_ms": "Minimum latency observed in the time window",
+      "max_ms": "Maximum latency observed in the time window",
+      "sample_count": "Number of requests sampled in the time window"
+    },
+    "error_rates": {
+      "success_rate_percent": "Percentage of successful requests (2xx status codes)",
+      "error_4xx_rate_percent": "Percentage of client error requests (4xx status codes)",
+      "error_5xx_rate_percent": "Percentage of server error requests (5xx status codes)",
+      "error_4xx_count": "Total count of 4xx errors in the time window",
+      "error_5xx_count": "Total count of 5xx errors in the time window",
+      "success_count": "Total count of successful requests in the time window",
+      "total_requests": "Total requests in the time window"
+    },
+    "request_rates": {
+      "requests_per_second": "Average requests per second in the time window",
+      "requests_per_minute": "Average requests per minute in the time window",
+      "total_requests_lifetime": "Total requests since server started"
+    },
+    "top_endpoints": {
+      "description": "Top 10 endpoints by request count in the time window",
+      "format": "Object with endpoint paths as keys and request counts as values"
+    },
+    "kafka": {
+      "consumer_lag": {
+        "total_lag": "Total number of messages lagging across all topics",
+        "by_topic": "Object mapping topic names to lag counts",
+        "consumer_group": "Kafka consumer group being monitored"
+      },
+      "last_update": "Timestamp of last Kafka metrics update (updates every 30 seconds)",
+      "error": "Error message if Kafka monitoring failed, null if successful"
+    },
+    "uptime": {
+      "seconds": "Server uptime in seconds since last restart",
+      "days": "Server uptime in days since last restart",
+      "percentage_30d": "Calculated uptime percentage for 30-day period",
+      "start_time": "Timestamp when the server started"
+    }
+  },
+  "frontend_integration": {
+    "react_example": {
+      "description": "Fetch performance metrics for KPI dashboard",
+      "code": "import React, { useState, useEffect } from 'react';\n\nfunction KpiDashboard() {\n  const [perf, setPerf] = useState(null);\n  const [perfLoading, setPerfLoading] = useState(true);\n\n  useEffect(() => {\n    const fetchPerformance = async () => {\n      try {\n        const response = await fetch('http://127.0.0.1:5000/metrics/api/performance');\n        const data = await response.json();\n        setPerf(data);\n        setPerfLoading(false);\n      } catch (error) {\n        console.error('Error fetching performance metrics:', error);\n        setPerfLoading(false);\n      }\n    };\n\n    fetchPerformance();\n    const interval = setInterval(fetchPerformance, 10000); // Refresh every 10s\n    return () => clearInterval(interval);\n  }, []);\n\n  return (\n    <div className=\"grid grid-cols-1 sm:grid-cols-2 gap-3\">\n      <Kpi\n        title=\"Uptime (30d)\"\n        value={perfLoading || !perf || !perf.uptime?.percentage_30d ? \"—\" : `${perf.uptime.percentage_30d}%`}\n        sub={perfLoading || !perf || !perf.api_latency?.p95_ms || !perf.error_rates?.error_5xx_rate_percent ? \"Loading…\" : `p95 ${perf.api_latency.p95_ms.toFixed(0)}ms • 5xx ${perf.error_rates.error_5xx_rate_percent}%`}\n        sev={!perf || !perf.uptime?.percentage_30d ? \"green\" : perf.uptime.percentage_30d >= 99.5 ? \"green\" : perf.uptime.percentage_30d >= 99 ? \"warning\" : \"alarm\"}\n      />\n      <Kpi\n        title=\"API Latency p95\"\n        value={perfLoading || !perf || !perf.api_latency?.p95_ms ? \"—\" : `${perf.api_latency.p95_ms.toFixed(0)}ms`}\n        sub={perfLoading || !perf || !perf.api_latency?.p50_ms || !perf.api_latency?.p99_ms ? \"Loading…\" : `p50 ${perf.api_latency.p50_ms.toFixed(0)}ms • p99 ${perf.api_latency.p99_ms.toFixed(0)}ms`}\n        sev={!perf || !perf.api_latency?.p95_ms ? \"green\" : perf.api_latency.p95_ms < 500 ? \"green\" : perf.api_latency.p95_ms < 1000 ? \"warning\" : \"alarm\"}\n      />\n      <Kpi\n        title=\"Kafka Lag\"\n        value={perfLoading || !perf || !perf.kafka?.consumer_lag?.total_lag ? \"—\" : perf.kafka.consumer_lag.total_lag.toLocaleString()}\n        sub={perfLoading || !perf || !perf.kafka?.consumer_lag ? \"Loading…\" : `group: ${perf.kafka.consumer_lag.consumer_group || '—'} • ${Object.keys(perf.kafka.consumer_lag.by_topic || {}).length} topics`}\n        sev={!perf || !perf.kafka?.consumer_lag?.total_lag ? \"green\" : perf.kafka.consumer_lag.total_lag < 500 ? \"green\" : perf.kafka.consumer_lag.total_lag < 1000 ? \"warning\" : \"alarm\"}\n      />\n      <Kpi\n        title=\"Request Rate\"\n        value={perfLoading || !perf || !perf.request_rates?.requests_per_second ? \"—\" : `${perf.request_rates.requests_per_second.toFixed(1)} req/s`}\n        sub={perfLoading || !perf || !perf.error_rates?.total_requests || !perf.error_rates?.success_rate_percent ? \"Loading…\" : `${perf.error_rates.total_requests.toLocaleString()} total • ${perf.error_rates.success_rate_percent}% success`}\n        sev={!perf || !perf.error_rates?.error_5xx_rate_percent ? \"green\" : perf.error_rates.error_5xx_rate_percent < 1 ? \"green\" : perf.error_rates.error_5xx_rate_percent < 3 ? \"warning\" : \"alarm\"}\n      />\n    </div>\n  );\n}"
+    }
+  },
+  "notes": [
+    "All metrics (except lifetime counters) are calculated over a sliding 5-minute window (300 seconds)",
+    "Kafka metrics are updated every 30 seconds by a background thread",
+    "If Kafka monitoring fails, the error field will contain details but other metrics will still be available",
+    "Uptime percentage is a calculated estimate, not actual historical uptime data",
+    "Metrics collection adds minimal overhead (<1ms per request)",
+    "This endpoint does NOT include VEBA statistics - use /veba/statistics for VEBA data"
+  ],
+  "testing": {
+    "curl": "curl http://127.0.0.1:5000/metrics/api/performance | python -m json.tool",
+    "production": "curl https://narvas.3dservices.co.ug/metrics/api/performance"
+  },
+  "related_endpoints": [
+    {
+      "path": "/veba/statistics",
+      "description": "Get VEBA-specific statistics (bookings, leakage attempts, settlement times)"
+    },
+    {
+      "path": "/metrics/server",
+      "description": "Get server metrics including system resources (CPU, memory, disk)"
+    },
+    {
+      "path": "/metrics/health",
+      "description": "Simple health check endpoint"
+    }
+  ]
+}

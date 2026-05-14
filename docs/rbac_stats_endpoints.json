@@ -1,0 +1,148 @@
+{
+  "rbac_dashboard_statistics": {
+    "description": "RBAC Dashboard Statistics Endpoints",
+    "base_url": "http://localhost:5000",
+    "endpoints": [
+      {
+        "name": "Total Active Roles",
+        "method": "GET",
+        "url": "/rbac/stats/active-roles",
+        "description": "Returns the total number of active (non-deleted) roles in the system",
+        "request": {
+          "headers": {
+            "Content-Type": "application/json"
+          },
+          "body": null
+        },
+        "response": {
+          "success": {
+            "status": "success",
+            "code": 200,
+            "message": "Total active roles retrieved",
+            "data": {
+              "total_active_roles": 6
+            }
+          },
+          "error": {
+            "status": "error",
+            "code": 500,
+            "message": "error description",
+            "data": ""
+          }
+        }
+      },
+      {
+        "name": "Total User Permissions",
+        "method": "GET",
+        "url": "/rbac/stats/total-permissions",
+        "description": "Returns the total number of active (non-deleted) permissions available in the system",
+        "request": {
+          "headers": {
+            "Content-Type": "application/json"
+          },
+          "body": null
+        },
+        "response": {
+          "success": {
+            "status": "success",
+            "code": 200,
+            "message": "Total permissions retrieved",
+            "data": {
+              "total_permissions": 42
+            }
+          },
+          "error": {
+            "status": "error",
+            "code": 500,
+            "message": "error description",
+            "data": ""
+          }
+        }
+      },
+      {
+        "name": "Actively Logged In Clients",
+        "method": "GET",
+        "url": "/rbac/stats/active-clients",
+        "description": "Returns the total number of distinct client accounts with at least one user who logged in within the last 24 hours",
+        "request": {
+          "headers": {
+            "Content-Type": "application/json"
+          },
+          "body": null
+        },
+        "response": {
+          "success": {
+            "status": "success",
+            "code": 200,
+            "message": "Actively logged in clients retrieved",
+            "data": {
+              "total_active_clients": 12
+            }
+          },
+          "error": {
+            "status": "error",
+            "code": 500,
+            "message": "error description",
+            "data": ""
+          }
+        }
+      },
+      {
+        "name": "Actively Logged In 3D Clients",
+        "method": "GET",
+        "url": "/rbac/stats/active-3d-clients",
+        "description": "Returns the total number of internal/3D Services users who logged in within the last 24 hours (users whose account_root does not belong to any external client account)",
+        "request": {
+          "headers": {
+            "Content-Type": "application/json"
+          },
+          "body": null
+        },
+        "response": {
+          "success": {
+            "status": "success",
+            "code": 200,
+            "message": "Actively logged in 3D clients retrieved",
+            "data": {
+              "total_active_3d_clients": 5
+            }
+          },
+          "error": {
+            "status": "error",
+            "code": 500,
+            "message": "error description",
+            "data": ""
+          }
+        }
+      },
+      {
+        "name": "Total Users Belonging to Clients",
+        "method": "GET",
+        "url": "/rbac/stats/client-users",
+        "description": "Returns the total number of active users across all non-deleted client accounts",
+        "request": {
+          "headers": {
+            "Content-Type": "application/json"
+          },
+          "body": null
+        },
+        "response": {
+          "success": {
+            "status": "success",
+            "code": 200,
+            "message": "Total users belonging to clients retrieved",
+            "data": {
+              "total_client_users": 87
+            }
+          },
+          "error": {
+            "status": "error",
+            "code": 500,
+            "message": "error description",
+            "data": ""
+          }
+        }
+      }
+    ]
+  }
+}
