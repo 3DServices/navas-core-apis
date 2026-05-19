@@ -21,6 +21,7 @@ from .system_hardware_apis import _system_hardware_apis
 from .rbac import rbac_bp
 from .audit import audit_bp
 from .auth import auth_bp
+from .marketplace import marketplace_bp
 
 def Sentinel_Fleet():
     app = Flask(__name__)
@@ -47,6 +48,7 @@ def Sentinel_Fleet():
     app.register_blueprint(rbac_bp)
     app.register_blueprint(audit_bp)
     app.register_blueprint(auth_bp)
+    app.register_blueprint(marketplace_bp)
 
     # Register metrics middleware
     register_metrics_middleware(app)
