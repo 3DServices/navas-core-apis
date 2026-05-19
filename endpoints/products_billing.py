@@ -11,6 +11,7 @@ import base64
 import uuid
 import pytz
 from datetime import datetime
+from .globals import require_permission
 
 _products_billing = Blueprint("ProductsBilling", __name__)
 
@@ -25,6 +26,7 @@ def response_out(status, message, statusCode, data):
 
 
 @_products_billing.route("/billing/products/create", methods=["POST"])
+@require_permission('products.create')
 def CreateNewProduct():
 
     dbconnect = psycopg2.connect(current_app.config['db_link'])
@@ -50,6 +52,7 @@ def CreateNewProduct():
 
 
 @_products_billing.route("/billing/products/list", methods=["GET"])
+@require_permission('products.view_only')
 def ListProducts():
     dbconnect = psycopg2.connect(current_app.config['db_link'])
 
@@ -73,6 +76,7 @@ def ListProducts():
 
 
 @_products_billing.route("/billing/products/delete", methods=["POST"])
+@require_permission('products.delete')
 def DeleteProduct():
     dbconnect = psycopg2.connect(current_app.config['db_link'])
     _payloadRequestObject = request.get_json()
@@ -94,6 +98,7 @@ def DeleteProduct():
 
 
 @_products_billing.route("/billing/products/update", methods=["POST"])
+@require_permission('products.update')
 def UpdateProduct():
     dbconnect = psycopg2.connect(current_app.config['db_link'])
     _payloadRequestObject = request.get_json()

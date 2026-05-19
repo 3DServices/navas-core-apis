@@ -22,7 +22,7 @@ from .rbac import rbac_bp
 from .audit import audit_bp
 from .auth import auth_bp
 from .products_billing import _products_billing
-
+from .product_variant import _products_variant
 def Sentinel_Fleet():
     app = Flask(__name__)
 
@@ -49,6 +49,7 @@ def Sentinel_Fleet():
     app.register_blueprint(audit_bp)
     app.register_blueprint(auth_bp)
     app.register_blueprint(_products_billing)
+    app.register_blueprint(_products_variant)
 
     # Register metrics middleware
     register_metrics_middleware(app)
