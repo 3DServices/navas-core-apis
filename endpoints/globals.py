@@ -129,13 +129,21 @@ def _get_user_permissions(account_uid):
                 user_role = row[0]
                 account_type = row[1]
 
-                # Get role_uid from role name
+                # Get role_uid from role name. If the name lookup misses, try
+                # the UID — handles historical rows where create_user wrote a
+                # role UID into account_clearance instead of the role name.
                 cursor.execute(
                     "SELECT role_uid FROM dll_roles WHERE role_name = %s AND (is_deleted = FALSE OR is_deleted IS NULL)",
                     (str(user_role),)
                 )
                 if cursor.rowcount == 0:
-                    return user_role, account_type, []
+                    # Fallback: maybe the stored value IS a UID.
+                    cursor.execute(
+                        "SELECT role_uid FROM dll_roles WHERE role_uid = %s AND (is_deleted = FALSE OR is_deleted IS NULL)",
+                        (str(user_role),)
+                    )
+                    if cursor.rowcount == 0:
+                        return user_role, account_type, []
 
                 role_uid = cursor.fetchone()[0]
 

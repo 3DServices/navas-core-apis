@@ -23,6 +23,46 @@ users_bp = Blueprint('users_bp', __name__)
 def home():
     return "<h1 style='color: red;'>SENTINEL_API_BASE</h1>"
 
+
+
+# ── Role name resolution ────────────────────────────────────────────────────
+#
+# Accepts EITHER a role name (canonical, stored in dll_access_relay) OR a
+# role UID (PK of dll_roles). Returns the canonical name, or None if the
+# input matches neither. Lets the user-creation endpoints accept whichever
+# the caller sends without writing a dangling reference into
+# account_clearance — the latter caused the "user has no permissions"
+# diagnosis we shipped a fix for.
+
+def _resolve_role_name(cursor, role_identifier):
+    """Return canonical role_name for an identifier (either name or UID).
+
+    Performs at most two SELECTs. Returns None if neither lookup matches.
+    """
+    ident = str(role_identifier or "").strip()
+    if not ident:
+        return None
+    # 1) Try by name (the common case)
+    cursor.execute(
+        "SELECT role_name FROM dll_roles "
+        "WHERE role_name = %s AND (is_deleted = FALSE OR is_deleted IS NULL)",
+        (ident,),
+    )
+    row = cursor.fetchone()
+    if row is not None:
+        return row[0]
+    # 2) Fall back to UID
+    cursor.execute(
+        "SELECT role_name FROM dll_roles "
+        "WHERE role_uid = %s AND (is_deleted = FALSE OR is_deleted IS NULL)",
+        (ident,),
+    )
+    row = cursor.fetchone()
+    if row is not None:
+        return row[0]
+    return None
+
+
 @users_bp.route("/users/create", methods=["POST"])
 @require_permission('users.create')
 def create_user():
@@ -37,7 +77,7 @@ def create_user():
             AccountName = payload_data['data']['account_name']
             Username = payload_data['data']['username']
             AccountType = payload_data['data']['account_type']
-            AccountRole = payload_data['data']['assigned_role']
+            AccountRoleRaw = payload_data['data']['assigned_role']
             AccountEmail = payload_data['data']['email']
             UserCreating = payload_data['data']['author']
             RootAccount = payload_data['data']['root_account']
@@ -47,6 +87,18 @@ def create_user():
 
             with dbconnect:
                 with dbconnect.cursor() as cursor:
+                    # Resolve assigned_role to its canonical name. Accepts
+                    # either a role name OR a role UID — we always store the
+                    # NAME in account_clearance because that's what the
+                    # downstream permission lookup queries by.
+                    AccountRole = _resolve_role_name(cursor, AccountRoleRaw)
+                    if AccountRole is None:
+                        return reply(
+                            'error', 400,
+                            f"Role not found: {AccountRoleRaw!r}",
+                            '',
+                        )
+
                     cursor.execute("SELECT account_root FROM dll_access_relay WHERE log_username=%s;", (str(Username),))
                     if(cursor.rowcount == 0):
                         UserID = str(uuid.uuid4())
@@ -98,7 +150,7 @@ def create_sp_user():
             AccountName = payload_data['data']['account_name']
             Username = payload_data['data']['username']
             AccountType = payload_data['data']['account_type']
-            AccountRole = payload_data['data']['assigned_role']
+            AccountRoleRaw = payload_data['data']['assigned_role']
             AccountEmail = payload_data['data']['email']
             UserCreating = payload_data['data']['author']
             RootAccount = payload_data['data']['root_account']
@@ -109,6 +161,15 @@ def create_sp_user():
 
             with dbconnect:
                 with dbconnect.cursor() as cursor:
+                    # Resolve assigned_role to its canonical name (same fix as create_user).
+                    AccountRole = _resolve_role_name(cursor, AccountRoleRaw)
+                    if AccountRole is None:
+                        return reply(
+                            'error', 400,
+                            f"Role not found: {AccountRoleRaw!r}",
+                            '',
+                        )
+
                     cursor.execute("SELECT account_root FROM dll_access_relay WHERE log_username=%s;", (str(Username),))
                     if(cursor.rowcount == 0):
                         UserID = str(uuid.uuid4())
@@ -562,19 +623,17 @@ def assign_user_role(user_uid):
                 if cursor.rowcount == 0:
                     return reply('error', 404, 'User not found', '')
 
-                # Verify role exists
-                cursor.execute(
-                    "SELECT role_uid FROM dll_roles WHERE role_name = %s AND (is_deleted = FALSE OR is_deleted IS NULL)",
-                    (role_name,)
-                )
-                if cursor.rowcount == 0:
+                # Resolve role: accept either name or UID, store the canonical name.
+                resolved_role_name = _resolve_role_name(cursor, role_name)
+                if resolved_role_name is None:
                     return reply('error', 404, 'Role not found', '')
 
                 # Update user's role
                 cursor.execute(
                     "UPDATE dll_access_relay SET account_clearance = %s WHERE account_uid = %s",
-                    (role_name, str(user_uid))
+                    (resolved_role_name, str(user_uid))
                 )
+                role_name = resolved_role_name  # use canonical name in audit log below
 
                 log_audit_event(
                     actor=g.current_user['account_uid'],
