@@ -90,44 +90,51 @@ def reply(status, status_code, message_body, data):
 
 def _extract_account_uid():
     """
-    Extract account_uid from Authorization header (Bearer token) or Auth-Key header.
+    Extract account_uid from Authorization header (Bearer <JWT> only).
 
-    Supports both JWT tokens (new) and raw account_uid tokens (legacy).
-    JWT tokens are detected by attempting decode first — if that fails,
-    the raw value is used as a legacy fallback.
+    Returns the 'sub' claim from a valid, non-expired JWT or None.
+    Legacy raw-UID and Auth-Key fallbacks have been removed — all
+    requests must carry a signed JWT issued by /users/auth or /auth/refresh.
     """
     auth_header = flask_request.headers.get('Authorization', '')
-    if auth_header.startswith('Bearer '):
-        token = auth_header[7:].strip()
-        # Try JWT decode first
-        payload = decode_access_token(token)
-        if payload:
-            return payload.get('sub')
-        # Legacy fallback: treat the token as a raw account_uid
-        return token
-    auth_key = flask_request.headers.get('Auth-Key', '')
-    if auth_key:
-        return auth_key.strip()
-    return None
+    if not auth_header.startswith('Bearer '):
+        return None
+
+    token = auth_header[7:].strip()
+    if not token:
+        return None
+
+    payload = decode_access_token(token)
+    if not payload:
+        return None
+
+    return payload.get('sub')
 
 
 def _get_user_permissions(account_uid):
-    """Look up a user's role and permissions from the database."""
+    """Look up a user's role, account_root, and permissions from the database.
+
+    Returns:
+        (user_role, account_type, account_root, permissions)
+        or (None, None, None, []) on failure.
+    """
     dbconnect = psycopg2.connect(current_app.config['db_link'])
     try:
         with dbconnect:
             with dbconnect.cursor() as cursor:
-                # Get user's role name from dll_access_relay
+                # Get user's role name and account_root from dll_access_relay
                 cursor.execute(
-                    "SELECT account_clearance, account_type FROM dll_access_relay WHERE account_uid = %s AND access_status = 'active'",
+                    "SELECT account_clearance, account_type, account_root "
+                    "FROM dll_access_relay WHERE account_uid = %s AND access_status = 'active'",
                     (str(account_uid),)
                 )
                 if cursor.rowcount == 0:
-                    return None, None, []
+                    return None, None, None, []
 
                 row = cursor.fetchone()
                 user_role = row[0]
                 account_type = row[1]
+                account_root = row[2]
 
                 # Get role_uid from role name. If the name lookup misses, try
                 # the UID — handles historical rows where create_user wrote a
@@ -143,7 +150,7 @@ def _get_user_permissions(account_uid):
                         (str(user_role),)
                     )
                     if cursor.rowcount == 0:
-                        return user_role, account_type, []
+                        return user_role, account_type, account_root, []
 
                 role_uid = cursor.fetchone()[0]
 
@@ -153,9 +160,9 @@ def _get_user_permissions(account_uid):
                     (str(role_uid),)
                 )
                 permissions = [r[0] for r in cursor.fetchall()]
-                return user_role, account_type, permissions
+                return user_role, account_type, account_root, permissions
     except Exception:
-        return None, None, []
+        return None, None, None, []
     finally:
         dbconnect.close()
 
@@ -172,7 +179,7 @@ def require_permission(*required_perms):
         def manage_device(): ...
 
     The decorator:
-      1. Extracts account_uid from Authorization/Auth-Key header
+      1. Extracts account_uid from Authorization header (JWT Bearer token)
       2. Looks up the user's role and permissions
       3. Returns 401 if no valid auth, 403 if missing permission
       4. Sets g.current_user with user info for downstream use
@@ -184,7 +191,7 @@ def require_permission(*required_perms):
             if not account_uid:
                 return reply('error', 401, 'Authentication required. Provide Authorization header.', '')
 
-            user_role, account_type, user_permissions = _get_user_permissions(account_uid)
+            user_role, account_type, account_root, user_permissions = _get_user_permissions(account_uid)
             if user_role is None:
                 return reply('error', 401, 'Invalid or inactive account.', '')
 
@@ -193,6 +200,7 @@ def require_permission(*required_perms):
                 'account_uid': account_uid,
                 'role': user_role,
                 'account_type': account_type,
+                'account_root': account_root,
                 'permissions': user_permissions
             }
 
@@ -214,7 +222,7 @@ def require_permission(*required_perms):
 def require_auth(f):
     """
     Lightweight decorator that only checks authentication (no permission check).
-    Sets g.current_user with user info.
+    Sets g.current_user with user info including account_root for tenant scoping.
     """
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -222,7 +230,7 @@ def require_auth(f):
         if not account_uid:
             return reply('error', 401, 'Authentication required. Provide Authorization header.', '')
 
-        user_role, account_type, user_permissions = _get_user_permissions(account_uid)
+        user_role, account_type, account_root, user_permissions = _get_user_permissions(account_uid)
         if user_role is None:
             return reply('error', 401, 'Invalid or inactive account.', '')
 
@@ -230,6 +238,7 @@ def require_auth(f):
             'account_uid': account_uid,
             'role': user_role,
             'account_type': account_type,
+            'account_root': account_root,
             'permissions': user_permissions
         }
         return f(*args, **kwargs)

@@ -33,12 +33,65 @@ def create_access_token(account_uid, account_role, account_type, account_root):
 def decode_access_token(token):
     """
     Decode and verify a JWT access token.
-    Returns the payload dict or None if invalid/expired.
+    Returns the payload dict or None if invalid/expired/blacklisted.
+
+    Checks the dll_token_blacklist table to reject tokens that were
+    explicitly revoked (e.g. on logout) before their natural expiry.
     """
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
         return None
+
+    # Check if this token has been explicitly revoked
+    jti = payload.get("jti")
+    if jti and _is_token_blacklisted(jti):
+        return None
+
+    return payload
+
+
+def _is_token_blacklisted(jti):
+    """Check if a JTI exists in the blacklist table."""
+    try:
+        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        try:
+            with dbconnect:
+                with dbconnect.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT 1 FROM dll_token_blacklist WHERE jti = %s",
+                        (str(jti),)
+                    )
+                    return cursor.rowcount > 0
+        finally:
+            dbconnect.close()
+    except Exception:
+        # If the blacklist table doesn't exist yet or DB is down,
+        # fail open to avoid locking out all users during migration.
+        # Log this so it gets noticed.
+        print(f"[WARN] Token blacklist check failed for jti={jti}")
+        return False
+
+
+def blacklist_access_token(jti, account_uid, expires_at):
+    """
+    Add a JWT's JTI to the blacklist so it is rejected on future requests.
+    Called during logout to immediately invalidate the access token.
+    """
+    try:
+        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        try:
+            with dbconnect:
+                with dbconnect.cursor() as cursor:
+                    cursor.execute("""
+                        INSERT INTO dll_token_blacklist (jti, account_uid, expires_at)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (jti) DO NOTHING
+                    """, (str(jti), str(account_uid), expires_at))
+        finally:
+            dbconnect.close()
+    except Exception as e:
+        print(f"[WARN] Failed to blacklist token jti={jti}: {e}")
 
 
 def create_refresh_token(account_uid):

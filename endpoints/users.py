@@ -1,14 +1,13 @@
 from flask import Flask
 from flask import Blueprint
-from flask import request, make_response
+from flask import request, make_response, g
 import psycopg2
 from flask import json
 from flask import jsonify
 import datetime
-import random
 from flask import current_app
-import base64
 import bcrypt
+import logging
 from decimal import Decimal
 from .globals import reply, require_permission, require_auth, log_audit_event
 import uuid
@@ -132,7 +131,8 @@ def create_user():
             return reply('error', 400, 'Something Is Missing', '')
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        logging.getLogger('users').exception('Operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
 
 
 
@@ -191,7 +191,8 @@ def create_sp_user():
             return reply('error', 400, 'Something Is Missing', '')
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        logging.getLogger('users').exception('Operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
 
 #auth user
     
@@ -222,22 +223,14 @@ def auth_user():
                         data_adapter = cursor.fetchone()
                         stored_password = data_adapter[5]
 
-                        # Verify password — supports both bcrypt hashes and legacy base64
+                        # Verify password — bcrypt only.
+                        # Legacy base64 fallback has been removed. Accounts
+                        # with non-bcrypt hashes must use the admin password
+                        # reset flow before they can log in.
                         password_valid = False
                         if stored_password and stored_password.startswith('$2'):
-                            # bcrypt hash
                             password_valid = bcrypt.checkpw(RawPassword.encode(), stored_password.encode())
-                        else:
-                            # Legacy base64 comparison (for accounts not yet migrated)
-                            legacy_encoded = base64.b64encode(RawPassword.encode()).decode()
-                            if legacy_encoded == stored_password:
-                                password_valid = True
-                                # Auto-migrate: upgrade to bcrypt on successful legacy login
-                                new_hash = bcrypt.hashpw(RawPassword.encode(), bcrypt.gensalt()).decode()
-                                cursor.execute(
-                                    "UPDATE dll_access_relay SET log_password = %s WHERE account_uid = %s",
-                                    (new_hash, data_adapter[2])
-                                )
+                        # else: legacy hash — password_valid stays False
 
                         if not password_valid:
                             log_audit_event(
@@ -329,7 +322,8 @@ def auth_user():
             return reply('error', 400, 'Something Is Missing', '')
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        logging.getLogger('users').exception('Operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
     
 
 
@@ -373,7 +367,8 @@ def get_user_details(account_uid):
                     return reply('error', 400, 'No Account Found', '')
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        logging.getLogger('users').exception('Operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
 
 
 #get all users
@@ -435,7 +430,8 @@ def all_users():
             return reply('error', 400, 'Something Is Missing', '')
         
     except Exception as errors:
-        return reply('error', 500, str(errors), '')
+        logging.getLogger('users').exception('Operation failed: %s', errors)
+        return reply('error', 500, 'An internal error occurred', '')
 
 
 #Get client user a service provider
@@ -492,7 +488,8 @@ def all_SP_users(service_provider_uid):
             return reply('error', 400, 'Something Is Missing', '')
         
     except Exception as errors:
-        return reply('error', 500, str(errors), '')
+        logging.getLogger('users').exception('Operation failed: %s', errors)
+        return reply('error', 500, 'An internal error occurred', '')
     
 #as centinel system
 @users_bp.route("/users/allx", methods=["GET"])
@@ -554,7 +551,8 @@ def all_users_backOffice():
                         return reply('error', 400, 'Unable to complete request', '')
         
     except Exception as errors:
-        return reply('error', 500, str(errors), '')
+        logging.getLogger('users').exception('Operation failed: %s', errors)
+        return reply('error', 500, 'An internal error occurred', '')
     
 #block unblock user    
 @users_bp.route("/users/action", methods=["POST"])
@@ -596,7 +594,8 @@ def action_user():
             return reply('error', 400, 'Something Is Missing', '')
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        logging.getLogger('users').exception('Operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
     
 
 @users_bp.route("/users/<user_uid>/assign-role", methods=["PUT"])
@@ -651,49 +650,129 @@ def assign_user_role(user_uid):
                 })
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        logging.getLogger('users').exception('Operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
 
 
 @users_bp.route("/users/<user_uid>/reset-password", methods=["PUT"])
 @require_permission('users.reset_password')
 def reset_password(user_uid):
+    """
+    Admin password reset — generates a random temporary password,
+    hashes it with bcrypt, and returns the plaintext so the admin
+    can share it with the user securely.  The user should change it
+    on next login.
+    """
+    import secrets
+    import string
 
     try:
         dbconnect = psycopg2.connect(current_app.config["db_link"])
-        Password = "444444"
-        DefaultPassword = bcrypt.hashpw(Password.encode(), bcrypt.gensalt()).decode()
+
+        # Generate a random 12-character temporary password
+        alphabet = string.ascii_letters + string.digits
+        temp_password = ''.join(secrets.choice(alphabet) for _ in range(12))
+        hashed_password = bcrypt.hashpw(temp_password.encode(), bcrypt.gensalt()).decode()
 
         with dbconnect:
             with dbconnect.cursor() as cursor:
-                cursor.execute("UPDATE dll_access_relay SET log_password=%s WHERE account_uid=%s;", (str(DefaultPassword), str(user_uid),))
+                cursor.execute(
+                    "UPDATE dll_access_relay SET log_password=%s WHERE account_uid=%s;",
+                    (hashed_password, str(user_uid),)
+                )
 
-                return reply('success', 200, "Reset SuccessFul", '')
+                if cursor.rowcount == 0:
+                    return reply('error', 404, 'User not found', '')
+
+                log_audit_event(
+                    actor=g.current_user['account_uid'],
+                    action='PASSWORD_RESET',
+                    obj=f"Admin reset password for user {user_uid}",
+                    domain='RBAC',
+                    severity='Alarm',
+                    ip_address=request.remote_addr,
+                    meta={"target_uid": user_uid}
+                )
+
+                return reply('success', 200, "Password reset successful", {
+                    "temporary_password": temp_password,
+                    "message": "Share this password securely with the user. They should change it on next login."
+                })
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger = logging.getLogger('users')
+        _logger.exception('reset_password failed: %s', error)
+        return reply('error', 500, 'Could not reset password', '')
 
 
 @users_bp.route("/users/<user_uid>/change-password", methods=["PUT"])
+@require_auth
 def change_password(user_uid):
+    """
+    Change a user's password.  Regular users can only change their own
+    password and must provide their current password.  Admins with
+    users.reset_password can change any user's password.
+    """
     try:
+        caller = g.current_user
+        is_self = str(user_uid) == caller['account_uid']
+        is_privileged = caller['role'] in ('super_admin', 'system') or caller['account_type'] == 'system_account'
+
+        if not is_self and not is_privileged:
+            return reply('error', 403, 'You can only change your own password', '')
+
         dbconnect = psycopg2.connect(current_app.config["db_link"])
         payload = request.get_json()
-        if(len(str(payload['data']['new_password'])) > 4):
+        new_password = str(payload['data']['new_password'])
 
-            NewPassword = str(payload['data']['new_password'])
-            UpdatedPassword = bcrypt.hashpw(NewPassword.encode(), bcrypt.gensalt()).decode()
+        if len(new_password) < 6:
+            return reply('error', 400, 'Password must be at least 6 characters', '')
+
+        # If changing your own password, verify the current one first
+        if is_self:
+            current_password = str(payload['data'].get('current_password', ''))
+            if not current_password:
+                return reply('error', 400, 'current_password is required when changing your own password', '')
 
             with dbconnect:
                 with dbconnect.cursor() as cursor:
-                    cursor.execute("UPDATE dll_access_relay SET log_password=%s WHERE account_uid=%s", (str(UpdatedPassword), str(user_uid),))
+                    cursor.execute(
+                        "SELECT log_password FROM dll_access_relay WHERE account_uid = %s",
+                        (str(user_uid),)
+                    )
+                    if cursor.rowcount == 0:
+                        return reply('error', 404, 'User not found', '')
 
-                    return reply('success', 200, 'Update SuccessFul', '')
+                    stored_hash = cursor.fetchone()[0]
+                    if not stored_hash or not stored_hash.startswith('$2'):
+                        return reply('error', 400, 'Account requires admin password reset', '')
 
+                    if not bcrypt.checkpw(current_password.encode(), stored_hash.encode()):
+                        return reply('error', 400, 'Current password is incorrect', '')
+
+                    updated_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+                    cursor.execute(
+                        "UPDATE dll_access_relay SET log_password=%s WHERE account_uid=%s",
+                        (updated_hash, str(user_uid),)
+                    )
+                    return reply('success', 200, 'Password changed successfully', '')
         else:
-            return reply('error', 400, 'Something Is Missing Or Password too short', '')
+            # Privileged user changing someone else's password
+            updated_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+            with dbconnect:
+                with dbconnect.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE dll_access_relay SET log_password=%s WHERE account_uid=%s",
+                        (updated_hash, str(user_uid),)
+                    )
+                    if cursor.rowcount == 0:
+                        return reply('error', 404, 'User not found', '')
+                    return reply('success', 200, 'Password changed successfully', '')
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger = logging.getLogger('users')
+        _logger.exception('change_password failed: %s', error)
+        return reply('error', 500, 'Could not change password', '')
     
 
 #Authenticate Block
@@ -721,8 +800,7 @@ def AuthUser():
                         _pw_valid = False
                         if _stored_pw and _stored_pw.startswith('$2'):
                             _pw_valid = bcrypt.checkpw(_userPassword.encode(), _stored_pw.encode())
-                        else:
-                            _pw_valid = base64.b64encode(_userPassword.encode()).decode() == _stored_pw
+                        # else: legacy hash — _pw_valid stays False
 
                         if not _pw_valid:
                             return reply("error", 400, "Incorrect Password - Rejected", "")
@@ -771,7 +849,8 @@ def AuthUser():
             return reply("error", 400, "Some details are missing", "")
         
     except Exception as error:
-        return reply("error", 500, str(error), "")
+        logging.getLogger('users').exception('Operation failed: %s', error)
+        return reply("error", 500, "An internal error occurred", "")
 
 
 @users_bp.route("/accounts/users/reset-password", methods=["POST"])
@@ -795,8 +874,7 @@ def ResetPassword():
                         _pw_valid = False
                         if _stored_pw and _stored_pw.startswith('$2'):
                             _pw_valid = bcrypt.checkpw(_OldPassword.encode(), _stored_pw.encode())
-                        else:
-                            _pw_valid = base64.b64encode(_OldPassword.encode()).decode() == _stored_pw
+                        # else: legacy hash — _pw_valid stays False
 
                         if not _pw_valid:
                             return reply("error", 400, "Invalid Old Password - Rejected", "")
@@ -813,7 +891,8 @@ def ResetPassword():
             return reply("error", 400, "Some details are missing", "")
 
     except Exception as error:
-        return reply("error", 500, str(error), "")
+        logging.getLogger('users').exception('Operation failed: %s', error)
+        return reply("error", 500, "An internal error occurred", "")
 
 
 @users_bp.route("/app/version", methods=["GET"])
@@ -834,4 +913,5 @@ def AppVersion():
                 return reply("success", 200, "Version Found", _Response)
 
     except Exception as error:
-        return reply("error", 500, str(error), "")
+        logging.getLogger('users').exception('Operation failed: %s', error)
+        return reply("error", 500, "An internal error occurred", "")

@@ -12,16 +12,21 @@ so existing clients are not broken. This blueprint adds:
 """
 
 from flask import Blueprint, request, make_response
+from datetime import datetime, timezone as tz
+import hashlib
 import psycopg2
 from flask import current_app
 from .globals import reply, log_audit_event
 from .jwt_utils import (
     create_access_token,
+    decode_access_token,
     validate_refresh_token,
     revoke_refresh_token,
     revoke_all_refresh_tokens,
+    blacklist_access_token,
 )
 from config import JWT_REFRESH_EXPIRY_DAYS
+from .jwt_utils import create_refresh_token as _create_refresh_token
 
 auth_bp = Blueprint('auth_bp', __name__)
 
@@ -29,19 +34,36 @@ auth_bp = Blueprint('auth_bp', __name__)
 @auth_bp.route("/auth/refresh", methods=["POST"])
 def refresh():
     """
-    Silent token refresh.
-    Reads the refresh token from the HttpOnly cookie,
-    validates it, and returns a new access token.
+    Silent token refresh with **token rotation**.
+
+    1. Reads the refresh token from the HttpOnly cookie.
+    2. Validates it (not revoked, not expired).
+    3. Revokes the old refresh token immediately (one-time use).
+    4. Issues a brand-new refresh token + new access token.
+    5. Returns the access token in the JSON body and sets the new
+       refresh token as an HttpOnly cookie.
+
+    If a revoked token is presented (reuse detection), all of the
+    user's refresh tokens are revoked as a precaution — this forces
+    re-login on every device.
     """
     raw_token = request.cookies.get("_nvxs_refresh_token")
     if not raw_token:
         return reply('error', 401, 'No refresh token provided', '')
 
+    # ── Validate the incoming refresh token ─────────────────────────
     account_uid = validate_refresh_token(raw_token)
+
     if not account_uid:
+        # Possible token reuse — someone may have stolen the old token.
+        # Revoke ALL tokens for this user as a safety measure.
+        _handle_possible_reuse(raw_token)
         return reply('error', 401, 'Invalid or expired refresh token', '')
 
-    # Look up current user info for the new access token
+    # ── Revoke the old refresh token (one-time use) ─────────────────
+    revoke_refresh_token(raw_token)
+
+    # ── Look up current user info ───────────────────────────────────
     dbconnect = psycopg2.connect(current_app.config['db_link'])
     try:
         with dbconnect:
@@ -61,34 +83,104 @@ def refresh():
     finally:
         dbconnect.close()
 
+    # ── Issue new tokens ────────────────────────────────────────────
     access_token = create_access_token(account_uid, account_role, account_type, account_root)
+    new_refresh_token, refresh_expires = _create_refresh_token(account_uid)
 
-    return reply('success', 200, 'Token refreshed', {
+    # ── Build response with rotated refresh cookie ──────────────────
+    response_body, status_code = reply('success', 200, 'Token refreshed', {
         'access_token': access_token,
     })
+    resp = make_response(response_body, status_code)
+    resp.set_cookie(
+        '_nvxs_refresh_token',
+        new_refresh_token,
+        max_age=JWT_REFRESH_EXPIRY_DAYS * 86400,
+        httponly=True,
+        secure=True,
+        samesite='Strict',
+        path='/',
+    )
+    return resp
+
+
+def _handle_possible_reuse(raw_token):
+    """
+    When an already-revoked refresh token is presented, it may indicate
+    theft.  Look up which account owned it and revoke ALL their tokens.
+    """
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+    try:
+        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        try:
+            with dbconnect:
+                with dbconnect.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT account_uid FROM dll_refresh_tokens WHERE token_hash = %s",
+                        (token_hash,)
+                    )
+                    if cursor.rowcount > 0:
+                        account_uid = cursor.fetchone()[0]
+                        revoke_all_refresh_tokens(account_uid)
+                        log_audit_event(
+                            actor='system',
+                            action='REFRESH_TOKEN_REUSE',
+                            obj=f"Possible token theft detected for user {account_uid} — all sessions revoked",
+                            domain='SYSTEM',
+                            severity='Crit',
+                            ip_address=request.remote_addr,
+                            meta={"account_uid": account_uid}
+                        )
+        finally:
+            dbconnect.close()
+    except Exception as e:
+        print(f"[WARN] Reuse detection failed: {e}")
 
 
 @auth_bp.route("/auth/logout", methods=["POST"])
 def logout():
     """
-    Revoke the refresh token and clear the cookie.
+    Revoke the refresh token, blacklist the current access token, and clear cookies.
+
+    This ensures:
+      1. The refresh token cannot be used to obtain new access tokens.
+      2. The current access token is rejected immediately (not just after its 30-min expiry).
     """
-    raw_token = request.cookies.get("_nvxs_refresh_token")
+    raw_refresh = request.cookies.get("_nvxs_refresh_token")
+    account_uid = None
 
-    if raw_token:
-        # Try to get account_uid for audit logging before revoking
-        account_uid = validate_refresh_token(raw_token)
-        revoke_refresh_token(raw_token)
+    # ── Revoke the refresh token ────────────────────────────────────
+    if raw_refresh:
+        account_uid = validate_refresh_token(raw_refresh)
+        revoke_refresh_token(raw_refresh)
 
-        if account_uid:
-            log_audit_event(
-                actor=account_uid,
-                action='LOGOUT',
-                obj=f"User {account_uid} logged out",
-                domain='SYSTEM',
-                severity='Info',
-                ip_address=request.remote_addr,
-            )
+    # ── Blacklist the current access token ──────────────────────────
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer '):
+        access_token = auth_header[7:].strip()
+        payload = decode_access_token(access_token)
+        if payload:
+            jti = payload.get('jti')
+            token_uid = payload.get('sub')
+            exp = payload.get('exp')
+            if jti and exp:
+                expires_at = datetime.fromtimestamp(exp, tz=tz.utc)
+                blacklist_access_token(jti, token_uid or '', expires_at)
+            # Use the access token's sub if we couldn't get it from refresh
+            if not account_uid:
+                account_uid = token_uid
+
+    # ── Audit log ───────────────────────────────────────────────────
+    if account_uid:
+        log_audit_event(
+            actor=account_uid,
+            action='LOGOUT',
+            obj=f"User {account_uid} logged out",
+            domain='SYSTEM',
+            severity='Info',
+            ip_address=request.remote_addr,
+        )
 
     response_body, status_code = reply('success', 200, 'Logged out', '')
     resp = make_response(response_body, status_code)
