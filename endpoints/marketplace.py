@@ -298,9 +298,20 @@ def create_listing():
     payload = request.get_json() or {}
     data = payload.get("data") or {}
 
+    # ── Tenant isolation: derive account_root and created_by from the
+    # authenticated JWT — never trust the request body for these. ──
+    auth_account_root = g.current_user.get("account_root", "")
+    auth_account_uid  = g.current_user.get("account_uid", "")
+    if not auth_account_root:
+        return reply("error", 403, "Cannot determine your tenant from the session", "")
+
+    # Override body values so downstream code always uses the trusted source.
+    data["account_root"] = auth_account_root
+    data["created_by"]   = auth_account_uid
+
     missing = _missing(
         data,
-        "asset_uid", "account_root", "created_by",
+        "asset_uid",
         "daily_rate", "currency", "pricing_basis", "visibility",
     )
     if missing:
@@ -344,6 +355,25 @@ def create_listing():
         dbconnect = _open_conn()
         with dbconnect:
             with dbconnect.cursor() as cursor:
+                # ── Guard: only one active/paused listing per asset ──
+                cursor.execute(
+                    """
+                    SELECT listing_uid FROM dll_marketplace_listings
+                    WHERE asset_uid = %s AND status IN ('active', 'paused')
+                    LIMIT 1
+                    """,
+                    (str(data["asset_uid"]),),
+                )
+                existing = cursor.fetchone()
+                if existing:
+                    dup_uid = existing[0] if not isinstance(existing, dict) else existing.get("listing_uid")
+                    return reply(
+                        "error", 409,
+                        f"This asset already has an active listing ({dup_uid}). "
+                        "Pause or archive it before creating a new one.",
+                        "",
+                    )
+
                 cursor.execute(
                     """
                     INSERT INTO dll_marketplace_listings (
@@ -601,11 +631,13 @@ def update_listing(listing_uid: str):
     """
     payload = request.get_json() or {}
     data = payload.get("data") or {}
-    account_root = str(data.get("account_root", ""))
-    updated_by = str(data.get("updated_by", ""))
+
+    # ── Tenant isolation: derive from JWT, not request body ──
+    account_root = g.current_user.get("account_root", "")
+    updated_by   = g.current_user.get("account_uid", "") or str(data.get("updated_by", ""))
 
     if not account_root:
-        return reply("error", 400, "account_root is required", "")
+        return reply("error", 403, "Cannot determine your tenant from the session", "")
 
     # Build SET clause dynamically from the supplied editable fields.
     set_clauses: list[str] = []
@@ -723,13 +755,14 @@ def update_listing(listing_uid: str):
 @marketplace_bp.route("/veba/listings/<listing_uid>/pause", methods=["PUT"])
 @require_permission("can_edit_asset_listing")
 def pause_listing(listing_uid: str):
-    payload = request.get_json() or {}
-    data = payload.get("data") or {}
+    # Derive tenant from JWT — ignore body account_root
+    account_root = g.current_user.get("account_root", "")
+    updated_by   = g.current_user.get("account_uid", "")
     return _set_status(
         listing_uid,
         "paused",
-        str(data.get("account_root", "")),
-        str(data.get("updated_by", "")),
+        account_root,
+        updated_by,
         audit_action="PAUSE",
         audit_severity="Info",
     )
@@ -738,13 +771,13 @@ def pause_listing(listing_uid: str):
 @marketplace_bp.route("/veba/listings/<listing_uid>/reactivate", methods=["PUT"])
 @require_permission("can_edit_asset_listing")
 def reactivate_listing(listing_uid: str):
-    payload = request.get_json() or {}
-    data = payload.get("data") or {}
+    account_root = g.current_user.get("account_root", "")
+    updated_by   = g.current_user.get("account_uid", "")
     return _set_status(
         listing_uid,
         "active",
-        str(data.get("account_root", "")),
-        str(data.get("updated_by", "")),
+        account_root,
+        updated_by,
         audit_action="REACTIVATE",
         audit_severity="Info",
     )
@@ -753,13 +786,13 @@ def reactivate_listing(listing_uid: str):
 @marketplace_bp.route("/veba/listings/<listing_uid>/archive", methods=["PUT"])
 @require_permission("can_edit_asset_listing")
 def archive_listing(listing_uid: str):
-    payload = request.get_json() or {}
-    data = payload.get("data") or {}
+    account_root = g.current_user.get("account_root", "")
+    updated_by   = g.current_user.get("account_uid", "")
     return _set_status(
         listing_uid,
         "archived",
-        str(data.get("account_root", "")),
-        str(data.get("updated_by", "")),
+        account_root,
+        updated_by,
         audit_action="ARCHIVE",
         audit_severity="Alarm",  # destructive — higher severity for the audit trail
     )
@@ -876,6 +909,40 @@ def _enforce_request_ownership(cursor, request_uid: str, claimed_account_root: s
     return request, None
 
 
+def _enforce_request_requester(cursor, request_uid: str, claimed_requester_root: str):
+    """Like _enforce_request_ownership but checks **requester_root** instead.
+
+    Used for actions the requester performs (cancel).
+    """
+    cursor.execute(
+        """
+        SELECT request_uid, requester_root, owner_root, status, listing_uid, asset_uid
+        FROM dll_booking_requests
+        WHERE request_uid = %s
+        """,
+        (str(request_uid),),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None, reply("error", 404, "Booking request not found", "")
+    if isinstance(row, dict):
+        requester_root = row.get("requester_root")
+        req = row
+    else:
+        requester_root = row[1]
+        req = {
+            "request_uid": row[0],
+            "requester_root": row[1],
+            "owner_root": row[2],
+            "status": row[3],
+            "listing_uid": row[4],
+            "asset_uid": row[5],
+        }
+    if not claimed_requester_root or requester_root != claimed_requester_root:
+        return None, reply("error", 404, "Booking request not found", "")
+    return req, None
+
+
 def _set_request_status(
     request_uid: str,
     new_status: str,
@@ -884,8 +951,13 @@ def _set_request_status(
     *,
     audit_action: str,
     audit_severity: str = "Info",
+    allowed_from: str = "pending",
+    ownership_check: str = "owner",
 ) -> Any:
-    """Shared engine for approve / reject. Only allows pending → approved/rejected.
+    """Shared engine for approve / reject / cancel / fulfill.
+
+    ``allowed_from`` controls which current status is valid for the transition.
+    ``ownership_check`` is "owner" (default) or "requester".
 
     Returns the standard reply() envelope.
     """
@@ -893,14 +965,17 @@ def _set_request_status(
         dbconnect = _open_conn()
         with dbconnect:
             with dbconnect.cursor() as cursor:
-                request, err = _enforce_request_ownership(cursor, request_uid, account_root)
+                if ownership_check == "requester":
+                    req_row, err = _enforce_request_requester(cursor, request_uid, account_root)
+                else:
+                    req_row, err = _enforce_request_ownership(cursor, request_uid, account_root)
                 if err:
                     return err
 
-                if request["status"] != "pending":
+                if req_row["status"] != allowed_from:
                     return reply(
                         "error", 409,
-                        f"Request is {request['status']} — only pending requests can change state",
+                        f"Request is {req_row['status']} — can only transition from {allowed_from}",
                         "",
                     )
 
@@ -922,8 +997,8 @@ def _set_request_status(
             ip_address=request.remote_addr,
             meta={
                 "request_uid": request_uid,
-                "listing_uid": request["listing_uid"],
-                "asset_uid":   request["asset_uid"],
+                "listing_uid": req_row["listing_uid"],
+                "asset_uid":   req_row["asset_uid"],
                 "new_status":  new_status,
                 "updated_by":  updated_by,
             },
@@ -1132,13 +1207,13 @@ def list_booking_requests():
 @marketplace_bp.route("/veba/booking-requests/<request_uid>/approve", methods=["PUT"])
 @require_permission("can_approve_booking_request")
 def approve_booking_request(request_uid: str):
-    payload = request.get_json() or {}
-    data = payload.get("data") or {}
+    account_root = g.current_user.get("account_root", "")
+    updated_by   = g.current_user.get("account_uid", "")
     return _set_request_status(
         request_uid,
         "approved",
-        str(data.get("account_root", "")),
-        str(data.get("updated_by", "")),
+        account_root,
+        updated_by,
         audit_action="APPROVE",
         audit_severity="Info",
     )
@@ -1147,13 +1222,65 @@ def approve_booking_request(request_uid: str):
 @marketplace_bp.route("/veba/booking-requests/<request_uid>/reject", methods=["PUT"])
 @require_permission("can_reject_booking_request")
 def reject_booking_request(request_uid: str):
-    payload = request.get_json() or {}
-    data = payload.get("data") or {}
+    account_root = g.current_user.get("account_root", "")
+    updated_by   = g.current_user.get("account_uid", "")
     return _set_request_status(
         request_uid,
         "rejected",
-        str(data.get("account_root", "")),
-        str(data.get("updated_by", "")),
+        account_root,
+        updated_by,
         audit_action="REJECT",
         audit_severity="Info",
+    )
+
+
+# ----------------------------------------------------------------------
+# PUT /veba/booking-requests/<uid>/cancel   (requester cancels own request)
+# ----------------------------------------------------------------------
+
+@marketplace_bp.route("/veba/booking-requests/<request_uid>/cancel", methods=["PUT"])
+@require_permission("can_book_asset")
+def cancel_booking_request(request_uid: str):
+    """Requester cancels their own pending booking request.
+
+    Uses requester-side ownership check so only the person who submitted
+    the request can cancel it (not the listing owner).
+    """
+    account_root = g.current_user.get("account_root", "")
+    updated_by   = g.current_user.get("account_uid", "")
+    return _set_request_status(
+        request_uid,
+        "cancelled",
+        account_root,
+        updated_by,
+        audit_action="CANCEL",
+        audit_severity="Info",
+        allowed_from="pending",
+        ownership_check="requester",
+    )
+
+
+# ----------------------------------------------------------------------
+# PUT /veba/booking-requests/<uid>/fulfill  (owner marks as fulfilled)
+# ----------------------------------------------------------------------
+
+@marketplace_bp.route("/veba/booking-requests/<request_uid>/fulfill", methods=["PUT"])
+@require_permission("can_approve_booking_request")
+def fulfill_booking_request(request_uid: str):
+    """Owner marks an approved booking request as fulfilled.
+
+    Only approved requests can transition to fulfilled — the booking has
+    been completed and the asset returned (or the service delivered).
+    """
+    account_root = g.current_user.get("account_root", "")
+    updated_by   = g.current_user.get("account_uid", "")
+    return _set_request_status(
+        request_uid,
+        "fulfilled",
+        account_root,
+        updated_by,
+        audit_action="FULFILL",
+        audit_severity="Info",
+        allowed_from="approved",
+        ownership_check="owner",
     )
