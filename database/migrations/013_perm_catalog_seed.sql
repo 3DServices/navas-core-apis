@@ -1,12 +1,14 @@
 -- ============================================================
--- 013_seed_permission_catalog.sql
+-- 013_perm_catalog_seed.sql
 -- ============================================================
--- Seeds the NAVAS catalog permissions into dll_permissions under
--- account_root='engine' (the existing 'system-global' sentinel).
+-- Seeds the NAVAS catalog permissions into dll_permissions
+-- under account_root='engine'.
 --
--- Source of truth: src/auth/permissionCatalog.ts (frontend).
+-- Source of truth: <frontend>/src/auth/permissionCatalog.ts
+-- Regenerate with: scripts/regen_permission_catalog.py
+--
 -- Idempotent: ON CONFLICT (permission_uid) DO NOTHING.
--- Total: 531 permissions across 47 modules.
+-- Total: 570 permissions across 49 modules.
 -- ============================================================
 
 -- Module: AI & Video (15 permissions)
@@ -325,6 +327,55 @@ VALUES
     ('perm_can_suppress_notifications', 'can_suppress_notifications', 'NAVAS catalog permission', 'Messaging & Notification Hub', 'engine', 'system'),
     ('perm_can_view_notification_analytics', 'can_view_notification_analytics', 'NAVAS catalog permission', 'Messaging & Notification Hub', 'engine', 'system'),
     ('perm_can_view_notification_cost', 'can_view_notification_cost', 'NAVAS catalog permission', 'Messaging & Notification Hub', 'engine', 'system')
+ON CONFLICT (permission_uid) DO NOTHING;
+
+-- Module: NOC & Network Operations (18 permissions)
+INSERT INTO dll_permissions (permission_uid, permission_name, permission_description, permission_module, account_root, created_by)
+VALUES
+    ('perm_can_approve_hitl_action', 'can_approve_hitl_action', 'NAVAS catalog permission', 'NOC & Network Operations', 'engine', 'system'),
+    ('perm_can_chat_with_waswa', 'can_chat_with_waswa', 'NAVAS catalog permission', 'NOC & Network Operations', 'engine', 'system'),
+    ('perm_can_end_server_task', 'can_end_server_task', 'NAVAS catalog permission', 'NOC & Network Operations', 'engine', 'system'),
+    ('perm_can_export_noc_report', 'can_export_noc_report', 'NAVAS catalog permission', 'NOC & Network Operations', 'engine', 'system'),
+    ('perm_can_mute_ai_alerts', 'can_mute_ai_alerts', 'NAVAS catalog permission', 'NOC & Network Operations', 'engine', 'system'),
+    ('perm_can_reject_hitl_action', 'can_reject_hitl_action', 'NAVAS catalog permission', 'NOC & Network Operations', 'engine', 'system'),
+    ('perm_can_retry_gateway_webhooks', 'can_retry_gateway_webhooks', 'NAVAS catalog permission', 'NOC & Network Operations', 'engine', 'system'),
+    ('perm_can_simulate_hitl_action', 'can_simulate_hitl_action', 'NAVAS catalog permission', 'NOC & Network Operations', 'engine', 'system'),
+    ('perm_can_trigger_hic_override', 'can_trigger_hic_override', 'NAVAS catalog permission', 'NOC & Network Operations', 'engine', 'system'),
+    ('perm_can_view_gateway_history', 'can_view_gateway_history', 'NAVAS catalog permission', 'NOC & Network Operations', 'engine', 'system'),
+    ('perm_can_view_gateway_status', 'can_view_gateway_status', 'NAVAS catalog permission', 'NOC & Network Operations', 'engine', 'system'),
+    ('perm_can_view_hitl_queue', 'can_view_hitl_queue', 'NAVAS catalog permission', 'NOC & Network Operations', 'engine', 'system'),
+    ('perm_can_view_hitl_runbook', 'can_view_hitl_runbook', 'NAVAS catalog permission', 'NOC & Network Operations', 'engine', 'system'),
+    ('perm_can_view_noc_dashboard', 'can_view_noc_dashboard', 'NAVAS catalog permission', 'NOC & Network Operations', 'engine', 'system'),
+    ('perm_can_view_server_metrics', 'can_view_server_metrics', 'NAVAS catalog permission', 'NOC & Network Operations', 'engine', 'system'),
+    ('perm_can_view_system_kpis', 'can_view_system_kpis', 'NAVAS catalog permission', 'NOC & Network Operations', 'engine', 'system'),
+    ('perm_can_view_task_manager', 'can_view_task_manager', 'NAVAS catalog permission', 'NOC & Network Operations', 'engine', 'system'),
+    ('perm_can_view_veba_statistics', 'can_view_veba_statistics', 'NAVAS catalog permission', 'NOC & Network Operations', 'engine', 'system')
+ON CONFLICT (permission_uid) DO NOTHING;
+
+-- Module: Ops War Room & Device Management (21 permissions)
+INSERT INTO dll_permissions (permission_uid, permission_name, permission_description, permission_module, account_root, created_by)
+VALUES
+    ('perm_can_acknowledge_ops_alarm', 'can_acknowledge_ops_alarm', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_add_device', 'can_add_device', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_approve_ops_recommendation', 'can_approve_ops_recommendation', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_assign_device_client', 'can_assign_device_client', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_delete_device', 'can_delete_device', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_edit_device_configs', 'can_edit_device_configs', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_edit_device_properties', 'can_edit_device_properties', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_export_ops_brief', 'can_export_ops_brief', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_register_unit', 'can_register_unit', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_reject_ops_recommendation', 'can_reject_ops_recommendation', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_renew_device_payment', 'can_renew_device_payment', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_rerun_ops_webhooks', 'can_rerun_ops_webhooks', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_send_ops_brief_whatsapp', 'can_send_ops_brief_whatsapp', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_set_token_cap', 'can_set_token_cap', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_view_device_details', 'can_view_device_details', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_view_device_table', 'can_view_device_table', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_view_ops_alarms', 'can_view_ops_alarms', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_view_ops_brief', 'can_view_ops_brief', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_view_ops_dashboard', 'can_view_ops_dashboard', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_view_ops_gateways', 'can_view_ops_gateways', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system'),
+    ('perm_can_view_token_burn_chart', 'can_view_token_burn_chart', 'NAVAS catalog permission', 'Ops War Room & Device Management', 'engine', 'system')
 ON CONFLICT (permission_uid) DO NOTHING;
 
 -- Module: Order & HGV Control (9 permissions)
@@ -775,6 +826,8 @@ VALUES
     ('perm_can_view_eshop_recommendations', 'can_view_eshop_recommendations', 'NAVAS catalog permission', 'eShop & Solution Builder', 'engine', 'system')
 ON CONFLICT (permission_uid) DO NOTHING;
 
--- Verify:
+-- ============================================================
+-- Verify seed (expected count is in the header above).
+-- ============================================================
 -- SELECT COUNT(*) FROM dll_permissions WHERE account_root = 'engine' AND permission_name LIKE 'can\_%' ESCAPE '\';
--- Expected: 531
+-- Expected: 570
