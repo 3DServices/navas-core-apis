@@ -2,9 +2,8 @@ from flask import Blueprint
 from flask import request
 import psycopg2
 import datetime
-import random
+import uuid
 from flask import current_app
-import base64
 from flask import g
 from .globals import reply, require_permission, require_auth, log_audit_event
 
@@ -13,9 +12,78 @@ rbac_bp = Blueprint('rbac', __name__)
 
 
 def generate_uid():
-    return base64.b64encode(
-        str(str(random.randint(45, 9040000)) + str(random.randint(150, 1940101)) + str(random.randint(670, 9111202)))[:18].encode()
-    ).decode()
+    """Generate a cryptographically random unique identifier."""
+    return str(uuid.uuid4())
+
+
+# Logger used for server-side error trails. Client-facing replies stay generic;
+# the full traceback is captured here so support can diagnose without leaking
+# database schema details into responses.
+import logging
+_logger = logging.getLogger('rbac')
+
+
+def _resolve_permissions(cursor, identifiers, account_root):
+    """Resolve a list of permission identifiers (permission_uid OR permission_name)
+    to their permission_uids.
+
+    Looks up against ``dll_permissions`` matching either column, scoped to the
+    caller's ``account_root`` plus the global catalog (``account_root='engine'``).
+    Soft-deleted rows are ignored.
+
+    Returns:
+        (uids, unknown) — lists of strings. ``unknown`` contains every
+        identifier that did not resolve, in input order, with duplicates
+        removed.
+    """
+    if not identifiers:
+        return [], []
+
+    # Deduplicate while preserving order
+    seen = set()
+    ordered = []
+    for raw in identifiers:
+        ident = str(raw).strip()
+        if ident and ident not in seen:
+            seen.add(ident)
+            ordered.append(ident)
+
+    if not ordered:
+        return [], []
+
+    cursor.execute(
+        """
+        SELECT permission_uid, permission_name
+        FROM dll_permissions
+        WHERE (permission_uid = ANY(%s) OR permission_name = ANY(%s))
+          AND (account_root = %s OR account_root = 'engine')
+          AND (is_deleted = FALSE OR is_deleted IS NULL)
+        """,
+        (ordered, ordered, str(account_root)),
+    )
+    rows = cursor.fetchall()
+
+    # Build name+uid -> uid lookup so we can match whichever style the caller sent.
+    by_key = {}
+    for uid, name in rows:
+        by_key[uid] = uid
+        by_key[name] = uid
+
+    resolved = []
+    unknown = []
+    for ident in ordered:
+        target = by_key.get(ident)
+        if target:
+            # Dedupe resolved uids too — two names that resolve to the same uid
+            # should only show up once.
+            if target not in resolved:
+                resolved.append(target)
+        else:
+            unknown.append(ident)
+
+    return resolved, unknown
+
+
 
 
 # ==========================================
@@ -23,15 +91,26 @@ def generate_uid():
 # ==========================================
 
 @rbac_bp.route("/rbac/roles", methods=["GET", "POST"])
+@require_auth
 def get_roles():
 
     dbconnect = psycopg2.connect(current_app.config['db_link'])
 
+    # Determine the account_root to query.  Super admins / system accounts
+    # may pass an explicit account_root to inspect another tenant.  Regular
+    # users are always scoped to their own tenant — the parameter is ignored.
     if request.method == "POST":
         payload_data = request.get_json() or {}
-        account_root = payload_data.get('data', {}).get('account_root', '')
+        requested_root = payload_data.get('data', {}).get('account_root', '')
     else:
-        account_root = request.args.get('account_root')
+        requested_root = request.args.get('account_root', '')
+
+    caller = g.current_user
+    if caller['role'] in ('super_admin', 'system') or caller['account_type'] == 'system_account':
+        account_root = requested_root or caller.get('account_root', '')
+    else:
+        # Non-privileged users are locked to their own tenant
+        account_root = caller.get('account_root', '')
 
     if not account_root:
         return reply('error', 400, 'account_root is required', '')
@@ -62,10 +141,12 @@ def get_roles():
                     return reply('success', 200, 'No roles found', [])
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger.exception('RBAC operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
 
 
 @rbac_bp.route("/rbac/roles/<role_uid>", methods=["GET"])
+@require_auth
 def get_role(role_uid):
 
     dbconnect = psycopg2.connect(current_app.config['db_link'])
@@ -111,7 +192,8 @@ def get_role(role_uid):
                     return reply('error', 404, 'Role not found', '')
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger.exception('RBAC operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
 
 
 @rbac_bp.route("/rbac/roles/create", methods=["POST"])
@@ -143,26 +225,43 @@ def create_role():
                     if cursor.rowcount >= 1:
                         return reply('error', 400, 'Role name already exists', '')
 
+                    # Resolve incoming permissions (names or uids) to permission_uids
+                    # BEFORE inserting the role. If any are unknown, return a clean 400
+                    # rather than letting the FK constraint blow up mid-transaction.
+                    resolved_uids, unknown_perms = _resolve_permissions(
+                        cursor, PermissionUIDs, AccountRoot
+                    )
+                    if unknown_perms:
+                        # Roll back any work so far by re-raising; the `with dbconnect`
+                        # block will abort. Reply with details of the unknowns.
+                        preview = ', '.join(unknown_perms[:5])
+                        more = '' if len(unknown_perms) <= 5 else f' (+{len(unknown_perms) - 5} more)'
+                        return reply(
+                            'error', 400,
+                            f'Unknown permissions: {preview}{more}',
+                            {'unknown_permissions': unknown_perms}
+                        )
+
                     cursor.execute(
                         "INSERT INTO dll_roles (role_uid, role_name, role_description, account_root, created_by) VALUES (%s, %s, %s, %s, %s)",
                         (RoleUID, RoleName, RoleDescription, AccountRoot, CreatedBy,)
                     )
 
-                    # Assign permissions to the new role
-                    for perm_uid in PermissionUIDs:
+                    # Assign resolved permissions to the new role
+                    for perm_uid in resolved_uids:
                         cursor.execute(
                             "INSERT INTO dll_role_permissions (role_uid, permission_uid, assigned_by) VALUES (%s, %s, %s) ON CONFLICT (role_uid, permission_uid) DO NOTHING",
-                            (RoleUID, str(perm_uid), CreatedBy,)
+                            (RoleUID, perm_uid, CreatedBy,)
                         )
 
                     log_audit_event(
                         actor=g.current_user['account_uid'],
                         action='CREATE',
-                        obj=f"Role '{RoleName}' created with {len(PermissionUIDs)} permissions",
+                        obj=f"Role '{RoleName}' created with {len(resolved_uids)} permissions",
                         domain='RBAC',
                         severity='Alarm',
                         ip_address=request.remote_addr,
-                        meta={"role_uid": RoleUID, "role_name": RoleName, "permissions_count": len(PermissionUIDs)}
+                        meta={"role_uid": RoleUID, "role_name": RoleName, "permissions_count": len(resolved_uids)}
                     )
 
                     return reply('success', 201, 'Role created successfully', {"role_uid": RoleUID})
@@ -171,7 +270,8 @@ def create_role():
             return reply('error', 400, 'Role name and account_root are required', '')
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger.exception('create_role failed: %s', error)
+        return reply('error', 500, 'Could not create role', '')
 
 
 @rbac_bp.route("/rbac/roles/<role_uid>/update", methods=["PUT"])
@@ -210,13 +310,38 @@ def update_role(role_uid):
                 # Replace permissions if provided
                 if 'permissions' in data:
                     updated_by = str(data.get('updated_by', ''))
-                    # Clear existing permissions
+
+                    # Look up this role's account_root so we can scope the resolver
+                    # to the same tenant the role belongs to.
+                    cursor.execute(
+                        "SELECT account_root FROM dll_roles WHERE role_uid = %s AND (is_deleted = FALSE OR is_deleted IS NULL)",
+                        (str(role_uid),)
+                    )
+                    role_row = cursor.fetchone()
+                    if role_row is None:
+                        return reply('error', 404, 'Role not found', '')
+                    role_account_root = role_row[0]
+
+                    # Resolve permission names/uids BEFORE making any changes.
+                    resolved_uids, unknown_perms = _resolve_permissions(
+                        cursor, data['permissions'], role_account_root
+                    )
+                    if unknown_perms:
+                        preview = ', '.join(unknown_perms[:5])
+                        more = '' if len(unknown_perms) <= 5 else f' (+{len(unknown_perms) - 5} more)'
+                        return reply(
+                            'error', 400,
+                            f'Unknown permissions: {preview}{more}',
+                            {'unknown_permissions': unknown_perms}
+                        )
+
+                    # Clear existing permissions (atomic with the inserts below)
                     cursor.execute("DELETE FROM dll_role_permissions WHERE role_uid = %s", (str(role_uid),))
-                    # Assign new permissions
-                    for perm_uid in data['permissions']:
+                    # Assign resolved permissions
+                    for perm_uid in resolved_uids:
                         cursor.execute(
                             "INSERT INTO dll_role_permissions (role_uid, permission_uid, assigned_by) VALUES (%s, %s, %s) ON CONFLICT (role_uid, permission_uid) DO NOTHING",
-                            (str(role_uid), str(perm_uid), updated_by,)
+                            (str(role_uid), perm_uid, updated_by,)
                         )
 
                 log_audit_event(
@@ -232,7 +357,8 @@ def update_role(role_uid):
                 return reply('success', 200, 'Role updated successfully', '')
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger.exception('update_role failed: %s', error)
+        return reply('error', 500, 'Could not update role', '')
 
 
 @rbac_bp.route("/rbac/roles/<role_uid>/delete", methods=["DELETE"])
@@ -240,8 +366,8 @@ def update_role(role_uid):
 def delete_role(role_uid):
 
     dbconnect = psycopg2.connect(current_app.config['db_link'])
-    payload_data = request.get_json() or {}
-    deleted_by = str(payload_data.get('data', {}).get('deleted_by', ''))
+    # Always use the authenticated user as the actor — never trust the request body
+    deleted_by = g.current_user['account_uid']
 
     try:
         with dbconnect:
@@ -270,7 +396,8 @@ def delete_role(role_uid):
                     return reply('error', 404, 'Role not found', '')
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger.exception('RBAC operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
 
 
 # ==========================================
@@ -278,15 +405,22 @@ def delete_role(role_uid):
 # ==========================================
 
 @rbac_bp.route("/rbac/permissions", methods=["GET", "POST"])
+@require_auth
 def get_permissions():
 
     dbconnect = psycopg2.connect(current_app.config['db_link'])
 
     if request.method == "POST":
         payload_data = request.get_json() or {}
-        account_root = payload_data.get('data', {}).get('account_root', '')
+        requested_root = payload_data.get('data', {}).get('account_root', '')
     else:
-        account_root = request.args.get('account_root')
+        requested_root = request.args.get('account_root', '')
+
+    caller = g.current_user
+    if caller['role'] in ('super_admin', 'system') or caller['account_type'] == 'system_account':
+        account_root = requested_root or caller.get('account_root', '')
+    else:
+        account_root = caller.get('account_root', '')
 
     if not account_root:
         return reply('error', 400, 'account_root is required', '')
@@ -295,7 +429,7 @@ def get_permissions():
         with dbconnect:
             with dbconnect.cursor() as cursor:
                 cursor.execute(
-                    "SELECT permission_uid, permission_name, permission_description, permission_module, account_root, created_by, created_at FROM dll_permissions WHERE account_root = %s AND (is_deleted = FALSE OR is_deleted IS NULL) ORDER BY permission_module, permission_name",
+                    "SELECT permission_uid, permission_name, permission_description, permission_module, account_root, created_by, created_at FROM dll_permissions WHERE (account_root = %s OR account_root = 'engine') AND (is_deleted = FALSE OR is_deleted IS NULL) ORDER BY permission_module, permission_name",
                     (str(account_root),)
                 )
 
@@ -317,7 +451,8 @@ def get_permissions():
                     return reply('success', 200, 'No permissions found', [])
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger.exception('RBAC operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
 
 
 @rbac_bp.route("/rbac/permissions/create", methods=["POST"])
@@ -369,7 +504,8 @@ def create_permission():
                 return reply('success', 201, 'Permission created successfully', {"permission_uid": permission_uid})
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger.exception('RBAC operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
 
 
 @rbac_bp.route("/rbac/permissions/<permission_uid>/update", methods=["PUT"])
@@ -422,7 +558,8 @@ def update_permission(permission_uid):
                     return reply('error', 404, 'Permission not found', '')
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger.exception('RBAC operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
 
 
 @rbac_bp.route("/rbac/permissions/<permission_uid>/delete", methods=["DELETE"])
@@ -430,12 +567,25 @@ def update_permission(permission_uid):
 def delete_permission(permission_uid):
 
     dbconnect = psycopg2.connect(current_app.config['db_link'])
-    payload_data = request.get_json() or {}
-    deleted_by = str(payload_data.get('data', {}).get('deleted_by', ''))
+    deleted_by = g.current_user['account_uid']
 
     try:
         with dbconnect:
             with dbconnect.cursor() as cursor:
+                # Guard: refuse to delete a permission that belongs to the system
+                # catalog (account_root='engine'). These rows are seeded from the
+                # frontend catalog and shared across all tenants; deleting one
+                # would break the Role Creator UI for every tenant at once.
+                cursor.execute(
+                    "SELECT account_root FROM dll_permissions WHERE permission_uid = %s AND (is_deleted = FALSE OR is_deleted IS NULL)",
+                    (str(permission_uid),)
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return reply('error', 404, 'Permission not found', '')
+                if row[0] == 'engine':
+                    return reply('error', 403, 'System catalog permissions cannot be deleted', '')
+
                 cursor.execute(
                     "UPDATE dll_permissions SET is_deleted = TRUE, deleted_at = NOW(), deleted_by = %s WHERE permission_uid = %s AND (is_deleted = FALSE OR is_deleted IS NULL)",
                     (deleted_by, str(permission_uid),)
@@ -460,7 +610,8 @@ def delete_permission(permission_uid):
                     return reply('error', 404, 'Permission not found', '')
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger.exception('RBAC operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
 
 
 # ==========================================
@@ -469,7 +620,15 @@ def delete_permission(permission_uid):
 
 # Get all permissions for a specific user (via their role)
 @rbac_bp.route("/rbac/users/<user_uid>/permissions", methods=["GET"])
+@require_auth
 def get_user_permissions(user_uid):
+
+    # Tenant isolation: regular users can only query their own permissions.
+    # Super admins / system accounts can query any user.
+    caller = g.current_user
+    is_privileged = caller['role'] in ('super_admin', 'system') or caller['account_type'] == 'system_account'
+    if not is_privileged and str(user_uid) != caller['account_uid']:
+        return reply('error', 403, 'You can only view your own permissions', '')
 
     dbconnect = psycopg2.connect(current_app.config['db_link'])
 
@@ -522,7 +681,8 @@ def get_user_permissions(user_uid):
                 })
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger.exception('RBAC operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
 
 
 # ==========================================
@@ -531,6 +691,7 @@ def get_user_permissions(user_uid):
 
 # 1. Total Active Roles
 @rbac_bp.route("/rbac/stats/active-roles", methods=["GET"])
+@require_auth
 def get_active_roles_count():
 
     dbconnect = psycopg2.connect(current_app.config['db_link'])
@@ -545,11 +706,13 @@ def get_active_roles_count():
                 return reply('success', 200, 'Total active roles retrieved', {"total_active_roles": count})
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger.exception('RBAC operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
 
 
 # 2. Total User Permissions
 @rbac_bp.route("/rbac/stats/total-permissions", methods=["GET"])
+@require_auth
 def get_total_permissions_count():
 
     dbconnect = psycopg2.connect(current_app.config['db_link'])
@@ -564,11 +727,13 @@ def get_total_permissions_count():
                 return reply('success', 200, 'Total permissions retrieved', {"total_permissions": count})
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger.exception('RBAC operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
 
 
 # 3. Actively Logged In Clients (client users who logged in within last 24 hours)
 @rbac_bp.route("/rbac/stats/active-clients", methods=["GET"])
+@require_auth
 def get_active_logged_in_clients():
 
     dbconnect = psycopg2.connect(current_app.config['db_link'])
@@ -588,11 +753,13 @@ def get_active_logged_in_clients():
                 return reply('success', 200, 'Actively logged in clients retrieved', {"total_active_clients": count})
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger.exception('RBAC operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
 
 
 # 4. Actively Logged In 3D Clients (internal/3D Services users who logged in within last 24 hours)
 @rbac_bp.route("/rbac/stats/active-3d-clients", methods=["GET"])
+@require_auth
 def get_active_logged_in_3d_clients():
 
     dbconnect = psycopg2.connect(current_app.config['db_link'])
@@ -613,11 +780,13 @@ def get_active_logged_in_3d_clients():
                 return reply('success', 200, 'Actively logged in 3D clients retrieved', {"total_active_3d_clients": count})
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger.exception('RBAC operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
 
 
 # 5. Total Users Belonging to Clients
 @rbac_bp.route("/rbac/stats/client-users", methods=["GET"])
+@require_auth
 def get_client_users_count():
 
     dbconnect = psycopg2.connect(current_app.config['db_link'])
@@ -636,11 +805,13 @@ def get_client_users_count():
                 return reply('success', 200, 'Total users belonging to clients retrieved', {"total_client_users": count})
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger.exception('RBAC operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
 
 
 # 6. User Count Per Role (how many users have each role assigned)
 @rbac_bp.route("/rbac/stats/role-user-counts", methods=["GET"])
+@require_auth
 def get_role_user_counts():
 
     dbconnect = psycopg2.connect(current_app.config['db_link'])
@@ -662,11 +833,13 @@ def get_role_user_counts():
                 return reply('success', 200, 'Role user counts retrieved', counts)
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger.exception('RBAC operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
 
 
 # 7. Roles Using Each Permission (how many roles reference each permission)
 @rbac_bp.route("/rbac/stats/permission-role-counts", methods=["GET"])
+@require_auth
 def get_permission_role_counts():
 
     dbconnect = psycopg2.connect(current_app.config['db_link'])
@@ -687,4 +860,5 @@ def get_permission_role_counts():
                 return reply('success', 200, 'Permission role counts retrieved', counts)
 
     except Exception as error:
-        return reply('error', 500, str(error), '')
+        _logger.exception('RBAC operation failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
