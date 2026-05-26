@@ -1138,14 +1138,16 @@ def list_booking_requests():
     """List booking requests scoped by direction.
 
     Query params:
-        account_root  — required.
-        direction     — "incoming" (default), "outgoing", or "both".
+        account_root  — required unless direction=all.
+        direction     — "incoming" (default), "outgoing", "both", or "all".
 
             incoming: requests TO the caller (owner_root match) — the
                       review queue.
             outgoing: requests FROM the caller (requester_root match) —
                       "what I've asked for".
-            both:     union of both.
+            both:     union of both directions for the given account_root.
+            all:      every booking request (CMS operator view) — ignores
+                      account_root entirely.
 
         status        — optional filter (any BookingRequestStatus).
     """
@@ -1153,10 +1155,10 @@ def list_booking_requests():
     direction = (request.args.get("direction") or "incoming").lower()
     status_filter = request.args.get("status")
 
-    if not account_root:
-        return reply("error", 400, "account_root is required", "")
-    if direction not in ("incoming", "outgoing", "both"):
-        return reply("error", 400, "direction must be 'incoming', 'outgoing', or 'both'", "")
+    if direction not in ("incoming", "outgoing", "both", "all"):
+        return reply("error", 400, "direction must be 'incoming', 'outgoing', 'both', or 'all'", "")
+    if direction != "all" and not account_root:
+        return reply("error", 400, "account_root is required (unless direction=all)", "")
 
     where_clauses: list[str] = []
     params: list[Any] = []
@@ -1166,19 +1168,23 @@ def list_booking_requests():
     elif direction == "outgoing":
         where_clauses.append("requester_root = %s")
         params.append(account_root)
-    else:  # both
+    elif direction == "both":
         where_clauses.append("(owner_root = %s OR requester_root = %s)")
         params.extend([account_root, account_root])
+    # direction == "all" → no account filter, returns everything
 
     if status_filter:
         where_clauses.append("status = %s")
         params.append(status_filter)
 
-    sql = (
-        "SELECT * FROM dll_booking_requests "
-        "WHERE " + " AND ".join(where_clauses) + " "
-        "ORDER BY created_at DESC"
-    )
+    if where_clauses:
+        sql = (
+            "SELECT * FROM dll_booking_requests "
+            "WHERE " + " AND ".join(where_clauses) + " "
+            "ORDER BY created_at DESC"
+        )
+    else:
+        sql = "SELECT * FROM dll_booking_requests ORDER BY created_at DESC"
 
     try:
         dbconnect = _open_conn()
