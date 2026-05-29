@@ -32,6 +32,28 @@ def response_out(status, message, statusCode, data):
         "data": data
     }), statusCode
 
+
+def _fetch_variant(cursor, variant_uid):
+    """Return variant details dict from abi_product_variants, or None if not found."""
+    if not variant_uid:
+        return None
+    cursor.execute(
+        "SELECT variant_uid, variant_name, billing_type, billing_amount, billing_currency "
+        "FROM abi_product_variants WHERE variant_uid = %s",
+        (str(variant_uid),)
+    )
+    if cursor.rowcount == 0:
+        return None
+    row = cursor.fetchone()
+    return {
+        "variant_uid": row[0],
+        "variant_name": row[1],
+        "billing_type": row[2],
+        "billing_amount": float(row[3]),
+        "billing_currency": row[4]
+    }
+
+
 @_token_billing.route("/tokens/create", methods=["POST"])
 def CreateToken():
 
@@ -39,26 +61,33 @@ def CreateToken():
     _payload = request.get_json()
 
     _TokenName = _payload['data']['token_name']
-    _TokenType = _payload['data']['token_type'] #can be parameter token or dynamic
-    _TokenValidity = _payload['data']['token_validity'] #in seconds
-    _TokenCurrency = _payload['data']['token_currency'] #UGX or KES or RWF
-    _TokenParameters = _payload['data']['token_parameters'] #array object with parameters if token type is 'parameter' its optional if token type is dynamic
-    _TokenAmount = _payload['data']['token_amount'] #amount for the token
+    _TokenType = _payload['data']['token_type']  # 'parameter' or 'dynamic'
+    _Token_ProductVariant_UID = _payload['data']['token_product_variant_uid']
+    _TokenParameters = _payload['data']['token_parameters']  # optional array
     _TokenID = str(uuid.uuid4())
     _CreatedAt = datetime.now(timezone).strftime("%d-%m-%Y %I:%M:%S%p")
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
-            cursor.execute("SELECT id FROM dll_tokens_registry WHERE token_name=%s AND token_type=%s", (str(_TokenName), str(_TokenType),))
+            cursor.execute(
+                "SELECT id FROM dll_tokens_registry WHERE token_name=%s AND token_type=%s",
+                (str(_TokenName), str(_TokenType),)
+            )
 
-            if(cursor.rowcount == 0):
-                cursor.execute("INSERT INTO dll_tokens_registry (token_id, token_name, token_type, token_validity, token_currency, token_parameters, date_created, token_amount) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)", (_TokenID, _TokenName, _TokenType, _TokenValidity, _TokenCurrency, json.dumps(_TokenParameters), _CreatedAt, _TokenAmount,))
-
+            if cursor.rowcount == 0:
+                cursor.execute(
+                    "INSERT INTO dll_tokens_registry "
+                    "(token_id, token_name, token_type, token_product_variant_uid, token_parameters, date_created) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (_TokenID, _TokenName, _TokenType, str(_Token_ProductVariant_UID),
+                     json.dumps(_TokenParameters), _CreatedAt)
+                )
+                dbconnect.commit()
                 return response_out("success", "Token created successfully", 201, {"token_id": _TokenID})
 
-            elif(cursor.rowcount >= 1):
+            elif cursor.rowcount >= 1:
                 return response_out("error", "Token already exists", 409, "")
-            
+
 
 @_token_billing.route("/tokens", methods=["GET"])
 def ListTokens():
@@ -67,23 +96,27 @@ def ListTokens():
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
-            cursor.execute("SELECT * FROM dll_tokens_registry ORDER BY id DESC")
+            cursor.execute(
+                "SELECT token_id, token_name, token_type, token_parameters, date_created, token_product_variant_uid "
+                "FROM dll_tokens_registry ORDER BY id DESC"
+            )
 
-            if(cursor.rowcount == 0):
+            if cursor.rowcount == 0:
                 return response_out("error", "No tokens found", 404, [])
 
             tokens = cursor.fetchall()
             _tokensBusket = []
             for token in tokens:
+                _variant_uid = token[5]
+                variant = _fetch_variant(cursor, _variant_uid)
                 _tokensBusket.append({
-                    "token_id": token[8],
-                    "token_name": token[2],
-                    "token_type": token[1],
-                    "token_validity": token[3],
-                    "token_currency": token[6],
-                    "token_parameters": json.loads(token[7]),
-                    "date_created": token[5],
-                    "token_amount": token[4]
+                    "token_id": token[0],
+                    "token_name": token[1],
+                    "token_type": token[2],
+                    "token_parameters": json.loads(token[3]) if token[3] else [],
+                    "date_created": token[4],
+                    "token_product_variant_uid": _variant_uid,
+                    "variant": variant
                 })
             return response_out("success", "Tokens retrieved successfully", 200, _tokensBusket)
 
@@ -94,24 +127,30 @@ def GetSingleToken(token_id):
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
-            cursor.execute("SELECT * FROM dll_tokens_registry WHERE token_id=%s", (token_id,))
+            cursor.execute(
+                "SELECT token_id, token_name, token_type, token_parameters, date_created, token_product_variant_uid "
+                "FROM dll_tokens_registry WHERE token_id=%s",
+                (token_id,)
+            )
 
-            if(cursor.rowcount == 0):
+            if cursor.rowcount == 0:
                 return response_out("error", "Token not found", 404, [])
 
-            token = cursor.fetchone()
+            row = cursor.fetchone()
+            _variant_uid = row[5]
+            variant = _fetch_variant(cursor, _variant_uid)
+
             token = {
-                "token_id": token[8],
-                    "token_name": token[2],
-                    "token_type": token[1],
-                    "token_validity": token[3],
-                    "token_currency": token[6],
-                    "token_parameters": json.loads(token[7]),
-                    "date_created": token[5],
-                    "token_amount": token[4]
+                "token_id": row[0],
+                "token_name": row[1],
+                "token_type": row[2],
+                "token_parameters": json.loads(row[3]) if row[3] else [],
+                "date_created": row[4],
+                "token_product_variant_uid": _variant_uid,
+                "variant": variant
             }
             return response_out("success", "Token retrieved successfully", 200, token)
-        
+
 
 @_token_billing.route("/tokens/<string:token_id>", methods=["DELETE"])
 def DeleteToken(token_id):
@@ -121,11 +160,12 @@ def DeleteToken(token_id):
         with dbconnect.cursor() as cursor:
             cursor.execute("DELETE FROM dll_tokens_registry WHERE token_id=%s", (token_id,))
 
-            if(cursor.rowcount == 0):
+            if cursor.rowcount == 0:
                 return response_out("error", "Token not found", 404, [])
 
+            dbconnect.commit()
             return response_out("success", "Token deleted successfully", 200, [])
-        
+
 
 @_token_billing.route("/tokens/<string:token_id>", methods=["PUT"])
 def UpdateToken(token_id):
@@ -134,20 +174,25 @@ def UpdateToken(token_id):
 
     _TokenName = _payload['data']['token_name']
     _TokenType = _payload['data']['token_type']
-    _TokenValidity = _payload['data']['token_validity']
-    _TokenCurrency = _payload['data']['token_currency']
+    _Token_ProductVariant_UID = _payload['data']['token_product_variant_uid']
     _TokenParameters = _payload['data']['token_parameters']
-    _TokenAmount = _payload['data']['token_amount']
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
-            cursor.execute("UPDATE dll_tokens_registry SET token_name=%s, token_type=%s, token_validity=%s, token_currency=%s, token_parameters=%s, token_amount=%s WHERE token_id=%s", (_TokenName, _TokenType, _TokenValidity, _TokenCurrency, json.dumps(_TokenParameters), _TokenAmount, token_id))
+            cursor.execute(
+                "UPDATE dll_tokens_registry "
+                "SET token_name=%s, token_type=%s, token_product_variant_uid=%s, token_parameters=%s "
+                "WHERE token_id=%s",
+                (_TokenName, _TokenType, str(_Token_ProductVariant_UID),
+                 json.dumps(_TokenParameters), token_id)
+            )
 
-            if(cursor.rowcount == 0):
+            if cursor.rowcount == 0:
                 return response_out("error", "Token not found", 404, [])
 
+            dbconnect.commit()
             return response_out("success", "Token updated successfully", 200, [])
-        
+
 
 @_token_billing.route("/tokens/<string:client_uid>/balance", methods=["GET"])
 def ClientToken_Balance(client_uid):
@@ -155,73 +200,88 @@ def ClientToken_Balance(client_uid):
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
-            # First, check if client exists in dll_client_accounts
-            cursor.execute("SELECT client_uid, client_name FROM dll_client_accounts WHERE client_uid=%s", (client_uid,))
-            
-            if(cursor.rowcount == 0):
+            cursor.execute(
+                "SELECT client_uid, client_name FROM dll_client_accounts WHERE client_uid=%s",
+                (client_uid,)
+            )
+
+            if cursor.rowcount == 0:
                 return response_out("error", "Client not found", 404, {})
-            
+
             client_info = cursor.fetchone()
             client_name = client_info[1]
-            
-            # Now check for token accounts
-            cursor.execute("SELECT token_hours_left,token_hours_used,token_balance,token_billing_uid FROM dll_user_token_accounts WHERE client_uid=%s", (client_uid,))
 
-            if(cursor.rowcount == 0):
-                # Client exists but has no tokens allocated
+            cursor.execute(
+                "SELECT token_hours_left, token_hours_used, token_balance, token_billing_uid, token_used_units, token_units_left, token_status "
+                "FROM dll_user_token_accounts WHERE client_uid=%s",
+                (client_uid,)
+            )
+
+            if cursor.rowcount == 0:
                 return response_out("success", "Client has no tokens allocated", 200, {
                     "client_uid": client_uid,
                     "client_name": client_name,
-                    "token_hours_left": 0, 
+                    "token_hours_left": 0,
                     "token_hours_used": 0,
+                    "token_used_units": 0,
+                    "token_units_left": 0,
+                    "token_status": None,
                     "token_uid": None,
                     "token_name": "No tokens",
-                    "token_billing_uid": None
+                    "token_billing_uid": None,
+                    "variant": None
                 })
 
-            if(cursor.rowcount == 1):
-                token_balance = cursor.fetchone()
-                cursor.execute("SELECT token_name FROM dll_tokens_registry WHERE token_id=%s", (token_balance[2],))
-                token_name = None
-                if(cursor.rowcount == 1):
-                    token_name = cursor.fetchone()[0]
-                elif(cursor.rowcount == 0):
-                    token_name = 'Token Deleted'
+            def _resolve_token(cursor, token_uid):
+                """Return (token_name, variant_dict) for a token_id from dll_tokens_registry."""
+                cursor.execute(
+                    "SELECT token_name, token_product_variant_uid "
+                    "FROM dll_tokens_registry WHERE token_id=%s",
+                    (token_uid,)
+                )
+                if cursor.rowcount == 0:
+                    return "Token Deleted", None
+                row = cursor.fetchone()
+                variant = _fetch_variant(cursor, row[1])
+                return row[0], variant
 
-                _singleToken_Object = {
+            if cursor.rowcount == 1:
+                token_balance = cursor.fetchone()
+                token_name, variant = _resolve_token(cursor, token_balance[2])
+                return response_out("success", "Client token balance retrieved successfully", 200, {
                     "client_uid": client_uid,
                     "client_name": client_name,
-                    "token_hours_left": token_balance[0], 
+                    "token_hours_left": token_balance[0],
                     "token_hours_used": token_balance[1],
+                    "token_used_units": token_balance[4],
+                    "token_units_left": token_balance[5],
+                    "token_status": token_balance[6],
                     "token_uid": token_balance[2],
                     "token_name": token_name,
-                    "token_billing_uid": token_balance[3]
-                }
-                return response_out("success", "Client token balance retrieved successfully", 200, _singleToken_Object)
-            
-            elif(cursor.rowcount > 1):
+                    "token_billing_uid": token_balance[3],
+                    "variant": variant
+                })
+
+            elif cursor.rowcount > 1:
                 _tokens_existing = cursor.fetchall()
                 _runningTokens = []
                 for token in _tokens_existing:
-                   cursor.execute("SELECT token_name FROM dll_tokens_registry WHERE token_id=%s", (token[2],))
-                   token_name = None
-                   if(cursor.rowcount == 1):
-                       token_name = cursor.fetchone()[0]
-                   elif(cursor.rowcount == 0):
-                       token_name = 'Token Deleted'
-                   token = {
+                    token_name, variant = _resolve_token(cursor, token[2])
+                    _runningTokens.append({
                         "client_uid": client_uid,
                         "client_name": client_name,
                         "token_hours_left": token[0],
                         "token_hours_used": token[1],
+                        "token_used_units": token[4],
+                        "token_units_left": token[5],
+                        "token_status": token[6],
                         "token_uid": token[2],
                         "token_name": token_name,
-                        "token_billing_uid": token[3]
-                    }
-                   _runningTokens.append(token)
-                
+                        "token_billing_uid": token[3],
+                        "variant": variant
+                    })
                 return response_out("success", "Multiple tokens found", 200, _runningTokens)
-            
+
 
 #transfer token
 @_token_billing.route("/tokens/transfer", methods=["POST"])
@@ -235,31 +295,55 @@ def TransferToken():
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
-            cursor.execute("SELECT token_hours_left, token_balance FROM dll_user_token_accounts WHERE client_uid=%s AND token_billing_uid=%s", (_SourceClientUID, _TokenID))
+            cursor.execute(
+                "SELECT token_hours_left, token_balance FROM dll_user_token_accounts "
+                "WHERE client_uid=%s AND token_billing_uid=%s",
+                (_SourceClientUID, _TokenID)
+            )
 
-            if(cursor.rowcount == 0):
+            if cursor.rowcount == 0:
                 return response_out("error", "Source client or token not found", 404, [])
 
             _TransferToken_Details = cursor.fetchone()
             _SourceTokenHoursLeft = _TransferToken_Details[0]
             _SourceTokenUID = _TransferToken_Details[1]
 
-            cursor.execute("SELECT token_balance FROM dll_user_token_accounts WHERE client_uid=%s AND token_balance=%s AND token_status='expired'", (_DestinationClientUID, _SourceTokenUID))
-            if(cursor.rowcount == 0):
+            cursor.execute(
+                "SELECT token_balance FROM dll_user_token_accounts "
+                "WHERE client_uid=%s AND token_balance=%s AND token_status='expired'",
+                (_DestinationClientUID, _SourceTokenUID)
+            )
+            if cursor.rowcount == 0:
                 _TokenBilling_UID = str(uuid.uuid4())
-                cursor.execute("INSERT INTO dll_user_token_accounts (client_uid, token_balance, token_status, token_hours_used, token_hours_left, token_billing_uid) VALUES(%s, %s, %s, %s, %s, %s)", (_DestinationClientUID, _SourceTokenUID, 'active', 0, _SourceTokenHoursLeft, _TokenBilling_UID))
-                cursor.execute("DELETE FROM dll_user_token_accounts WHERE client_uid=%s AND token_billing_uid=%s", (_SourceClientUID, _TokenID))
-
+                cursor.execute(
+                    "INSERT INTO dll_user_token_accounts "
+                    "(client_uid, token_balance, token_status, token_hours_used, token_hours_left, token_billing_uid) "
+                    "VALUES(%s, %s, %s, %s, %s, %s)",
+                    (_DestinationClientUID, _SourceTokenUID, 'active', 0, _SourceTokenHoursLeft, _TokenBilling_UID)
+                )
+                cursor.execute(
+                    "DELETE FROM dll_user_token_accounts WHERE client_uid=%s AND token_billing_uid=%s",
+                    (_SourceClientUID, _TokenID)
+                )
+                dbconnect.commit()
                 return response_out("success", "Token transferred successfully", 200, [])
 
-            elif(cursor.rowcount == 1):
-
+            elif cursor.rowcount == 1:
                 _DestinationToken_Details = cursor.fetchone()
                 _DestinationTokenHoursLeft = _DestinationToken_Details[0]
 
-                if(_SourceTokenHoursLeft > 0):
-                    cursor.execute("UPDATE dll_user_token_accounts SET token_hours_left=%s WHERE ctid IN (SELECT ctid FROM dll_user_token_accounts WHERE client_uid=%s AND token_balance=%s AND token_status='expired' LIMIT 1)", (_DestinationTokenHoursLeft + _SourceTokenHoursLeft, _DestinationClientUID, _SourceTokenUID))
-                    cursor.execute("DELETE FROM dll_user_token_accounts WHERE client_uid=%s AND token_billing_uid=%s", (_SourceClientUID, _TokenID))
+                if _SourceTokenHoursLeft > 0:
+                    cursor.execute(
+                        "UPDATE dll_user_token_accounts SET token_hours_left=%s "
+                        "WHERE ctid IN (SELECT ctid FROM dll_user_token_accounts "
+                        "WHERE client_uid=%s AND token_balance=%s AND token_status='expired' LIMIT 1)",
+                        (_DestinationTokenHoursLeft + _SourceTokenHoursLeft, _DestinationClientUID, _SourceTokenUID)
+                    )
+                    cursor.execute(
+                        "DELETE FROM dll_user_token_accounts WHERE client_uid=%s AND token_billing_uid=%s",
+                        (_SourceClientUID, _TokenID)
+                    )
+                    dbconnect.commit()
                     return response_out("success", "Token transferred successfully", 200, [])
 
             return response_out("error", "Token transfer failed", 400, [])
@@ -276,34 +360,43 @@ def UpdateDevice_Subscription():
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
-            cursor.execute("SELECT token_hours_left FROM dll_user_token_accounts WHERE token_billing_uid=%s", (str(_NewToken_BillingUID),))
+            cursor.execute(
+                "SELECT token_hours_left FROM dll_user_token_accounts WHERE token_billing_uid=%s",
+                (str(_NewToken_BillingUID),)
+            )
 
-            if(cursor.rowcount == 1):
-                    
+            if cursor.rowcount == 1:
                 _TunnelData = cursor.fetchone()
                 _TokenHours_Left = _TunnelData[0]
 
-                if(int(_TokenHours_Left) >= 1):
-
+                if int(_TokenHours_Left) >= 1:
                     current_time = datetime.now(timezone).strftime("%I:%M:%S%p")
                     currentLocal_Date = datetime.now(timezone).strftime("%d-%m-%Y")
 
-                    cursor.execute("SELECT id FROM dll_device_subscriptions WHERE device_imei_number=%s", (str(_deviceImei),))
-                    
-                    if(cursor.rowcount == 1):
-                        cursor.execute("UPDATE dll_device_subscriptions SET subscription_status=%s, start_date=%s, start_counting_time=%s, token_billing_uid=%s WHERE device_imei_number=%s", ('active', str(currentLocal_Date), str(current_time), str(_NewToken_BillingUID), str(_deviceImei)))
+                    cursor.execute(
+                        "SELECT id FROM dll_device_subscriptions WHERE device_imei_number=%s",
+                        (str(_deviceImei),)
+                    )
 
+                    if cursor.rowcount == 1:
+                        cursor.execute(
+                            "UPDATE dll_device_subscriptions "
+                            "SET subscription_status=%s, start_date=%s, start_counting_time=%s, token_billing_uid=%s "
+                            "WHERE device_imei_number=%s",
+                            ('active', str(currentLocal_Date), str(current_time),
+                             str(_NewToken_BillingUID), str(_deviceImei))
+                        )
+                        dbconnect.commit()
                         return response_out("success", "Device Subscription Updated Successfully", 200, "")
-                    
-                    elif(cursor.rowcount == 0):
-                        
+
+                    elif cursor.rowcount == 0:
                         return response_out("error", "Device subscription not found", 404, "")
 
-                    elif(int(_TokenHours_Left) < 1):
-                        return response_out("error", "Token expired", 400, "")
+                elif int(_TokenHours_Left) < 1:
+                    return response_out("error", "Token expired", 400, "")
 
-                else:
-                    return response_out("error", "Token not found", 404, "")
+            else:
+                return response_out("error", "Token not found", 404, "")
 
 
 #pause token billing
@@ -316,25 +409,31 @@ def PauseSubscription():
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
-            cursor.execute("SELECT subscription_status FROM dll_device_subscriptions WHERE device_imei_number=%s", (str(_deviceImei),))
+            cursor.execute(
+                "SELECT subscription_status FROM dll_device_subscriptions WHERE device_imei_number=%s",
+                (str(_deviceImei),)
+            )
 
-            if(cursor.rowcount == 1):
-                _subscription_dataLink = cursor.fetchone()
-                _subscription_status = _subscription_dataLink[0]
+            if cursor.rowcount == 1:
+                _subscription_status = cursor.fetchone()[0]
 
-                if(_subscription_status == 'active'):
-                    cursor.execute("UPDATE dll_device_subscriptions SET subscription_status=%s WHERE device_imei_number=%s", ('paused', str(_deviceImei)))
+                if _subscription_status == 'active':
+                    cursor.execute(
+                        "UPDATE dll_device_subscriptions SET subscription_status=%s WHERE device_imei_number=%s",
+                        ('paused', str(_deviceImei))
+                    )
+                    dbconnect.commit()
                     return response_out("success", "Device Subscription Paused Successfully", 200, "")
-                
-                elif(_subscription_status == 'paused'):
+
+                elif _subscription_status == 'paused':
                     return response_out("error", "Device Subscription is already Paused", 400, "")
-                
-                elif(_subscription_status == 'expired'):
+
+                elif _subscription_status == 'expired':
                     return response_out("error", "Device Subscription is Expired", 400, "")
-            
-            elif(cursor.rowcount == 0):
+
+            elif cursor.rowcount == 0:
                 return response_out("error", "Device subscription not found", 404, "")
-            
+
 
 #restore token billing
 @_token_billing.route("/tokens/subscriptions/restore", methods=["POST"])
@@ -346,40 +445,74 @@ def RestoreSubscription():
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
-            cursor.execute("SELECT subscription_status FROM dll_device_subscriptions WHERE device_imei_number=%s", (str(_deviceImei),))
+            cursor.execute(
+                "SELECT subscription_status FROM dll_device_subscriptions WHERE device_imei_number=%s",
+                (str(_deviceImei),)
+            )
 
-            if(cursor.rowcount == 1):
-                _subscription_dataLink = cursor.fetchone()
-                _subscription_status = _subscription_dataLink[0]
+            if cursor.rowcount == 1:
+                _subscription_status = cursor.fetchone()[0]
 
-                if(_subscription_status == 'paused'):
-                    cursor.execute("SELECT token_billing_uid FROM dll_device_subscriptions WHERE device_imei_number=%s", (str(_deviceImei),))
-                    if(cursor.rowcount == 1):
-                        _AttachedToken_DataLink = cursor.fetchone()
-                        _NewToken_BillingUID = _AttachedToken_DataLink[0]
-                        
-                        cursor.execute("SELECT token_status FROM dll_user_token_accounts WHERE token_billing_uid=%s", (str(_NewToken_BillingUID),))
-                        if(cursor.rowcount == 1):
-                            _Token_DataLink = cursor.fetchone()
-                            _Token_Status = _Token_DataLink[0]
-                            if(_Token_Status == 'active'):
-                                cursor.execute("UPDATE dll_device_subscriptions SET subscription_status=%s WHERE device_imei_number=%s", ('active', str(_deviceImei)))
+                if _subscription_status == 'paused':
+                    cursor.execute(
+                        "SELECT token_billing_uid FROM dll_device_subscriptions WHERE device_imei_number=%s",
+                        (str(_deviceImei),)
+                    )
+                    if cursor.rowcount == 1:
+                        _NewToken_BillingUID = cursor.fetchone()[0]
+
+                        cursor.execute(
+                            "SELECT token_status FROM dll_user_token_accounts WHERE token_billing_uid=%s",
+                            (str(_NewToken_BillingUID),)
+                        )
+                        if cursor.rowcount == 1:
+                            _Token_Status = cursor.fetchone()[0]
+                            if _Token_Status == 'active':
+                                cursor.execute(
+                                    "UPDATE dll_device_subscriptions SET subscription_status=%s WHERE device_imei_number=%s",
+                                    ('active', str(_deviceImei))
+                                )
+                                dbconnect.commit()
                                 return response_out("success", "Device Subscription Restored Successfully", 200, "")
-                            
-                            elif(_Token_Status == 'expired'):
+
+                            elif _Token_Status == 'expired':
                                 return response_out("error", "Device Token is Expired", 400, "")
                         else:
                             return response_out("error", "Device Subscription Token Not Found For User Account", 400, "")
                     else:
                         return response_out("error", "Device Subscription Malfunctioning", 400, "")
-                
-                elif(_subscription_status == 'active'):
-                    return response_out("error", "Device Subscription is already Active", 400, "")
-                
-                elif(_subscription_status == 'expired'):
-                    return response_out("error", "Device Subscription is Expired", 400, "")
-            
-            elif(cursor.rowcount == 0):
-                return response_out("error", "Device subscription not found", 404, "")
-            
 
+                elif _subscription_status == 'active':
+                    return response_out("error", "Device Subscription is already Active", 400, "")
+
+                elif _subscription_status == 'expired':
+                    return response_out("error", "Device Subscription is Expired", 400, "")
+
+            elif cursor.rowcount == 0:
+                return response_out("error", "Device subscription not found", 404, "")
+
+
+@_token_billing.route("/subscriptions/device/status", methods=["POST"])
+def CheckSubscriptionStatus():
+    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    _payload = request.get_json()
+
+    _deviceImei = _payload['data']['device_imei']
+
+    with dbconnect:
+        with dbconnect.cursor() as cursor:
+            cursor.execute(
+                "SELECT subscription_status,start_date,start_counting_time FROM dll_device_subscriptions WHERE device_imei_number=%s",
+                (str(_deviceImei),)
+            )
+
+            if cursor.rowcount == 1:
+                _dataLink = cursor.fetchone()
+                _subscription_status = _dataLink[0]
+                _start_date = str(_dataLink[1])
+                _start_time = str(_dataLink[2])
+
+                return response_out("success", "Device Subscription Status Retrieved Successfully", 200, {"subscription_status": _subscription_status, "start_date": _start_date, "start_time": _start_time})
+
+            elif cursor.rowcount == 0:
+                return response_out("error", "Device subscription not found", 404, "")

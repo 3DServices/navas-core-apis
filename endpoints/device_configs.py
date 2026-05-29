@@ -5,6 +5,9 @@ import requests
 import json
 from flask import jsonify
 import datetime
+from zoneinfo import ZoneInfo
+
+_KLA = ZoneInfo("Africa/Kampala")
 import random
 from flask import current_app
 import base64
@@ -392,6 +395,33 @@ def _ensure_cassandra_keyspace(session: Session) -> None:
         session.set_keyspace(ks)
 
 
+def SubscriptionInitialize(ImeiNumber, TokenSubscriptionIdg):
+    dbconnect = psycopg2.connect(current_app.config["db_link"])
+
+    with dbconnect:
+        with dbconnect.cursor() as cursor:
+            cursor.execute("SELECT subscription_status FROM dll_device_subscriptions WHERE device_imei_number = %s AND token_billing_uid = %s;", (str(ImeiNumber), str(TokenSubscriptionIdg),))
+
+            if(cursor.rowcount > 0):
+                subscription_status_link = cursor.fetchone()
+                _current_subscription_status = subscription_status_link[0]
+
+                if(_current_subscription_status == 'active'):
+                    return 'token-in-use'
+                elif(_current_subscription_status == 'expired'):
+                    return 'token-expired'
+
+            elif(cursor.rowcount == 0):
+                now_kla    = datetime.datetime.now(_KLA)
+                today_str  = now_kla.date().isoformat()
+                start_time = now_kla.strftime("%H:%M:%S")
+                cursor.execute("INSERT INTO dll_device_subscriptions (device_imei_number, token_billing_uid, subscription_status, start_date, start_counting_time) VALUES(%s, %s, %s, %s, %s);", (str(ImeiNumber), str(TokenSubscriptionIdg), 'active', today_str, start_time))
+
+                cursor.execute("UPDATE dll_user_token_accounts SET token_status = %s WHERE token_billing_uid = %s;", ('active', str(TokenSubscriptionIdg),))
+
+                return 'success-proceed'
+    
+
 @device_config.route("/system32/configurations/new", methods=["POST"])
 def create_new_device_configuration():
     cassandra = get_cassandra_session()
@@ -414,21 +444,13 @@ def create_new_device_configuration():
     cfg_user = data["cfg_usr"]
 
     # 1) Notify payment service (now uses sanitized IMEI)
-    try:
-        payment_response = requests.post(
-            f"{current_app.config['base_url']}/system32/payment/update-imei",
-            json={"data": {"used_imei": imei, "payment_uid": data["payment_uid"]}},
-            headers={"Content-Type": "application/json"},
-            timeout=10,
-        )
-        payment_reply = payment_response.json() if payment_response.content else {}
-    except Exception as exc:
-        current_app.logger.exception("Payment update request failed")
-        return reply("error", 400, f"Payment update request failed: {str(exc)}", "")
-
-    if payment_response.status_code != 200 or payment_reply.get("status") != "success":
-        msg = payment_reply.get("message", "Payment update failed")
-        return reply("error", 400, msg, "")
+    subscription_result = SubscriptionInitialize(imei, data["payment_uid"])
+    if subscription_result == 'token-expired':
+        return reply("error", 400, "Subscription token is expired", "")
+    elif subscription_result == 'token-in-use':
+        return reply("error", 400, "Subscription token is already in use for this or another device", "")
+    elif subscription_result != 'success-proceed':
+        return reply("error", 400, f"Subscription initialization failed: {subscription_result}", "")
 
     # 2) Check if already configured (use sanitized IMEI)
     try:

@@ -44,7 +44,7 @@ def MoMoPayment_Charge(PhoneNumber, Country, Curreny, LocalAmount, PaymentRefera
 
 
 @finance_bp.route("/payments/tokens/buy", methods=["POST"])
-@require_permission('finance.create')
+@require_permission('finance.create.mobile_money_payment')
 def BuyTokens():
     try:
         _dbconnect = psycopg2.connect(current_app.config['db_link'])
@@ -75,17 +75,32 @@ def BuyTokens():
 
             with _dbconnect.cursor() as cursor:
                 cursor.execute(
-                    "SELECT token_currency,token_amount,token_validity FROM dll_tokens_registry WHERE token_id=%s",
+                    "SELECT token_product_variant_uid FROM dll_tokens_registry WHERE token_id=%s",
                     (str(_TokenNumber),)
                 )
 
                 if cursor.rowcount == 0:
                     return reply("error", 400, "Billing Token Not Found", "")
 
-                _TokendataTunnel = cursor.fetchone()
-                _TokenPaymentAmount = _TokendataTunnel[1]
-                _TokenPaymentCurrency = _TokendataTunnel[0].upper()
-                _TokenValidity = _TokendataTunnel[2]
+                _token_row = cursor.fetchone()
+                _variant_uid = _token_row[0]
+
+                if not _variant_uid:
+                    return reply("error", 400, "Token has no billing variant configured", "")
+
+                cursor.execute(
+                    "SELECT billing_amount, billing_currency, billing_type "
+                    "FROM abi_product_variants WHERE variant_uid=%s",
+                    (str(_variant_uid),)
+                )
+
+                if cursor.rowcount == 0:
+                    return reply("error", 400, "Token Billing Variant Not Found", "")
+
+                _variant_row = cursor.fetchone()
+                _TokenPaymentAmount = _variant_row[0]
+                _TokenPaymentCurrency = str(_variant_row[1]).upper()
+                _TokenValidity = _variant_row[2]
 
             if _TokenPaymentCurrency == 'KES':
                 _LocalCountry = 'kenya'
@@ -209,6 +224,32 @@ def TransactionUpdate():
     except Exception as error:
         return reply('error', 500, str(error), "")
 
+
+@finance_bp.route("/tokens/special/authorize", methods=["POST"])
+@require_permission('finance.tokens.special_authorize')
+def SpecialTokenAuthorization():
+    try:
+        _dbconnect = psycopg2.connect(current_app.config['db_link'])
+        _payload = request.get_json()
+
+        _TokenUID_Authorized = _payload['data']['token_uid']
+        _QuantityAuthorized = _payload['data']['quantity_authorized']
+        _ClientUID_Authorized = _payload['data']['client_uid']
+
+        if(len(_TokenUID_Authorized) < 0) and (len(_QuantityAuthorized) < 0) and (len(_ClientUID_Authorized) < 0):
+            return reply('error', 400, 'Missing required fields: token_uid, quantity_authorized, client_uid', '')
+        
+        with _dbconnect:
+            with _dbconnect.cursor() as cursor:
+                for i in range(int(_QuantityAuthorized)):
+                    _TokenBillingUID = str(uuid.uuid4())
+                    cursor.execute("INSERT INTO dll_user_token_accounts (client_uid, token_balance, token_status, token_hours_used, token_hours_left, token_billing_uid, token_units_left, token_used_units) VALUES(%s, %s, %s, %s, %s, %s, %s, %s)", (_ClientUID_Authorized, _TokenUID_Authorized, 'new', 'column deprecated use token_used_units column', 'column deprecated use token_units_left column', _TokenBillingUID, 'units_unfined_waiting_for_first_use', 'units_unfined_waiting_for_first_use',))
+
+        return reply('success', 200, 'Token(s) Authorized SuccessFully', '')
+
+
+    except Exception as error:
+        return reply('error', 500, str(error), "")
 
 #get transactions
 @finance_bp.route("/payments/transactions/<transaction_owner>/list", methods=["GET"])
