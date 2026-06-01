@@ -1651,6 +1651,65 @@ def download_trips_report(access_file):
         return str(e), 500
     
 
+# ── Delete a report (customer can only delete their own) ────────────────────
+@data_stream.route("/data-stream/reports/<report_uid>/delete", methods=["DELETE"])
+def delete_report(report_uid):
+    """
+    Delete a report record by its request_uid.
+    Security: verifies report_caller matches the owner_uid passed in
+    the request body so customers can only delete their own reports.
+    """
+    try:
+        dbconnect = psycopg2.connect(current_app.config['db_link'])
+
+        _payload = request.get_json(force=True)
+        owner_uid = _payload.get('owner_uid', '')
+
+        if len(str(report_uid)) < 5 or len(str(owner_uid)) < 5:
+            return reply('error', 400, 'Invalid request parameters', '')
+
+        with dbconnect:
+            with dbconnect.cursor() as cursor:
+                # Only delete if report_caller matches the requesting user
+                cursor.execute(
+                    "DELETE FROM dll_reports_downloadable_files WHERE request_uid=%s AND report_caller=%s",
+                    (str(report_uid), str(owner_uid))
+                )
+
+                if cursor.rowcount >= 1:
+                    return reply('success', 200, 'Report deleted successfully', '')
+                else:
+                    return reply('error', 404, 'Report not found or access denied', '')
+
+    except Exception as error:
+        return reply('error', 500, str(error), '')
+
+
+# ── Get available report types ──────────────────────────────────────────────
+@data_stream.route("/data-stream/reports/types/available", methods=["GET"])
+def get_available_report_types():
+    """
+    Returns the list of report types the system supports.
+    This allows the frontend to dynamically render report type options
+    without hardcoding them — new types can be added here.
+    """
+    try:
+        report_types = [
+            {"key": "trips",          "label": "Trips",            "icon": "🚗", "category": "movement"},
+            {"key": "overspeeding",   "label": "Overspeeding",     "icon": "⚡", "category": "safety"},
+            {"key": "fuel",           "label": "Fuel Level",       "icon": "⛽", "category": "maintenance"},
+            {"key": "geozone",        "label": "Geofence Breach",  "icon": "📍", "category": "safety"},
+            {"key": "night_driving",  "label": "Night Driving",    "icon": "🌙", "category": "safety"},
+            {"key": "IDILING",        "label": "Idling",           "icon": "🅿", "category": "state"},
+            {"key": "PARKING",        "label": "Parking",          "icon": "🅿️", "category": "state"},
+        ]
+
+        return reply('success', 200, 'Report types retrieved', report_types)
+
+    except Exception as error:
+        return reply('error', 500, str(error), '')
+
+
 #get parameters that are to be displayed to usr
 @data_stream.route("/data-stream/configs/<device_imei>/display-params", methods=["GET"])
 def get_params(device_imei):

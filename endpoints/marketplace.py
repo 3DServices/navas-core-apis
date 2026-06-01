@@ -3,15 +3,24 @@ endpoints/marketplace.py — VEBA Marketplace listings + lifecycle.
 
 Routes mounted by this blueprint (gated by catalog permissions):
 
-    POST /veba/listings/create                 can_list_asset_on_marketplace
-    GET  /veba/listings                        can_browse_asset_listings
-    GET  /veba/listings/<uid>                  can_browse_asset_listings
-    GET  /veba/listings/asset/<asset_uid>      can_view_unit_digital_twin
-    PUT  /veba/listings/<uid>/update           can_edit_asset_listing
-    PUT  /veba/listings/<uid>/pause            can_edit_asset_listing
-    PUT  /veba/listings/<uid>/reactivate       can_edit_asset_listing
-    PUT  /veba/listings/<uid>/archive          can_edit_asset_listing
-    DELETE /veba/listings/<uid>/delete         can_edit_asset_listing
+    POST /veba/listings/create                       can_list_asset_on_marketplace
+    GET  /veba/listings                              can_browse_asset_listings
+    GET  /veba/listings/<uid>                        can_browse_asset_listings
+    GET  /veba/listings/asset/<asset_uid>            can_view_unit_digital_twin
+    PUT  /veba/listings/<uid>/update                 can_edit_asset_listing
+    PUT  /veba/listings/<uid>/pause                  can_edit_asset_listing
+    PUT  /veba/listings/<uid>/reactivate             can_edit_asset_listing
+    PUT  /veba/listings/<uid>/archive                can_edit_asset_listing
+    DELETE /veba/listings/<uid>/delete               can_edit_asset_listing
+
+    POST /veba/booking-requests/create               can_book_asset
+    GET  /veba/booking-requests                      can_view_booking
+    PUT  /veba/booking-requests/<uid>/approve         can_approve_booking_request
+    PUT  /veba/booking-requests/<uid>/reject          can_reject_booking_request
+    PUT  /veba/booking-requests/<uid>/cancel          can_book_asset
+    PUT  /veba/booking-requests/<uid>/fulfill         can_approve_booking_request
+    PUT  /veba/booking-requests/<uid>/archive         can_archive_booking_request
+    DELETE /veba/booking-requests/<uid>/delete        can_delete_booking_request
 
 Conventions:
   * Standard reply() envelope: { status, message, data }.
@@ -1562,7 +1571,7 @@ def cancel_booking_request(request_uid: str):
 def fulfill_booking_request(request_uid: str):
     """Owner marks an approved booking request as fulfilled.
 
-    Only approved requests can transition to fulfilled — the booking has
+    Only approved requests can transition to fulfilled �� the booking has
     been completed and the asset returned (or the service delivered).
     """
     account_root = g.current_user.get("account_root", "")
@@ -1577,3 +1586,144 @@ def fulfill_booking_request(request_uid: str):
         allowed_from="approved",
         ownership_check="owner",
     )
+
+
+# ----------------------------------------------------------------------
+# PUT /veba/booking-requests/<uid>/archive  (CMS operator archives)
+# ----------------------------------------------------------------------
+
+@marketplace_bp.route("/veba/booking-requests/<request_uid>/archive", methods=["PUT"])
+@require_permission("can_archive_booking_request")
+def archive_booking_request(request_uid: str):
+    """CMS operator archives a resolved booking request.
+
+    Only non-pending requests can be archived (approved, rejected,
+    cancelled, fulfilled). Archiving soft-hides the request from the
+    active queue without deleting it — it can still be queried with
+    status=archived.
+    """
+    account_root = g.current_user.get("account_root", "")
+    actor_uid    = g.current_user.get("account_uid", "")
+
+    try:
+        dbconnect = _open_conn()
+        with dbconnect:
+            with dbconnect.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT request_uid, owner_root, requester_root, status, listing_uid, asset_uid
+                    FROM dll_booking_requests
+                    WHERE request_uid = %s
+                    """,
+                    (str(request_uid),),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return reply("error", 404, "Booking request not found", "")
+
+                if row["status"] == "pending":
+                    return reply(
+                        "error", 409,
+                        "Cannot archive a pending request — approve, reject, or cancel it first",
+                        "",
+                    )
+                if row["status"] == "archived":
+                    return reply("error", 409, "Request is already archived", "")
+
+                cursor.execute(
+                    """
+                    UPDATE dll_booking_requests
+                    SET status = 'archived', updated_at = NOW()
+                    WHERE request_uid = %s
+                    """,
+                    (str(request_uid),),
+                )
+
+        log_audit_event(
+            actor=actor_uid,
+            action="ARCHIVE_BOOKING",
+            obj=f"Booking request {request_uid} archived",
+            domain="VEBA",
+            severity="Info",
+            ip_address=request.remote_addr,
+            meta={
+                "request_uid": request_uid,
+                "listing_uid": row["listing_uid"],
+                "previous_status": row["status"],
+            },
+        )
+        return reply("success", 200, "Booking request archived", {"request_uid": request_uid, "status": "archived"})
+
+    except Exception as err:
+        _logger.exception("archive_booking_request(%s) failed: %s", request_uid, err)
+        return reply("error", 500, "Could not archive booking request", "")
+    finally:
+        try:
+            dbconnect.close()
+        except Exception:
+            pass
+
+
+# ----------------------------------------------------------------------
+# DELETE /veba/booking-requests/<uid>/delete  (CMS operator deletes)
+# ----------------------------------------------------------------------
+
+@marketplace_bp.route("/veba/booking-requests/<request_uid>/delete", methods=["DELETE"])
+@require_permission("can_delete_booking_request")
+def delete_booking_request(request_uid: str):
+    """CMS operator permanently deletes a booking request.
+
+    This is a hard delete — the record is removed from the database.
+    Intended for cleaning up spam, test data, or invalid requests.
+    All statuses are deletable (including pending).
+    """
+    account_root = g.current_user.get("account_root", "")
+    actor_uid    = g.current_user.get("account_uid", "")
+
+    try:
+        dbconnect = _open_conn()
+        with dbconnect:
+            with dbconnect.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT request_uid, owner_root, requester_root, status, listing_uid, asset_uid
+                    FROM dll_booking_requests
+                    WHERE request_uid = %s
+                    """,
+                    (str(request_uid),),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return reply("error", 404, "Booking request not found", "")
+
+                cursor.execute(
+                    "DELETE FROM dll_booking_requests WHERE request_uid = %s",
+                    (str(request_uid),),
+                )
+
+        log_audit_event(
+            actor=actor_uid,
+            action="DELETE_BOOKING",
+            obj=f"Booking request {request_uid} permanently deleted",
+            domain="VEBA",
+            severity="Alarm",
+            ip_address=request.remote_addr,
+            meta={
+                "request_uid":    request_uid,
+                "listing_uid":    row["listing_uid"],
+                "asset_uid":      row["asset_uid"],
+                "previous_status": row["status"],
+                "owner_root":     row["owner_root"],
+                "requester_root": row["requester_root"],
+            },
+        )
+        return reply("success", 200, "Booking request deleted", {"request_uid": request_uid})
+
+    except Exception as err:
+        _logger.exception("delete_booking_request(%s) failed: %s", request_uid, err)
+        return reply("error", 500, "Could not delete booking request", "")
+    finally:
+        try:
+            dbconnect.close()
+        except Exception:
+            pass
