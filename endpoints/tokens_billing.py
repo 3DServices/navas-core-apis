@@ -18,7 +18,10 @@ import string
 import pytz
 from datetime import datetime
 from .globals import SubscriptionManager
+from zoneinfo import ZoneInfo
+from .globals import require_permission
 
+_KLA = ZoneInfo("Africa/Kampala")
 
 
 _token_billing = Blueprint("TokenBilling", __name__)
@@ -55,6 +58,7 @@ def _fetch_variant(cursor, variant_uid):
 
 
 @_token_billing.route("/tokens/create", methods=["POST"])
+@require_permission('tokens.create')
 def CreateToken():
 
     dbconnect = psycopg2.connect(current_app.config['db_link'])
@@ -153,6 +157,7 @@ def GetSingleToken(token_id):
 
 
 @_token_billing.route("/tokens/<string:token_id>", methods=["DELETE"])
+@require_permission('tokens.delete')
 def DeleteToken(token_id):
     dbconnect = psycopg2.connect(current_app.config['db_link'])
 
@@ -168,6 +173,7 @@ def DeleteToken(token_id):
 
 
 @_token_billing.route("/tokens/<string:token_id>", methods=["PUT"])
+@require_permission('tokens.update')
 def UpdateToken(token_id):
     dbconnect = psycopg2.connect(current_app.config['db_link'])
     _payload = request.get_json()
@@ -195,6 +201,7 @@ def UpdateToken(token_id):
 
 
 @_token_billing.route("/tokens/<string:client_uid>/balance", methods=["GET"])
+@require_permission('tokens.view_balance')
 def ClientToken_Balance(client_uid):
     dbconnect = psycopg2.connect(current_app.config['db_link'])
 
@@ -493,6 +500,7 @@ def RestoreSubscription():
 
 
 @_token_billing.route("/subscriptions/device/status", methods=["POST"])
+@require_permission('subscriptions.view_status')
 def CheckSubscriptionStatus():
     dbconnect = psycopg2.connect(current_app.config['db_link'])
     _payload = request.get_json()
@@ -502,7 +510,7 @@ def CheckSubscriptionStatus():
     with dbconnect:
         with dbconnect.cursor() as cursor:
             cursor.execute(
-                "SELECT subscription_status,start_date,start_counting_time FROM dll_device_subscriptions WHERE device_imei_number=%s",
+                "SELECT subscription_status,start_date,start_counting_time FROM dll_device_subscriptions WHERE device_imei_number=%s AND subscription_status IN ('active', 'paused')",
                 (str(_deviceImei),)
             )
 
@@ -516,3 +524,51 @@ def CheckSubscriptionStatus():
 
             elif cursor.rowcount == 0:
                 return response_out("error", "Device subscription not found", 404, "")
+            
+@_token_billing.route("/subscriptions/device/renew", methods=["POST"])
+@require_permission('subscriptions.renew')
+def RenewSubscription():
+    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    _payload = request.get_json()
+
+    _deviceImei = _payload['data']['device_imei']
+    _token_billing_uid = _payload['data']['token_billing_uid']
+
+    with dbconnect:
+        with dbconnect.cursor() as cursor:
+            cursor.execute(
+                "SELECT subscription_status FROM dll_device_subscriptions WHERE device_imei_number=%s AND subscription_status IN ('expired', 'active')",
+                (str(_deviceImei),)
+            )
+
+            if cursor.rowcount == 1:
+                    now_kla    = datetime.now(_KLA)
+                    current_time = now_kla.strftime("%H:%M:%S")
+                    currentLocal_Date = now_kla.date().isoformat()
+                    
+                    cursor.execute("UPDATE dll_user_token_accounts SET token_status = %s WHERE token_billing_uid = %s;", ('active', str(_token_billing_uid),))
+
+                    cursor.execute("UPDATE dll_device_subscriptions SET subscription_status = %s WHERE device_imei_number = %s", ('depleted', str(_deviceImei),))
+
+                    cursor.execute(
+                        "INSERT INTO dll_device_subscriptions (subscription_status, start_date, start_counting_time, device_imei_number, token_billing_uid) VALUES (%s, %s, %s, %s, %s)",
+                        ('active', str(currentLocal_Date), str(current_time), str(_deviceImei), str(_token_billing_uid),)
+                    )
+                    dbconnect.commit()
+                    return response_out("success", "Device Subscription Renewed Successfully", 200, "")
+
+            elif cursor.rowcount == 0:
+                    now_kla    = datetime.now(_KLA)
+                    current_time = now_kla.strftime("%H:%M:%S")
+                    currentLocal_Date = now_kla.date().isoformat()
+                    
+                    cursor.execute("UPDATE dll_user_token_accounts SET token_status = %s WHERE token_billing_uid = %s;", ('active', str(_token_billing_uid),))
+
+                    cursor.execute("UPDATE dll_device_subscriptions SET subscription_status = %s WHERE device_imei_number = %s", ('depleted', str(_deviceImei),))
+
+                    cursor.execute(
+                        "INSERT INTO dll_device_subscriptions (subscription_status, start_date, start_counting_time, device_imei_number, token_billing_uid) VALUES (%s, %s, %s, %s, %s)",
+                        ('active', str(currentLocal_Date), str(current_time), str(_deviceImei), str(_token_billing_uid),)
+                    )
+                    dbconnect.commit()
+                    return response_out("success", "Device Subscription Started Successfully", 200, "")
