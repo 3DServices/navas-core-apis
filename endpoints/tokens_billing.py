@@ -28,6 +28,31 @@ _token_billing = Blueprint("TokenBilling", __name__)
 
 timezone = pytz.timezone('Africa/Nairobi')
 
+_VALID_TYPES = {
+    'time', 'parameter', 'event', 'volume',
+    'distance', 'video', 'conditional', 'action', 'compliance'
+}
+_VALID_UNITS = {
+    'hour', 'unit', 'event', 'km', 'meter',
+    'mb', 'image', 'command', 'report', 'period', 'inference'
+}
+_VALID_TRIGGERS = {
+    'continuous', 'on_read', 'on_event', 'on_distance',
+    'on_threshold', 'on_command', 'on_schedule', 'on_consume'
+}
+_VALID_SCOPES = {'asset', 'driver', 'fleet', 'shipment'}
+
+_DEFAULT_UNIT = {
+    'time': 'hour', 'parameter': 'unit', 'event': 'event',
+    'volume': 'mb', 'distance': 'km', 'video': 'image',
+    'conditional': 'event', 'action': 'command', 'compliance': 'report',
+}
+_DEFAULT_TRIGGER = {
+    'time': 'continuous', 'parameter': 'on_read', 'event': 'on_event',
+    'volume': 'on_consume', 'distance': 'on_distance', 'video': 'on_consume',
+    'conditional': 'on_threshold', 'action': 'on_command', 'compliance': 'on_schedule',
+}
+
 def response_out(status, message, statusCode, data):
     return jsonify({
         "status": status,
@@ -60,16 +85,31 @@ def _fetch_variant(cursor, variant_uid):
 @_token_billing.route("/tokens/create", methods=["POST"])
 @require_permission('tokens.create')
 def CreateToken():
-
     dbconnect = psycopg2.connect(current_app.config['db_link'])
     _payload = request.get_json()
+    data = _payload['data']
 
-    _TokenName = _payload['data']['token_name']
-    _TokenType = _payload['data']['token_type']  # 'parameter' or 'dynamic'
-    _Token_ProductVariant_UID = _payload['data']['token_product_variant_uid']
-    _TokenParameters = _payload['data']['token_parameters']  # optional array
-    _TokenID = str(uuid.uuid4())
-    _CreatedAt = datetime.now(timezone).strftime("%d-%m-%Y %I:%M:%S%p")
+    _TokenName            = data['token_name']
+    _TokenType            = data['token_type']
+    _Token_ProductVariant = data['token_product_variant_uid']
+    _TokenParameters      = data.get('token_parameters', [])
+    _BillingUnit          = data.get('billing_unit') or _DEFAULT_UNIT.get(_TokenType)
+    _BillingTrigger       = data.get('billing_trigger') or _DEFAULT_TRIGGER.get(_TokenType)
+    _BillingConditions    = data.get('billing_conditions', [])
+    _BillingScope         = data.get('billing_scope', 'asset')
+    _TokenID              = str(uuid.uuid4())
+    _CreatedAt            = datetime.now(timezone).strftime("%d-%m-%Y %I:%M:%S%p")
+
+    if _TokenType not in _VALID_TYPES:
+        return response_out("error", f"Invalid token_type. Allowed: {sorted(_VALID_TYPES)}", 400, "")
+    if _BillingUnit and _BillingUnit not in _VALID_UNITS:
+        return response_out("error", f"Invalid billing_unit. Allowed: {sorted(_VALID_UNITS)}", 400, "")
+    if _BillingTrigger and _BillingTrigger not in _VALID_TRIGGERS:
+        return response_out("error", f"Invalid billing_trigger. Allowed: {sorted(_VALID_TRIGGERS)}", 400, "")
+    if _BillingScope not in _VALID_SCOPES:
+        return response_out("error", f"Invalid billing_scope. Allowed: {sorted(_VALID_SCOPES)}", 400, "")
+    if _TokenType == 'conditional' and not _BillingConditions:
+        return response_out("error", "billing_conditions is required for conditional tokens", 400, "")
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
@@ -78,19 +118,20 @@ def CreateToken():
                 (str(_TokenName), str(_TokenType),)
             )
 
-            if cursor.rowcount == 0:
-                cursor.execute(
-                    "INSERT INTO dll_tokens_registry "
-                    "(token_id, token_name, token_type, token_product_variant_uid, token_parameters, date_created) "
-                    "VALUES (%s, %s, %s, %s, %s, %s)",
-                    (_TokenID, _TokenName, _TokenType, str(_Token_ProductVariant_UID),
-                     json.dumps(_TokenParameters), _CreatedAt)
-                )
-                dbconnect.commit()
-                return response_out("success", "Token created successfully", 201, {"token_id": _TokenID})
-
-            elif cursor.rowcount >= 1:
+            if cursor.rowcount >= 1:
                 return response_out("error", "Token already exists", 409, "")
+
+            cursor.execute(
+                "INSERT INTO dll_tokens_registry "
+                "(token_id, token_name, token_type, token_product_variant_uid, token_parameters, "
+                " billing_unit, billing_trigger, billing_conditions, billing_scope, date_created) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (_TokenID, _TokenName, _TokenType, str(_Token_ProductVariant),
+                 json.dumps(_TokenParameters), _BillingUnit, _BillingTrigger,
+                 json.dumps(_BillingConditions), _BillingScope, _CreatedAt)
+            )
+            dbconnect.commit()
+            return response_out("success", "Token created successfully", 201, {"token_id": _TokenID})
 
 
 @_token_billing.route("/tokens", methods=["GET"])
@@ -101,7 +142,8 @@ def ListTokens():
     with dbconnect:
         with dbconnect.cursor() as cursor:
             cursor.execute(
-                "SELECT token_id, token_name, token_type, token_parameters, date_created, token_product_variant_uid "
+                "SELECT token_id, token_name, token_type, token_parameters, date_created, "
+                "token_product_variant_uid, billing_unit, billing_trigger, billing_conditions, billing_scope "
                 "FROM dll_tokens_registry ORDER BY id DESC"
             )
 
@@ -120,6 +162,10 @@ def ListTokens():
                     "token_parameters": json.loads(token[3]) if token[3] else [],
                     "date_created": token[4],
                     "token_product_variant_uid": _variant_uid,
+                    "billing_unit": token[6],
+                    "billing_trigger": token[7],
+                    "billing_conditions": token[8] if token[8] is not None else [],
+                    "billing_scope": token[9],
                     "variant": variant
                 })
             return response_out("success", "Tokens retrieved successfully", 200, _tokensBusket)
@@ -132,7 +178,8 @@ def GetSingleToken(token_id):
     with dbconnect:
         with dbconnect.cursor() as cursor:
             cursor.execute(
-                "SELECT token_id, token_name, token_type, token_parameters, date_created, token_product_variant_uid "
+                "SELECT token_id, token_name, token_type, token_parameters, date_created, "
+                "token_product_variant_uid, billing_unit, billing_trigger, billing_conditions, billing_scope "
                 "FROM dll_tokens_registry WHERE token_id=%s",
                 (token_id,)
             )
@@ -151,6 +198,10 @@ def GetSingleToken(token_id):
                 "token_parameters": json.loads(row[3]) if row[3] else [],
                 "date_created": row[4],
                 "token_product_variant_uid": _variant_uid,
+                "billing_unit": row[6],
+                "billing_trigger": row[7],
+                "billing_conditions": row[8] if row[8] is not None else [],
+                "billing_scope": row[9],
                 "variant": variant
             }
             return response_out("success", "Token retrieved successfully", 200, token)
@@ -178,19 +229,29 @@ def UpdateToken(token_id):
     dbconnect = psycopg2.connect(current_app.config['db_link'])
     _payload = request.get_json()
 
-    _TokenName = _payload['data']['token_name']
-    _TokenType = _payload['data']['token_type']
-    _Token_ProductVariant_UID = _payload['data']['token_product_variant_uid']
-    _TokenParameters = _payload['data']['token_parameters']
+    data = _payload['data']
+    _TokenName            = data['token_name']
+    _TokenType            = data['token_type']
+    _Token_ProductVariant = data['token_product_variant_uid']
+    _TokenParameters      = data.get('token_parameters', [])
+    _BillingUnit          = data.get('billing_unit') or _DEFAULT_UNIT.get(_TokenType)
+    _BillingTrigger       = data.get('billing_trigger') or _DEFAULT_TRIGGER.get(_TokenType)
+    _BillingConditions    = data.get('billing_conditions', [])
+    _BillingScope         = data.get('billing_scope', 'asset')
+
+    if _TokenType not in _VALID_TYPES:
+        return response_out("error", f"Invalid token_type. Allowed: {sorted(_VALID_TYPES)}", 400, "")
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
             cursor.execute(
                 "UPDATE dll_tokens_registry "
-                "SET token_name=%s, token_type=%s, token_product_variant_uid=%s, token_parameters=%s "
+                "SET token_name=%s, token_type=%s, token_product_variant_uid=%s, token_parameters=%s, "
+                "    billing_unit=%s, billing_trigger=%s, billing_conditions=%s, billing_scope=%s "
                 "WHERE token_id=%s",
-                (_TokenName, _TokenType, str(_Token_ProductVariant_UID),
-                 json.dumps(_TokenParameters), token_id)
+                (_TokenName, _TokenType, str(_Token_ProductVariant),
+                 json.dumps(_TokenParameters), _BillingUnit, _BillingTrigger,
+                 json.dumps(_BillingConditions), _BillingScope, token_id)
             )
 
             if cursor.rowcount == 0:
