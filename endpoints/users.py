@@ -82,7 +82,7 @@ def create_user():
             RootAccount = payload_data['data']['root_account']
             raw_password = payload_data['data']['password']
             Password = bcrypt.hashpw(raw_password.encode(), bcrypt.gensalt()).decode()
-            BillingType = payload_data['data']['billing_type']
+            BillingType = "column_deprecated_use_billing_type_instead"
 
             with dbconnect:
                 with dbconnect.cursor() as cursor:
@@ -132,7 +132,7 @@ def create_user():
 
     except Exception as error:
         logging.getLogger('users').exception('Operation failed: %s', error)
-        return reply('error', 500, 'An internal error occurred', '')
+        return reply('error', 500, 'An internal error occurred', error)
 
 
 
