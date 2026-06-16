@@ -51,5 +51,5 @@ JWT_REFRESH_EXPIRY_DAYS = int(os.environ.get("JWT_REFRESH_EXPIRY_DAYS", "7"))
 # CORS — allowed origins for credential-bearing requests
 CORS_ORIGINS = os.environ.get(
     "CORS_ORIGINS",
-    "http://localhost:5173,http://localhost:3000,https://narvas.3dservices.co.ug,https://cms.3dservices.net",
+    "http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:3000,https://narvas.3dservices.co.ug,https://cms.3dservices.net",
 ).split(",")
