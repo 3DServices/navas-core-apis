@@ -1,0 +1,33 @@
+-- ============================================================================
+-- 021: Grant ALL catalog permissions for the 9 customer Oliwa modules
+-- ============================================================================
+-- Extends migration 020 (which added 10 VEBA + 3 geofence action perms).
+-- Now grants every action permission from ALL catalog modules mapped to the
+-- customer's 9 Oliwa pages:
+--
+--   View Permission          → Catalog Module
+--   ─────────────────────────────────────────────────────
+--   (aegis landing)          → Dashboards & BI Studio        (11 perms)
+--   live.monitoring.view     → NOC & Network Operations      (18 perms)
+--   track.playback.view      → Security & HIC Controls       (17 perms)
+--   reports.view             → Reports & Alerts Studio        (8 perms)
+--   geofences.view           → Geo-Zones & POIs              (15 perms)
+--   events.view              → Device Lifecycle & Firmware     (6 perms)
+--   sim.view                 → Payments & Statements          (13 perms)
+--   veba.view                → VEBA Booking & Escrow + Veba Booking (25 perms)
+--   rbac.view                → Users & Permissions            (18 perms)
+--   audit.view               → Trip Replay & Audit           (10 perms)
+--
+-- This migration resolves permission names → permission_uids at runtime
+-- because UIDs may differ between environments.
+--
+-- Idempotent: ON CONFLICT ... DO NOTHING on all inserts.
+-- ============================================================================
+
+-- The role_uid for customer_tracker in production DB:
+-- 5a7370d7-eff6-4a22-8a55-fa55cc9727f1
+-- (looked up by: SELECT role_uid FROM dll_roles WHERE role_name = 'customer_tracker')
+
+-- This SQL is applied via the temp endpoint /temp_migrate_021 which
+-- resolves names → UIDs dynamically.
+-- See app.py for the endpoint code.

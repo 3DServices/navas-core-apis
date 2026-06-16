@@ -3,14 +3,24 @@ endpoints/marketplace.py — VEBA Marketplace listings + lifecycle.
 
 Routes mounted by this blueprint (gated by catalog permissions):
 
-    POST /veba/listings/create                 can_list_asset_on_marketplace
-    GET  /veba/listings                        can_browse_asset_listings
-    GET  /veba/listings/<uid>                  can_browse_asset_listings
-    GET  /veba/listings/asset/<asset_uid>      can_view_unit_digital_twin
-    PUT  /veba/listings/<uid>/update           can_edit_asset_listing
-    PUT  /veba/listings/<uid>/pause            can_edit_asset_listing
-    PUT  /veba/listings/<uid>/reactivate       can_edit_asset_listing
-    PUT  /veba/listings/<uid>/archive          can_edit_asset_listing
+    POST /veba/listings/create                       can_list_asset_on_marketplace
+    GET  /veba/listings                              can_browse_asset_listings
+    GET  /veba/listings/<uid>                        can_browse_asset_listings
+    GET  /veba/listings/asset/<asset_uid>            can_view_unit_digital_twin
+    PUT  /veba/listings/<uid>/update                 can_edit_asset_listing
+    PUT  /veba/listings/<uid>/pause                  can_edit_asset_listing
+    PUT  /veba/listings/<uid>/reactivate             can_edit_asset_listing
+    PUT  /veba/listings/<uid>/archive                can_edit_asset_listing
+    DELETE /veba/listings/<uid>/delete               can_edit_asset_listing
+
+    POST /veba/booking-requests/create               can_book_asset
+    GET  /veba/booking-requests                      can_view_booking
+    PUT  /veba/booking-requests/<uid>/approve         can_approve_booking_request
+    PUT  /veba/booking-requests/<uid>/reject          can_reject_booking_request
+    PUT  /veba/booking-requests/<uid>/cancel          can_book_asset
+    PUT  /veba/booking-requests/<uid>/fulfill         can_approve_booking_request
+    PUT  /veba/booking-requests/<uid>/archive         can_archive_booking_request
+    DELETE /veba/booking-requests/<uid>/delete        can_delete_booking_request
 
 Conventions:
   * Standard reply() envelope: { status, message, data }.
@@ -25,12 +35,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from typing import Any, Optional
 
 import psycopg2
 import psycopg2.extras
-from flask import Blueprint, current_app, g, request
+from flask import Blueprint, current_app, g, request, send_from_directory
+from werkzeug.utils import secure_filename
 
 from .globals import log_audit_event, reply, require_permission
 
@@ -51,6 +63,24 @@ _UPDATABLE_FIELDS = {
     "availability_start", "availability_end", "geographic_scope",
     "operator_included", "notes", "visibility",
 }
+
+# ── Photo upload config ──────────────────────────────────────────────────────
+_ALLOWED_PHOTO_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
+_MAX_PHOTO_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
+
+# Resolve upload directory relative to the project root (same level as app.py).
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_UPLOAD_DIR = os.path.join(_PROJECT_ROOT, "uploads", "assets")
+
+
+def _allowed_photo(filename: str) -> bool:
+    """True if the file extension is in the allow-list."""
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in _ALLOWED_PHOTO_EXTENSIONS
+
+
+def _ensure_upload_dir() -> None:
+    """Create the uploads/assets directory if it doesn't exist."""
+    os.makedirs(_UPLOAD_DIR, exist_ok=True)
 
 
 # ----------------------------------------------------------------------
@@ -798,6 +828,272 @@ def archive_listing(listing_uid: str):
     )
 
 
+# ----------------------------------------------------------------------
+# DELETE /veba/listings/<listing_uid>/delete
+# ----------------------------------------------------------------------
+
+@marketplace_bp.route("/veba/listings/<listing_uid>/delete", methods=["DELETE"])
+@require_permission("can_edit_asset_listing")
+def delete_listing(listing_uid: str):
+    """Permanently delete a VEBA listing.
+
+    Only allowed if there are no pending or approved booking requests
+    against this listing. Fulfilled / rejected / cancelled requests are
+    cleaned up with CASCADE-like explicit deletion.
+
+    Also resets the underlying asset's veba_status to 'unavailable'.
+    """
+    account_root = g.current_user.get("account_root", "")
+    actor_uid    = g.current_user.get("account_uid", "")
+
+    try:
+        dbconnect = _open_conn()
+        with dbconnect:
+            with dbconnect.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                # 1. Ownership check
+                err = _enforce_owner(cursor, listing_uid, account_root)
+                if err:
+                    return err
+
+                # 2. Block deletion if there are active bookings
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) AS cnt
+                    FROM dll_booking_requests
+                    WHERE listing_uid = %s AND status IN ('pending', 'approved')
+                    """,
+                    (str(listing_uid),),
+                )
+                active_count = cursor.fetchone()["cnt"]
+                if active_count > 0:
+                    return reply(
+                        "error", 409,
+                        f"Cannot delete: {active_count} pending/approved booking(s) exist. "
+                        "Reject or fulfill them first.",
+                        "",
+                    )
+
+                # 3. Set asset veba_status to unavailable
+                _sync_asset_veba_state_by_listing(cursor, listing_uid, "unavailable")
+
+                # 4. Delete completed booking requests tied to this listing
+                cursor.execute(
+                    """
+                    DELETE FROM dll_booking_requests
+                    WHERE listing_uid = %s AND status IN ('rejected', 'cancelled', 'fulfilled')
+                    """,
+                    (str(listing_uid),),
+                )
+                deleted_bookings = cursor.rowcount
+
+                # 5. Delete the listing itself
+                cursor.execute(
+                    "DELETE FROM dll_marketplace_listings WHERE listing_uid = %s",
+                    (str(listing_uid),),
+                )
+
+        log_audit_event(
+            actor=actor_uid,
+            action="DELETE_LISTING",
+            obj=f"Listing {listing_uid} permanently deleted",
+            domain="VEBA",
+            severity="Alarm",
+            ip_address=request.remote_addr,
+            meta={
+                "listing_uid": listing_uid,
+                "deleted_bookings": deleted_bookings,
+            },
+        )
+        return reply("success", 200, "Listing deleted", {"listing_uid": listing_uid})
+
+    except Exception as err:
+        _logger.exception("delete_listing(%s) failed: %s", listing_uid, err)
+        return reply("error", 500, "Could not delete listing", "")
+    finally:
+        try:
+            dbconnect.close()
+        except Exception:
+            pass
+
+
+# ----------------------------------------------------------------------
+# POST /veba/assets/<asset_uid>/photo   (upload asset photo)
+# GET  /veba/assets/photo/<filename>    (serve asset photo)
+# ----------------------------------------------------------------------
+
+@marketplace_bp.route("/veba/assets/<asset_uid>/photo", methods=["POST"])
+@require_permission("can_edit_asset_listing")
+def upload_asset_photo(asset_uid: str):
+    """Upload a single hero photo for an asset.
+
+    Accepts multipart/form-data with a "photo" file field.
+    Validates extension (jpg/jpeg/png/webp) and size (max 5 MB).
+    Stores the file as ``<asset_uid>_<uuid>.<ext>`` to avoid collisions.
+
+    On success:
+      * Old photo file (if any) is deleted from disk.
+      * asset_summary.photo_url is patched on every listing for this asset.
+      * Returns { photo_url }.
+
+    Permission: can_edit_asset_listing (same as edit/pause/archive).
+    Ownership: the caller's account_root must own the listing(s) for this
+               asset, OR the asset must have no listings yet (first upload
+               during create flow).
+    """
+    account_root = g.current_user.get("account_root", "")
+    actor_uid    = g.current_user.get("account_uid", "")
+
+    if not account_root:
+        return reply("error", 403, "Cannot determine your tenant from the session", "")
+
+    # ── Validate the uploaded file ────────────────────────────────────
+    if "photo" not in request.files:
+        return reply("error", 400, "No file field 'photo' in the request", "")
+
+    photo = request.files["photo"]
+    if photo.filename == "" or photo.filename is None:
+        return reply("error", 400, "Empty filename", "")
+
+    if not _allowed_photo(photo.filename):
+        return reply(
+            "error", 400,
+            f"File type not allowed. Accepted: {', '.join(sorted(_ALLOWED_PHOTO_EXTENSIONS))}",
+            "",
+        )
+
+    # Read file content to check size (Flask doesn't enforce it for us).
+    photo_bytes = photo.read()
+    if len(photo_bytes) > _MAX_PHOTO_SIZE_BYTES:
+        return reply(
+            "error", 400,
+            f"Photo exceeds the {_MAX_PHOTO_SIZE_BYTES // (1024*1024)} MB limit",
+            "",
+        )
+
+    ext = photo.filename.rsplit(".", 1)[1].lower()
+    safe_name = f"{secure_filename(asset_uid)}_{uuid.uuid4().hex[:12]}.{ext}"
+
+    try:
+        dbconnect = _open_conn()
+        with dbconnect:
+            with dbconnect.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                # ── Ownership check: caller must own at least one listing
+                # for this asset, OR no listings yet (first-time upload). ──
+                cursor.execute(
+                    """
+                    SELECT listing_uid, account_root, asset_summary
+                    FROM dll_marketplace_listings
+                    WHERE asset_uid = %s
+                    ORDER BY created_at DESC
+                    """,
+                    (str(asset_uid),),
+                )
+                listings = cursor.fetchall()
+
+                if listings:
+                    owned = any(r["account_root"] == account_root for r in listings)
+                    if not owned:
+                        return reply("error", 404, "No listings found for this asset", "")
+
+                # ── Save to disk ──────────────────────────────────────
+                _ensure_upload_dir()
+                file_path = os.path.join(_UPLOAD_DIR, safe_name)
+                with open(file_path, "wb") as f:
+                    f.write(photo_bytes)
+
+                photo_url = f"/veba/assets/photo/{safe_name}"
+
+                # ── Clean up old photo file(s) ────────────────────────
+                for row in listings:
+                    summary = row.get("asset_summary")
+                    if isinstance(summary, str):
+                        try:
+                            summary = json.loads(summary)
+                        except json.JSONDecodeError:
+                            summary = None
+                    if isinstance(summary, dict) and summary.get("photo_url"):
+                        old_name = summary["photo_url"].rsplit("/", 1)[-1]
+                        old_path = os.path.join(_UPLOAD_DIR, old_name)
+                        if old_path != file_path and os.path.isfile(old_path):
+                            try:
+                                os.remove(old_path)
+                                _logger.info("Removed old photo: %s", old_path)
+                            except OSError:
+                                _logger.warning("Could not remove old photo: %s", old_path)
+
+                # ── Patch asset_summary.photo_url on all listings ─────
+                for row in listings:
+                    summary = row.get("asset_summary")
+                    if isinstance(summary, str):
+                        try:
+                            summary = json.loads(summary)
+                        except json.JSONDecodeError:
+                            summary = {}
+                    if not isinstance(summary, dict):
+                        summary = {}
+                    summary["photo_url"] = photo_url
+                    cursor.execute(
+                        """
+                        UPDATE dll_marketplace_listings
+                        SET asset_summary = %s, updated_at = NOW()
+                        WHERE listing_uid = %s
+                        """,
+                        (psycopg2.extras.Json(summary), row["listing_uid"]),
+                    )
+
+        log_audit_event(
+            actor=actor_uid,
+            action="UPLOAD_PHOTO",
+            obj=f"Photo uploaded for asset {asset_uid}: {safe_name}",
+            domain="VEBA",
+            severity="Info",
+            ip_address=request.remote_addr,
+            meta={
+                "asset_uid": asset_uid,
+                "filename": safe_name,
+                "size_bytes": len(photo_bytes),
+                "photo_url": photo_url,
+            },
+        )
+        return reply("success", 200, "Photo uploaded", {"photo_url": photo_url})
+
+    except Exception as err:
+        _logger.exception("upload_asset_photo(%s) failed: %s", asset_uid, err)
+        # Best-effort cleanup on failure
+        try:
+            cleanup_path = os.path.join(_UPLOAD_DIR, safe_name)
+            if os.path.isfile(cleanup_path):
+                os.remove(cleanup_path)
+        except OSError:
+            pass
+        return reply("error", 500, "Could not upload photo", "")
+    finally:
+        try:
+            dbconnect.close()
+        except Exception:
+            pass
+
+
+@marketplace_bp.route("/veba/assets/photo/<filename>", methods=["GET"])
+def serve_asset_photo(filename: str):
+    """Serve an uploaded asset photo.
+
+    No auth required — photos are public (they're displayed on the
+    marketplace browse page to unauthenticated/cross-tenant viewers).
+    The filename includes a random UUID slug, so the URL is not guessable
+    from the asset_uid alone.
+    """
+    safe = secure_filename(filename)
+    if not safe or not _allowed_photo(safe):
+        return reply("error", 400, "Invalid filename", "")
+
+    _ensure_upload_dir()
+    if not os.path.isfile(os.path.join(_UPLOAD_DIR, safe)):
+        return reply("error", 404, "Photo not found", "")
+
+    return send_from_directory(_UPLOAD_DIR, safe, max_age=86400)
+
+
 # ======================================================================
 # Booking requests (Phase 4)
 # ======================================================================
@@ -1275,7 +1571,7 @@ def cancel_booking_request(request_uid: str):
 def fulfill_booking_request(request_uid: str):
     """Owner marks an approved booking request as fulfilled.
 
-    Only approved requests can transition to fulfilled — the booking has
+    Only approved requests can transition to fulfilled �� the booking has
     been completed and the asset returned (or the service delivered).
     """
     account_root = g.current_user.get("account_root", "")
@@ -1290,3 +1586,144 @@ def fulfill_booking_request(request_uid: str):
         allowed_from="approved",
         ownership_check="owner",
     )
+
+
+# ----------------------------------------------------------------------
+# PUT /veba/booking-requests/<uid>/archive  (CMS operator archives)
+# ----------------------------------------------------------------------
+
+@marketplace_bp.route("/veba/booking-requests/<request_uid>/archive", methods=["PUT"])
+@require_permission("can_archive_booking_request")
+def archive_booking_request(request_uid: str):
+    """CMS operator archives a resolved booking request.
+
+    Only non-pending requests can be archived (approved, rejected,
+    cancelled, fulfilled). Archiving soft-hides the request from the
+    active queue without deleting it — it can still be queried with
+    status=archived.
+    """
+    account_root = g.current_user.get("account_root", "")
+    actor_uid    = g.current_user.get("account_uid", "")
+
+    try:
+        dbconnect = _open_conn()
+        with dbconnect:
+            with dbconnect.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT request_uid, owner_root, requester_root, status, listing_uid, asset_uid
+                    FROM dll_booking_requests
+                    WHERE request_uid = %s
+                    """,
+                    (str(request_uid),),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return reply("error", 404, "Booking request not found", "")
+
+                if row["status"] == "pending":
+                    return reply(
+                        "error", 409,
+                        "Cannot archive a pending request — approve, reject, or cancel it first",
+                        "",
+                    )
+                if row["status"] == "archived":
+                    return reply("error", 409, "Request is already archived", "")
+
+                cursor.execute(
+                    """
+                    UPDATE dll_booking_requests
+                    SET status = 'archived', updated_at = NOW()
+                    WHERE request_uid = %s
+                    """,
+                    (str(request_uid),),
+                )
+
+        log_audit_event(
+            actor=actor_uid,
+            action="ARCHIVE_BOOKING",
+            obj=f"Booking request {request_uid} archived",
+            domain="VEBA",
+            severity="Info",
+            ip_address=request.remote_addr,
+            meta={
+                "request_uid": request_uid,
+                "listing_uid": row["listing_uid"],
+                "previous_status": row["status"],
+            },
+        )
+        return reply("success", 200, "Booking request archived", {"request_uid": request_uid, "status": "archived"})
+
+    except Exception as err:
+        _logger.exception("archive_booking_request(%s) failed: %s", request_uid, err)
+        return reply("error", 500, "Could not archive booking request", "")
+    finally:
+        try:
+            dbconnect.close()
+        except Exception:
+            pass
+
+
+# ----------------------------------------------------------------------
+# DELETE /veba/booking-requests/<uid>/delete  (CMS operator deletes)
+# ----------------------------------------------------------------------
+
+@marketplace_bp.route("/veba/booking-requests/<request_uid>/delete", methods=["DELETE"])
+@require_permission("can_delete_booking_request")
+def delete_booking_request(request_uid: str):
+    """CMS operator permanently deletes a booking request.
+
+    This is a hard delete — the record is removed from the database.
+    Intended for cleaning up spam, test data, or invalid requests.
+    All statuses are deletable (including pending).
+    """
+    account_root = g.current_user.get("account_root", "")
+    actor_uid    = g.current_user.get("account_uid", "")
+
+    try:
+        dbconnect = _open_conn()
+        with dbconnect:
+            with dbconnect.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT request_uid, owner_root, requester_root, status, listing_uid, asset_uid
+                    FROM dll_booking_requests
+                    WHERE request_uid = %s
+                    """,
+                    (str(request_uid),),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return reply("error", 404, "Booking request not found", "")
+
+                cursor.execute(
+                    "DELETE FROM dll_booking_requests WHERE request_uid = %s",
+                    (str(request_uid),),
+                )
+
+        log_audit_event(
+            actor=actor_uid,
+            action="DELETE_BOOKING",
+            obj=f"Booking request {request_uid} permanently deleted",
+            domain="VEBA",
+            severity="Alarm",
+            ip_address=request.remote_addr,
+            meta={
+                "request_uid":    request_uid,
+                "listing_uid":    row["listing_uid"],
+                "asset_uid":      row["asset_uid"],
+                "previous_status": row["status"],
+                "owner_root":     row["owner_root"],
+                "requester_root": row["requester_root"],
+            },
+        )
+        return reply("success", 200, "Booking request deleted", {"request_uid": request_uid})
+
+    except Exception as err:
+        _logger.exception("delete_booking_request(%s) failed: %s", request_uid, err)
+        return reply("error", 500, "Could not delete booking request", "")
+    finally:
+        try:
+            dbconnect.close()
+        except Exception:
+            pass
