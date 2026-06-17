@@ -36,14 +36,14 @@ def CreateNewProduct():
 
     if(str(_productName).strip() == ""):
         return response_out("error", "Product name cannot be empty", 400, None)
-    
+
     with dbconnect:
         with dbconnect.cursor() as dbcursor:
             dbcursor.execute("SELECT * FROM abi_products_manager WHERE product_name = %s", (str(_productName),))
 
             if(dbcursor.rowcount > 0):
                 return response_out("error", "Product with the same name already exists", 400, None)
-            
+
             _productUid = str(uuid.uuid4())
             dbcursor.execute("INSERT INTO abi_products_manager (product_uid, product_name) VALUES (%s, %s)", (_productUid, _productName))
             dbconnect.commit()
@@ -62,7 +62,7 @@ def ListProducts():
 
             if(dbcursor.rowcount == 0):
                 return response_out("success", "No products found", 200, [])
-            
+
             products = dbcursor.fetchall()
 
     products_list = []
@@ -91,7 +91,6 @@ def DeleteProduct():
                 return response_out("error", "Product not found", 404, None)
             
             dbcursor.execute("DELETE FROM abi_products_manager WHERE product_uid = %s", (_productUid,))
-            dbcursor.execute("DELETE FROM abi_product_variants WHERE product_uid = %s", (_productUid,))
             dbconnect.commit()
 
     return response_out("success", "Product deleted successfully", 200, None)
@@ -115,7 +114,7 @@ def UpdateProduct():
 
             if(dbcursor.rowcount == 0):
                 return response_out("error", "Product not found", 404, None)
-            
+
             dbcursor.execute("UPDATE abi_products_manager SET product_name = %s WHERE product_uid = %s", (_newProductName, _productUid))
             dbconnect.commit()
 

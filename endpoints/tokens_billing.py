@@ -62,12 +62,12 @@ def response_out(status, message, statusCode, data):
 
 
 def _fetch_product(cursor, product_uid):
-    """Return product (billing) details dict from abi_products_manager, or None if not found."""
+    """Return product details dict from abi_products_manager, or None if not found.
+    Billing now lives on the token itself, so products only carry their name."""
     if not product_uid:
         return None
     cursor.execute(
-        "SELECT product_uid, product_name, billing_type, billing_amount, billing_currency "
-        "FROM abi_products_manager WHERE product_uid = %s",
+        "SELECT product_uid, product_name FROM abi_products_manager WHERE product_uid = %s",
         (str(product_uid),)
     )
     if cursor.rowcount == 0:
@@ -75,10 +75,7 @@ def _fetch_product(cursor, product_uid):
     row = cursor.fetchone()
     return {
         "product_uid": row[0],
-        "product_name": row[1],
-        "billing_type": row[2],
-        "billing_amount": float(row[3]) if row[3] is not None else None,
-        "billing_currency": row[4]
+        "product_name": row[1]
     }
 
 
@@ -107,6 +104,7 @@ def CreateToken():
     _BillingTrigger       = data.get('billing_trigger') or _DEFAULT_TRIGGER.get(_TokenType)
     _BillingConditions    = data.get('billing_conditions', [])
     _BillingScope         = data.get('billing_scope', 'asset')
+    _TokenCurrency        = str(data.get('token_currency', '')).strip().upper()
     _TokenID              = str(uuid.uuid4())
     _CreatedAt            = datetime.now(timezone).strftime("%d-%m-%Y %I:%M:%S%p")
 
@@ -120,6 +118,14 @@ def CreateToken():
         return response_out("error", f"Invalid billing_scope. Allowed: {sorted(_VALID_SCOPES)}", 400, "")
     if _TokenType == 'conditional' and not _BillingConditions:
         return response_out("error", "billing_conditions is required for conditional tokens", 400, "")
+    if not _TokenCurrency:
+        return response_out("error", "token_currency is required", 400, "")
+    try:
+        _TokenAmount = Decimal(str(data['token_amount']))
+    except (KeyError, InvalidOperation, ValueError, TypeError):
+        return response_out("error", "token_amount must be a number", 400, "")
+    if _TokenAmount < Decimal('0'):
+        return response_out("error", "token_amount must be zero or greater", 400, "")
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
@@ -141,11 +147,13 @@ def CreateToken():
             cursor.execute(
                 "INSERT INTO dll_tokens_registry "
                 "(token_id, token_name, token_type, token_product_uid, token_parameters, "
-                " billing_unit, billing_trigger, billing_conditions, billing_scope, date_created) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                " billing_unit, billing_trigger, billing_conditions, billing_scope, "
+                " token_amount, token_currency, date_created) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (_TokenID, _TokenName, _TokenType, str(_Token_Product),
                  json.dumps(_TokenParameters), _BillingUnit, _BillingTrigger,
-                 json.dumps(_BillingConditions), _BillingScope, _CreatedAt)
+                 json.dumps(_BillingConditions), _BillingScope,
+                 _TokenAmount, _TokenCurrency, _CreatedAt)
             )
             dbconnect.commit()
             return response_out("success", "Token created successfully", 201, {"token_id": _TokenID, "token_name": _TokenName})
@@ -160,7 +168,8 @@ def ListTokens():
         with dbconnect.cursor() as cursor:
             cursor.execute(
                 "SELECT token_id, token_name, token_type, token_parameters, date_created, "
-                "token_product_uid, billing_unit, billing_trigger, billing_conditions, billing_scope "
+                "token_product_uid, billing_unit, billing_trigger, billing_conditions, billing_scope, "
+                "token_amount, token_currency "
                 "FROM dll_tokens_registry ORDER BY id DESC"
             )
 
@@ -183,6 +192,8 @@ def ListTokens():
                     "billing_trigger": token[7],
                     "billing_conditions": token[8] if token[8] is not None else [],
                     "billing_scope": token[9],
+                    "token_amount": float(token[10]) if token[10] is not None else None,
+                    "token_currency": token[11],
                     "product": product
                 })
             return response_out("success", "Tokens retrieved successfully", 200, _tokensBusket)
@@ -190,8 +201,8 @@ def ListTokens():
 
 @_token_billing.route("/tokens/budget-offer", methods=["POST"])
 def TokensBudgetOffer():
-    """Given a currency and an amount, return the available tokens whose product
-    billing price (same currency) fits within that budget."""
+    """Given a currency and an amount, return the available tokens whose price
+    (same currency, defined at token level) fits within that budget."""
     dbconnect = psycopg2.connect(current_app.config['db_link'])
     _payload = request.get_json()
     data = (_payload or {}).get('data', {})
@@ -219,14 +230,14 @@ def TokensBudgetOffer():
             cursor.execute(
                 "SELECT t.token_id, t.token_name, t.token_type, t.token_product_uid, "
                 "       t.billing_unit, t.billing_trigger, t.billing_scope, "
-                "       p.product_name, p.billing_type, p.billing_amount, p.billing_currency "
+                "       t.token_amount, t.token_currency, p.product_name "
                 "FROM dll_tokens_registry t "
-                "JOIN abi_products_manager p ON t.token_product_uid = p.product_uid "
-                "WHERE UPPER(p.billing_currency) = %s "
-                "  AND p.billing_amount IS NOT NULL "
-                "  AND p.billing_amount > 0 "
-                "  AND p.billing_amount <= %s "
-                "ORDER BY p.billing_amount ASC",
+                "LEFT JOIN abi_products_manager p ON t.token_product_uid = p.product_uid "
+                "WHERE UPPER(t.token_currency) = %s "
+                "  AND t.token_amount IS NOT NULL "
+                "  AND t.token_amount > 0 "
+                "  AND t.token_amount <= %s "
+                "ORDER BY t.token_amount ASC",
                 (_Currency, _Budget)
             )
 
@@ -235,7 +246,7 @@ def TokensBudgetOffer():
 
             _offers = []
             for row in cursor.fetchall():
-                _price = Decimal(str(row[9]))
+                _price = Decimal(str(row[7]))
                 _offers.append({
                     "token_id": row[0],
                     "token_name": row[1],
@@ -244,10 +255,9 @@ def TokensBudgetOffer():
                     "billing_unit": row[4],
                     "billing_trigger": row[5],
                     "billing_scope": row[6],
-                    "product_name": row[7],
-                    "billing_type": row[8],
-                    "billing_amount": float(_price),
-                    "billing_currency": row[10],
+                    "token_amount": float(_price),
+                    "token_currency": row[8],
+                    "product_name": row[9],
                     "max_quantity_affordable": int(_Budget // _price)
                 })
 
@@ -266,7 +276,8 @@ def GetSingleToken(token_id):
         with dbconnect.cursor() as cursor:
             cursor.execute(
                 "SELECT token_id, token_name, token_type, token_parameters, date_created, "
-                "token_product_uid, billing_unit, billing_trigger, billing_conditions, billing_scope "
+                "token_product_uid, billing_unit, billing_trigger, billing_conditions, billing_scope, "
+                "token_amount, token_currency "
                 "FROM dll_tokens_registry WHERE token_id=%s",
                 (token_id,)
             )
@@ -289,6 +300,8 @@ def GetSingleToken(token_id):
                 "billing_trigger": row[7],
                 "billing_conditions": row[8] if row[8] is not None else [],
                 "billing_scope": row[9],
+                "token_amount": float(row[10]) if row[10] is not None else None,
+                "token_currency": row[11],
                 "product": product
             }
             return response_out("success", "Token retrieved successfully", 200, token)
@@ -325,9 +338,18 @@ def UpdateToken(token_id):
     _BillingTrigger       = data.get('billing_trigger') or _DEFAULT_TRIGGER.get(_TokenType)
     _BillingConditions    = data.get('billing_conditions', [])
     _BillingScope         = data.get('billing_scope', 'asset')
+    _TokenCurrency        = str(data.get('token_currency', '')).strip().upper()
 
     if _TokenType not in _VALID_TYPES:
         return response_out("error", f"Invalid token_type. Allowed: {sorted(_VALID_TYPES)}", 400, "")
+    if not _TokenCurrency:
+        return response_out("error", "token_currency is required", 400, [])
+    try:
+        _TokenAmount = Decimal(str(data['token_amount']))
+    except (KeyError, InvalidOperation, ValueError, TypeError):
+        return response_out("error", "token_amount must be a number", 400, [])
+    if _TokenAmount < Decimal('0'):
+        return response_out("error", "token_amount must be zero or greater", 400, [])
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
@@ -341,11 +363,13 @@ def UpdateToken(token_id):
             cursor.execute(
                 "UPDATE dll_tokens_registry "
                 "SET token_name=%s, token_type=%s, token_product_uid=%s, token_parameters=%s, "
-                "    billing_unit=%s, billing_trigger=%s, billing_conditions=%s, billing_scope=%s "
+                "    billing_unit=%s, billing_trigger=%s, billing_conditions=%s, billing_scope=%s, "
+                "    token_amount=%s, token_currency=%s "
                 "WHERE token_id=%s",
                 (_TokenName, _TokenType, str(_Token_Product),
                  json.dumps(_TokenParameters), _BillingUnit, _BillingTrigger,
-                 json.dumps(_BillingConditions), _BillingScope, token_id)
+                 json.dumps(_BillingConditions), _BillingScope,
+                 _TokenAmount, _TokenCurrency, token_id)
             )
 
             if cursor.rowcount == 0:
