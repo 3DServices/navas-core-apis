@@ -75,7 +75,7 @@ def BuyTokens():
 
             with _dbconnect.cursor() as cursor:
                 cursor.execute(
-                    "SELECT token_product_variant_uid FROM dll_tokens_registry WHERE token_id=%s",
+                    "SELECT token_product_uid FROM dll_tokens_registry WHERE token_id=%s",
                     (str(_TokenNumber),)
                 )
 
@@ -83,24 +83,24 @@ def BuyTokens():
                     return reply("error", 400, "Billing Token Not Found", "")
 
                 _token_row = cursor.fetchone()
-                _variant_uid = _token_row[0]
+                _product_uid = _token_row[0]
 
-                if not _variant_uid:
-                    return reply("error", 400, "Token has no billing variant configured", "")
+                if not _product_uid:
+                    return reply("error", 400, "Token has no billing product configured", "")
 
                 cursor.execute(
                     "SELECT billing_amount, billing_currency, billing_type "
-                    "FROM abi_product_variants WHERE variant_uid=%s",
-                    (str(_variant_uid),)
+                    "FROM abi_products_manager WHERE product_uid=%s",
+                    (str(_product_uid),)
                 )
 
                 if cursor.rowcount == 0:
-                    return reply("error", 400, "Token Billing Variant Not Found", "")
+                    return reply("error", 400, "Token Billing Product Not Found", "")
 
-                _variant_row = cursor.fetchone()
-                _TokenPaymentAmount = _variant_row[0]
-                _TokenPaymentCurrency = str(_variant_row[1]).upper()
-                _TokenValidity = _variant_row[2]
+                _product_row = cursor.fetchone()
+                _TokenPaymentAmount = _product_row[0]
+                _TokenPaymentCurrency = str(_product_row[1]).upper()
+                _TokenValidity = _product_row[2]
 
             if _TokenPaymentCurrency == 'KES':
                 _LocalCountry = 'kenya'
