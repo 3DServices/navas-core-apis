@@ -44,7 +44,7 @@ def MoMoPayment_Charge(PhoneNumber, Country, Curreny, LocalAmount, PaymentRefera
 
 
 @finance_bp.route("/payments/tokens/buy", methods=["POST"])
-@require_permission('finance.create.mobile_money_payment')
+#@require_permission('finance.create.mobile_money_payment')
 def BuyTokens():
     try:
         _dbconnect = psycopg2.connect(current_app.config['db_link'])
