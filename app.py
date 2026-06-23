@@ -7,6 +7,7 @@ from config import DB_LINK, BASE_URL, CORS_ORIGINS
 
 app = Sentinel_Fleet()
 
+
 CORS(
     app,
     resources={r"/*": {"origins": CORS_ORIGINS}},
@@ -59,6 +60,8 @@ def _preflight(path):
 
 app.config['db_link'] = DB_LINK
 app.config['base_url'] = BASE_URL
+
+
 
 
 if __name__ == '__main__':

@@ -1719,3 +1719,73 @@ def GetDevice_Events(device_imei):
 
     except Exception as error:
         return reply("error", 500, str(error), "")
+
+
+# ── Sync Cassandra device-client mappings into PostgreSQL ────────────────────
+# Run once to backfill, then the insert/update hooks keep it current.
+@devices_bp.route("/devices/sync-client-devices", methods=["POST"])
+def sync_client_devices():
+    """
+    One-time sync: reads all (device_imei, device_client, device_name) from
+    Cassandra dll_device_basic_data and upserts into PostgreSQL dll_client_devices.
+    Safe to re-run (uses ON CONFLICT).
+    """
+    _cassandra_session = get_cassandra_session()
+    if not _cassandra_session:
+        return reply('error', 500, 'Failed to connect to Cassandra', '')
+
+    try:
+        rows = _cassandra_session.execute(
+            "SELECT device_imei, device_client, device_name FROM dll_device_basic_data"
+        )
+
+        conn = get_postgres_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS dll_client_devices (
+                id          SERIAL PRIMARY KEY,
+                client_uid  VARCHAR(255) NOT NULL,
+                device_imei VARCHAR(50)  NOT NULL UNIQUE,
+                device_name VARCHAR(255),
+                created_at  TIMESTAMP DEFAULT NOW(),
+                updated_at  TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_client_devices_client_uid
+            ON dll_client_devices (client_uid)
+        """)
+
+        synced = 0
+        skipped = 0
+        for row in rows:
+            imei = row.device_imei
+            client = row.device_client
+            name = getattr(row, 'device_name', None)
+
+            if not imei or not client:
+                skipped += 1
+                continue
+
+            cur.execute("""
+                INSERT INTO dll_client_devices (client_uid, device_imei, device_name)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (device_imei)
+                DO UPDATE SET client_uid = EXCLUDED.client_uid,
+                              device_name = EXCLUDED.device_name,
+                              updated_at  = NOW()
+            """, (client, imei, name))
+            synced += 1
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return reply('success', 200, f'Synced {synced} devices, skipped {skipped}', {
+            'synced': synced,
+            'skipped': skipped
+        })
+
+    except Exception as error:
+        return reply('error', 500, str(error), '')

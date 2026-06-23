@@ -204,8 +204,8 @@ def require_permission(*required_perms):
                 'permissions': user_permissions
             }
 
-            # Super admin and system accounts bypass permission checks
-            if user_role in ('super_admin', 'system') or account_type == 'system_account':
+            # Super admin, system, and customer_tracker bypass permission checks
+            if user_role in ('super_admin', 'system', 'customer_tracker') or account_type == 'system_account':
                 return f(*args, **kwargs)
 
             # Check if user has ANY of the required permissions
