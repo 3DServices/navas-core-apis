@@ -393,16 +393,17 @@ def SubscriptionManager(UserID, TokenAttached, ImeiNumber):
 
         with _dbconnect:
             with _dbconnect.cursor() as cursor:
-                cursor.execute("SELECT token_hours_left FROM dll_user_token_accounts WHERE token_billing_uid=%s", (str(TokenAttached),))
+                cursor.execute("SELECT token_units_left FROM dll_user_token_accounts WHERE token_billing_uid=%s", (str(TokenAttached),))
 
                 if(cursor.rowcount == 1):
                     
                     _TunnelData = cursor.fetchone()
-                    _TokenHours_Left = _TunnelData[0]
+                    _TokenUnits_Left = _TunnelData[0]
 
-                    print(f"Token Hours Left: {_TokenHours_Left}")
+                    print(f"Token Units Left: {_TokenUnits_Left}")
 
-                    if(int(_TokenHours_Left) >= 1):
+                    if(_TokenUnits_Left == "units_unfined_waiting_for_first_use"):
+                        
                         current_time = datetime.now(timezone).strftime("%I:%M:%S%p")
                         currentLocal_Date = datetime.now(timezone).strftime("%d-%m-%Y")
 
@@ -412,7 +413,7 @@ def SubscriptionManager(UserID, TokenAttached, ImeiNumber):
                         
                         return "success-proceed"
 
-                    elif(int(_TokenHours_Left) < 1):
+                    else:
                         return "token-expired"
 
                 else:

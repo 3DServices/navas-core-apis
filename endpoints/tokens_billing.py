@@ -227,6 +227,7 @@ def TokensBudgetOffer():
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
+            # token_amount is stored as text, so guard against non-numeric values and cast to numeric
             cursor.execute(
                 "SELECT t.token_id, t.token_name, t.token_type, t.token_product_uid, "
                 "       t.billing_unit, t.billing_trigger, t.billing_scope, "
@@ -235,9 +236,11 @@ def TokensBudgetOffer():
                 "LEFT JOIN abi_products_manager p ON t.token_product_uid = p.product_uid "
                 "WHERE UPPER(t.token_currency) = %s "
                 "  AND t.token_amount IS NOT NULL "
-                "  AND t.token_amount > 0 "
-                "  AND t.token_amount <= %s "
-                "ORDER BY t.token_amount ASC",
+                "  AND t.token_amount <> '' "
+                r"  AND t.token_amount ~ '^[0-9]+(\.[0-9]+)?$' "
+                "  AND t.token_amount::numeric > 0 "
+                "  AND t.token_amount::numeric <= %s "
+                "ORDER BY t.token_amount::numeric ASC",
                 (_Currency, _Budget)
             )
 
