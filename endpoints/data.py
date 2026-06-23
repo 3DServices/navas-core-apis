@@ -34,9 +34,11 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 import pytz
 import re
 
-from cassandra.cluster import Session
-from cassandra.query import BatchStatement
-from cassandra.query import BatchType
+from cassandra.cluster import Session, Cluster, ExecutionProfile, EXEC_PROFILE_DEFAULT
+from cassandra.auth import PlainTextAuthProvider
+from cassandra import ConsistencyLevel
+from cassandra.policies import TokenAwarePolicy, DCAwareRoundRobinPolicy
+from cassandra.query import BatchStatement, BatchType
 
 # Cassandra connection configuration
 CASSANDRA_KEYSPACE = 'navas_iot_dbx'
@@ -1651,6 +1653,46 @@ def download_trips_report(access_file):
         return str(e), 500
     
 
+# ── Log a client-side generated report ──────────────────────────────────────
+@data_stream.route("/data-stream/reports/log-download", methods=["POST"])
+def log_client_report():
+    """
+    Log a client-side generated report (PDF/Excel) so it shows in Previous Reports.
+    Body: { data: { report_caller, report_type, format } }
+    """
+    try:
+        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        _payload = request.get_json(force=True)
+        _data = _payload.get('data', {})
+        report_caller = _data.get('report_caller', '')
+        report_type = _data.get('report_type', '')
+        report_format = _data.get('format', 'pdf').upper()
+
+        if len(str(report_caller)) < 5 or not report_type:
+            return reply('error', 400, 'Missing report_caller or report_type', '')
+
+        import uuid
+        request_uid = str(uuid.uuid4())
+        timezone = pytz.timezone("Africa/Kampala")
+        current_date = datetime.now(timezone).strftime("%d-%m-%Y")
+        current_time = datetime.now(timezone).strftime("%I:%M:%S%p")
+        datestamp = current_date + '_' + current_time
+        file_label = "client-download-" + report_format.lower()
+
+        with dbconnect:
+            with dbconnect.cursor() as cursor:
+                cursor.execute(
+                    """INSERT INTO dll_reports_downloadable_files
+                       (request_uid, file_path, report_caller, request_status, request_datestamp, report_type)
+                       VALUES(%s, %s, %s, %s, %s, %s)""",
+                    (request_uid, file_label, report_caller, 'completed', datestamp, report_type.upper())
+                )
+        return reply('success', 200, 'Report logged', {'request_uid': request_uid})
+
+    except Exception as error:
+        return reply('error', 500, str(error), '')
+
+
 # ── Delete a report (customer can only delete their own) ────────────────────
 @data_stream.route("/data-stream/reports/<report_uid>/delete", methods=["DELETE"])
 def delete_report(report_uid):
@@ -2028,5 +2070,524 @@ def msic_context(msic_context, msic_target_device):
 
                         return reply('success', 200, 'No Setting Found, Used Default Setting', dataReply)
 
+    except Exception as error:
+        return reply('error', 500, str(error), '')
+
+
+# ── Trip report data (lightweight, no heavy deps) ───────────────────────────
+# Returns trip data from dll_trips_auditor as JSON.
+# The frontend generates the PDF/Excel client-side.
+
+@data_stream.route("/data-stream/reports/trips/generate-data", methods=["POST"])
+def trips_report_data():
+    try:
+        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        payload_data = request.get_json()
+        _cassandra_session = get_cassandra_session()
+
+        report_devices = payload_data['data']['report_devices']
+        start_date = str(payload_data['data']['start_date'])
+        end_date = str(payload_data['data']['end_date'])
+
+        print(f"[trips_report_data] report_devices={report_devices}, start_date={start_date}, end_date={end_date}")
+
+        if len(report_devices) == 0 or len(start_date) < 5 or len(end_date) < 5:
+            return reply('error', 400, 'Some data is Missing', '')
+
+        # Convert DD-MM-YYYY to Python dates for proper PostgreSQL comparison
+        from datetime import datetime as dt
+        try:
+            start_dt = dt.strptime(start_date, "%d-%m-%Y").date()
+            end_dt = dt.strptime(end_date, "%d-%m-%Y").date()
+        except ValueError:
+            return reply('error', 400, 'Invalid date format. Use DD-MM-YYYY', '')
+
+        # Ensure start <= end
+        if start_dt > end_dt:
+            start_dt, end_dt = end_dt, start_dt
+
+        # Format as YYYY-MM-DD strings — PostgreSQL always accepts ISO format
+        start_iso = start_dt.strftime("%Y-%m-%d")
+        end_iso = end_dt.strftime("%Y-%m-%d")
+        print(f"[trips_report_data] parsed dates: {start_iso} to {end_iso}")
+
+        # Fetch device names from Cassandra in bulk
+        device_names = {}
+        try:
+            cass_query = _cassandra_session.prepare("""
+                SELECT device_imei, device_name
+                FROM dll_device_basic_data
+                WHERE device_imei IN ?
+            """)
+            cass_rows = _cassandra_session.execute(cass_query, (report_devices,))
+            for d in cass_rows:
+                device_names[d.device_imei] = d.device_name
+        except Exception:
+            # Fallback: fetch one by one
+            try:
+                cass_query = _cassandra_session.prepare("""
+                    SELECT device_imei, device_name
+                    FROM dll_device_basic_data
+                    WHERE device_imei = ?
+                """)
+                for imei in report_devices:
+                    cass_row = _cassandra_session.execute(cass_query, (imei,)).one()
+                    device_names[imei] = cass_row.device_name if cass_row else imei
+            except Exception:
+                # If Cassandra is completely down, use IMEI as name
+                for imei in report_devices:
+                    device_names[imei] = imei
+
+        with dbconnect:
+            with dbconnect.cursor() as cursor:
+                all_trips = []
+
+                for device_imei in report_devices:
+                    device_name = device_names.get(device_imei, device_imei)
+
+                    cursor.execute("""
+                        SELECT
+                            trip_uid,
+                            trip_date,
+                            start_time,
+                            end_time,
+                            start_mileage,
+                            end_mileage,
+                            start_fuel_level,
+                            end_fuel_level,
+                            driver_id,
+                            starting_location_point,
+                            end_location_point,
+                            start_gps_cordinates,
+                            end_gps_cordinates
+                        FROM
+                            dll_trips_auditor
+                        WHERE
+                            trip_date BETWEEN %s AND %s
+                            AND device_imei = %s
+                            AND trip_status = %s
+                        ORDER BY id DESC
+                    """, (start_iso, end_iso, device_imei, 'ended'))
+
+                    print(f"[trips_report_data] device={device_imei}, rowcount={cursor.rowcount}, dates={start_iso} to {end_iso}")
+
+                    if cursor.rowcount >= 1:
+                        trips_for_device = {device_name: []}
+
+                        for trip_row in cursor.fetchall():
+                            if str(trip_row[4]) != 'NoData' and str(trip_row[5]) != 'NoData':
+                                mileage_covered = abs(round(Decimal(trip_row[4]), 2) - round(Decimal(trip_row[5]), 2))
+                            else:
+                                mileage_covered = 'NoData'
+
+                            trips_for_device[device_name].append({
+                                "trip_uid": str(trip_row[0]) if trip_row[0] else "",
+                                "trip_date": str(trip_row[1]) if trip_row[1] else "",
+                                "start_time": str(trip_row[2]) if trip_row[2] else "",
+                                "end_time": str(trip_row[3]) if trip_row[3] else "",
+                                "start_mileage": str(trip_row[4]) if trip_row[4] else "NoData",
+                                "end_mileage": str(trip_row[5]) if trip_row[5] else "NoData",
+                                "mileage_covered": str(mileage_covered),
+                                "start_fuel_level": str(trip_row[6]) if trip_row[6] else "NoData",
+                                "end_fuel_level": str(trip_row[7]) if trip_row[7] else "NoData",
+                                "driver_id": str(trip_row[8]) if trip_row[8] else "",
+                                "start_location": str(trip_row[9]) if trip_row[9] else "",
+                                "end_location": str(trip_row[10]) if trip_row[10] else "",
+                                "start_gps_cords": str(trip_row[11]) if trip_row[11] else "",
+                                "end_gps_cords": str(trip_row[12]) if trip_row[12] else ""
+                            })
+
+                        all_trips.append(trips_for_device)
+
+                if len(all_trips) > 0:
+                    return reply('success', 200, 'Found Trips', all_trips)
+                else:
+                    return reply('error', 400, 'No Trips Found', '')
+
+    except Exception as error:
+        return reply('error', 500, str(error), '')
+
+
+# ── Night Driving Report (lightweight — returns JSON for client-side generation) ──
+@data_stream.route("/data-stream/reports/night-driving/generate-data", methods=["POST"])
+def night_driving_report_data():
+    try:
+        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        payload_data = request.get_json()
+        _cassandra_session = get_cassandra_session()
+
+        report_devices = payload_data['data']['report_devices']
+        start_date = str(payload_data['data']['start_date'])
+        end_date = str(payload_data['data']['end_date'])
+
+        print(f"[night_driving_report_data] report_devices={report_devices}, start_date={start_date}, end_date={end_date}")
+
+        if len(report_devices) == 0 or len(start_date) < 5 or len(end_date) < 5:
+            return reply('error', 400, 'Some data is Missing', '')
+
+        from datetime import datetime as dt
+        try:
+            start_dt = dt.strptime(start_date, "%d-%m-%Y").date()
+            end_dt = dt.strptime(end_date, "%d-%m-%Y").date()
+        except ValueError:
+            return reply('error', 400, 'Invalid date format. Use DD-MM-YYYY', '')
+
+        if start_dt > end_dt:
+            start_dt, end_dt = end_dt, start_dt
+
+        # Keep DD-MM-YYYY for dll_triggered_events (date_logged is varchar)
+        start_ddmmyyyy = start_dt.strftime("%d-%m-%Y")
+        end_ddmmyyyy = end_dt.strftime("%d-%m-%Y")
+        print(f"[night_driving_report_data] parsed dates: {start_ddmmyyyy} to {end_ddmmyyyy}")
+
+        # Fetch device names from Cassandra
+        device_names = {}
+        try:
+            cass_query = _cassandra_session.prepare("""
+                SELECT device_imei, device_name
+                FROM dll_device_basic_data
+                WHERE device_imei IN ?
+            """)
+            cass_rows = _cassandra_session.execute(cass_query, (report_devices,))
+            for d in cass_rows:
+                device_names[d.device_imei] = d.device_name
+        except Exception:
+            try:
+                cass_query = _cassandra_session.prepare("""
+                    SELECT device_imei, device_name
+                    FROM dll_device_basic_data
+                    WHERE device_imei = ?
+                """)
+                for imei in report_devices:
+                    cass_row = _cassandra_session.execute(cass_query, (imei,)).one()
+                    device_names[imei] = cass_row.device_name if cass_row else imei
+            except Exception:
+                for imei in report_devices:
+                    device_names[imei] = imei
+
+        with dbconnect:
+            with dbconnect.cursor() as cursor:
+                all_events = []
+
+                for device_imei in report_devices:
+                    device_name = device_names.get(device_imei, device_imei)
+
+                    cursor.execute("""
+                        SELECT
+                            location_logged,
+                            value_from_device,
+                            value_triggered,
+                            location_cordinates,
+                            date_logged
+                        FROM dll_triggered_events
+                        WHERE event_triggered = %s
+                        AND device_imei = %s
+                        AND TO_TIMESTAMP(date_logged, 'DD-MM-YYYY')
+                            BETWEEN TO_TIMESTAMP(%s, 'DD-MM-YYYY') AND TO_TIMESTAMP(%s, 'DD-MM-YYYY')
+                    """, ('night_driving', device_imei, start_ddmmyyyy, end_ddmmyyyy))
+
+                    print(f"[night_driving_report_data] device={device_imei}, rowcount={cursor.rowcount}")
+
+                    if cursor.rowcount >= 1:
+                        events_for_device = {device_name: []}
+
+                        for row in cursor.fetchall():
+                            events_for_device[device_name].append({
+                                "date_logged": str(row[4]) if row[4] else "",
+                                "location_point": str(row[0]) if row[0] else "",
+                                "time_violated": str(row[1]) if row[1] else "",
+                                "event_triggered": str(row[2]) if row[2] else "",
+                                "gps_coordinates": str(row[3]) if row[3] else ""
+                            })
+
+                        all_events.append(events_for_device)
+
+                if len(all_events) > 0:
+                    return reply('success', 200, 'Found Night Driving Events', all_events)
+                else:
+                    return reply('error', 400, 'No Night Driving Events Found', '')
+
+    except Exception as error:
+        return reply('error', 500, str(error), '')
+
+
+# ── State Duration Report (PARKING / IDILING — lightweight JSON) ──
+@data_stream.route("/data-stream/reports/state/generate-data", methods=["POST"])
+def state_report_data():
+    try:
+        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        payload_data = request.get_json()
+        _cassandra_session = get_cassandra_session()
+
+        report_devices = payload_data['data']['report_devices']
+        start_date = str(payload_data['data']['start_date'])
+        end_date = str(payload_data['data']['end_date'])
+        report_state = str(payload_data['data'].get('report_state', 'PARKING'))
+
+        print(f"[state_report_data] state={report_state}, devices={report_devices}, dates={start_date} to {end_date}")
+
+        if len(report_devices) == 0 or len(start_date) < 5 or len(end_date) < 5:
+            return reply('error', 400, 'Some data is Missing', '')
+
+        from datetime import datetime as dt
+        try:
+            start_dt = dt.strptime(start_date, "%d-%m-%Y").date()
+            end_dt = dt.strptime(end_date, "%d-%m-%Y").date()
+        except ValueError:
+            return reply('error', 400, 'Invalid date format. Use DD-MM-YYYY', '')
+
+        if start_dt > end_dt:
+            start_dt, end_dt = end_dt, start_dt
+
+        # date_logged in dll_state_durations is a DATE column — use ISO format
+        start_iso = start_dt.strftime("%Y-%m-%d")
+        end_iso = end_dt.strftime("%Y-%m-%d")
+        print(f"[state_report_data] ISO dates: {start_iso} to {end_iso}")
+
+        # Fetch device names from Cassandra
+        device_names = {}
+        try:
+            cass_query = _cassandra_session.prepare("""
+                SELECT device_imei, device_name
+                FROM dll_device_basic_data
+                WHERE device_imei IN ?
+            """)
+            cass_rows = _cassandra_session.execute(cass_query, (report_devices,))
+            for d in cass_rows:
+                device_names[d.device_imei] = d.device_name
+        except Exception:
+            try:
+                cass_query = _cassandra_session.prepare("""
+                    SELECT device_imei, device_name
+                    FROM dll_device_basic_data
+                    WHERE device_imei = ?
+                """)
+                for imei in report_devices:
+                    cass_row = _cassandra_session.execute(cass_query, (imei,)).one()
+                    device_names[imei] = cass_row.device_name if cass_row else imei
+            except Exception:
+                for imei in report_devices:
+                    device_names[imei] = imei
+
+        with dbconnect:
+            with dbconnect.cursor() as cursor:
+                all_states = []
+
+                for device_imei in report_devices:
+                    device_name = device_names.get(device_imei, device_imei)
+
+                    cursor.execute("""
+                        SELECT start_time, duration_of_state, date_logged, end_time,
+                               start_location, end_location,
+                               start_location_cords, end_location_cords
+                        FROM dll_state_durations
+                        WHERE device_imei = %s
+                        AND state = %s
+                        AND end_time != 'Incoming'
+                        AND date_logged BETWEEN %s AND %s
+                    """, (device_imei, report_state, start_iso, end_iso))
+
+                    print(f"[state_report_data] device={device_imei}, state={report_state}, rowcount={cursor.rowcount}")
+
+                    if cursor.rowcount >= 1:
+                        states_for_device = {device_name: []}
+
+                        for row in cursor.fetchall():
+                            duration_min = int(row[1]) if row[1] else 0
+                            if duration_min < 60:
+                                duration_str = f"{duration_min} Minutes"
+                            else:
+                                hours = duration_min // 60
+                                minutes = duration_min % 60
+                                duration_str = f"{hours}Hr{'s' if hours > 1 else ''}-{minutes}Min{'s' if minutes != 1 else ''}"
+
+                            states_for_device[device_name].append({
+                                "date_logged": str(row[2]) if row[2] else "",
+                                "start_time": str(row[0]) if row[0] else "",
+                                "end_time": str(row[3]) if row[3] else "",
+                                "duration": duration_str,
+                                "duration_minutes": duration_min,
+                                "start_location": str(row[4]) if row[4] else "",
+                                "end_location": str(row[5]) if row[5] else "",
+                                "start_gps": str(row[6]) if row[6] else "",
+                                "end_gps": str(row[7]) if row[7] else ""
+                            })
+
+                        all_states.append(states_for_device)
+
+                if len(all_states) > 0:
+                    return reply('success', 200, f'Found {report_state} Data', all_states)
+                else:
+                    return reply('error', 400, f'No {report_state} Data Found', '')
+
+    except Exception as error:
+        return reply('error', 500, str(error), '')
+
+
+# ── Overspeeding Report (lightweight — returns JSON for client-side generation) ──
+@data_stream.route("/data-stream/reports/overspeeding/generate-data", methods=["POST"])
+def overspeeding_report_data():
+    try:
+        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        payload_data = request.get_json()
+        _cassandra_session = get_cassandra_session()
+
+        report_devices = payload_data['data']['report_devices']
+        start_date = str(payload_data['data']['start_date'])
+        end_date = str(payload_data['data']['end_date'])
+
+        print(f"[overspeeding_report_data] devices={report_devices}, dates={start_date} to {end_date}")
+
+        if len(report_devices) == 0 or len(start_date) < 5 or len(end_date) < 5:
+            return reply('error', 400, 'Some data is Missing', '')
+
+        from datetime import datetime as dt
+        try:
+            start_dt = dt.strptime(start_date, "%d-%m-%Y").date()
+            end_dt = dt.strptime(end_date, "%d-%m-%Y").date()
+        except ValueError:
+            return reply('error', 400, 'Invalid date format. Use DD-MM-YYYY', '')
+
+        if start_dt > end_dt:
+            start_dt, end_dt = end_dt, start_dt
+
+        start_ddmmyyyy = start_dt.strftime("%d-%m-%Y")
+        end_ddmmyyyy = end_dt.strftime("%d-%m-%Y")
+
+        # Fetch device names from Cassandra
+        device_names = {}
+        try:
+            cass_query = _cassandra_session.prepare("""
+                SELECT device_imei, device_name FROM dll_device_basic_data WHERE device_imei IN ?
+            """)
+            cass_rows = _cassandra_session.execute(cass_query, (report_devices,))
+            for d in cass_rows:
+                device_names[d.device_imei] = d.device_name
+        except Exception:
+            try:
+                cass_query = _cassandra_session.prepare("""
+                    SELECT device_imei, device_name FROM dll_device_basic_data WHERE device_imei = ?
+                """)
+                for imei in report_devices:
+                    cass_row = _cassandra_session.execute(cass_query, (imei,)).one()
+                    device_names[imei] = cass_row.device_name if cass_row else imei
+            except Exception:
+                for imei in report_devices:
+                    device_names[imei] = imei
+
+        with dbconnect:
+            with dbconnect.cursor() as cursor:
+                all_events = []
+
+                for device_imei in report_devices:
+                    device_name = device_names.get(device_imei, device_imei)
+
+                    cursor.execute("""
+                        SELECT location_logged, value_from_device, value_triggered,
+                               location_cordinates, date_logged
+                        FROM dll_triggered_events
+                        WHERE event_triggered = %s
+                        AND device_imei = %s
+                        AND TO_TIMESTAMP(date_logged, 'DD-MM-YYYY')
+                            BETWEEN TO_TIMESTAMP(%s, 'DD-MM-YYYY') AND TO_TIMESTAMP(%s, 'DD-MM-YYYY')
+                    """, ('speed', device_imei, start_ddmmyyyy, end_ddmmyyyy))
+
+                    print(f"[overspeeding_report_data] device={device_imei}, rowcount={cursor.rowcount}")
+
+                    if cursor.rowcount >= 1:
+                        events_for_device = {device_name: []}
+                        for row in cursor.fetchall():
+                            events_for_device[device_name].append({
+                                "date_logged": str(row[4]) if row[4] else "",
+                                "location_point": str(row[0]) if row[0] else "",
+                                "moving_speed": str(row[1]) + "KM/H" if row[1] else "",
+                                "event_triggered": str(row[2]) if row[2] else "",
+                                "gps_coordinates": str(row[3]) if row[3] else ""
+                            })
+                        all_events.append(events_for_device)
+
+                if len(all_events) > 0:
+                    return reply('success', 200, 'Found Overspeeding Events', all_events)
+                else:
+                    return reply('error', 400, 'No Overspeeding Events Found', '')
+
+    except Exception as error:
+        return reply('error', 500, str(error), '')
+
+
+# ── Geozone Breach Report (lightweight — returns JSON for client-side generation) ──
+@data_stream.route("/data-stream/reports/geozone/generate-data", methods=["POST"])
+def geozone_report_data():
+    try:
+        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        payload_data = request.get_json()
+        _cassandra_session = get_cassandra_session()
+        report_devices = payload_data['data']['report_devices']
+        start_date = str(payload_data['data']['start_date'])
+        end_date = str(payload_data['data']['end_date'])
+        print(f"[geozone_report_data] devices={report_devices}, dates={start_date} to {end_date}")
+        if len(report_devices) == 0 or len(start_date) < 5 or len(end_date) < 5:
+            return reply('error', 400, 'Some data is Missing', '')
+        from datetime import datetime as dt
+        try:
+            start_dt = dt.strptime(start_date, "%d-%m-%Y").date()
+            end_dt = dt.strptime(end_date, "%d-%m-%Y").date()
+        except ValueError:
+            return reply('error', 400, 'Invalid date format. Use DD-MM-YYYY', '')
+        if start_dt > end_dt:
+            start_dt, end_dt = end_dt, start_dt
+        start_ddmmyyyy = start_dt.strftime("%d-%m-%Y")
+        end_ddmmyyyy = end_dt.strftime("%d-%m-%Y")
+        device_names = {}
+        try:
+            cass_query = _cassandra_session.prepare("SELECT device_imei, device_name FROM dll_device_basic_data WHERE device_imei IN ?")
+            cass_rows = _cassandra_session.execute(cass_query, (report_devices,))
+            for d in cass_rows:
+                device_names[d.device_imei] = d.device_name
+        except Exception:
+            try:
+                cass_query = _cassandra_session.prepare("SELECT device_imei, device_name FROM dll_device_basic_data WHERE device_imei = ?")
+                for imei in report_devices:
+                    cass_row = _cassandra_session.execute(cass_query, (imei,)).one()
+                    device_names[imei] = cass_row.device_name if cass_row else imei
+            except Exception:
+                for imei in report_devices:
+                    device_names[imei] = imei
+        with dbconnect:
+            with dbconnect.cursor() as cursor:
+                all_events = []
+                for device_imei in report_devices:
+                    device_name = device_names.get(device_imei, device_imei)
+                    cursor.execute("""
+                        SELECT location_logged, value_from_device, value_triggered,
+                               location_cordinates, date_logged
+                        FROM dll_triggered_events
+                        WHERE event_triggered = %s
+                        AND device_imei = %s
+                        AND TO_TIMESTAMP(date_logged, 'DD-MM-YYYY')
+                            BETWEEN TO_TIMESTAMP(%s, 'DD-MM-YYYY') AND TO_TIMESTAMP(%s, 'DD-MM-YYYY')
+                    """, ('geozone', device_imei, start_ddmmyyyy, end_ddmmyyyy))
+                    print(f"[geozone_report_data] device={device_imei}, rowcount={cursor.rowcount}")
+                    if cursor.rowcount >= 1:
+                        events_for_device = {device_name: []}
+                        for row in cursor.fetchall():
+                            geozone_id = str(row[1]).replace("inside_", "") if row[1] else ""
+                            geozone_name = "Unknown"
+                            if geozone_id:
+                                cursor.execute("SELECT geozone_name FROM dll_geozones WHERE geozone_uid = %s", (geozone_id,))
+                                gz_info = cursor.fetchone()
+                                geozone_name = gz_info[0] if gz_info else "Deleted Zone"
+                            events_for_device[device_name].append({
+                                "date_logged": str(row[4]) if row[4] else "",
+                                "location_point": str(row[0]) if row[0] else "",
+                                "geozone_name": geozone_name,
+                                "event_triggered": str(row[2]) if row[2] else "",
+                                "gps_coordinates": str(row[3]) if row[3] else ""
+                            })
+                        all_events.append(events_for_device)
+                if len(all_events) > 0:
+                    return reply('success', 200, 'Found Geozone Events', all_events)
+                else:
+                    return reply('error', 400, 'No Geozone Events Found', '')
     except Exception as error:
         return reply('error', 500, str(error), '')
