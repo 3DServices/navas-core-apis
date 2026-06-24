@@ -24,6 +24,7 @@ from .auth import auth_bp
 from .products_billing import _products_billing
 from .product_variant import _products_variant
 from .marketplace import marketplace_bp
+from .events import device_eventsbp
 
 def Sentinel_Fleet():
     app = Flask(__name__)
@@ -53,6 +54,7 @@ def Sentinel_Fleet():
     app.register_blueprint(_products_billing)
     app.register_blueprint(_products_variant)
     app.register_blueprint(marketplace_bp)
+    app.register_blueprint(device_eventsbp)
 
     # Register metrics middleware
     register_metrics_middleware(app)
