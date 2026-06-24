@@ -409,6 +409,43 @@ def DeleteGeoZoneData(geozone_id):
         return reply("error", 500, str(error), "")
 
 
+@geozones_bp.route("/geozones/<string:geozone_id>/attached-devices", methods=["GET"])
+def GetAttachedDevices(geozone_id):
+    """Return all device IMEIs that have this geozone in their attached_geozones list."""
+    try:
+        _dbconnect = psycopg2.connect(current_app.config['db_link'])
+        _geozoneID = str(geozone_id)
+
+        if len(_geozoneID) < 6:
+            return reply("error", 400, "Some data is Missing", "")
+
+        with _dbconnect:
+            with _dbconnect.cursor() as cursor:
+                # Find all device rows whose attached_geozones JSON array contains this geozone
+                cursor.execute(
+                    "SELECT device_imei, attached_geozones FROM dll_geozone_attachments"
+                )
+                _attachedDevices = []
+
+                for row in cursor.fetchall():
+                    _deviceImei = row[0]
+                    try:
+                        _zones = json.loads(row[1]) if isinstance(row[1], str) else row[1]
+                    except Exception:
+                        _zones = []
+
+                    if _geozoneID in [str(z) for z in _zones]:
+                        _attachedDevices.append(_deviceImei)
+
+                if len(_attachedDevices) > 0:
+                    return reply("success", 200, "Found attached devices", _attachedDevices)
+                else:
+                    return reply("success", 200, "No devices attached", [])
+
+    except Exception as error:
+        return reply("error", 500, str(error), "")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # GEOZONE GROUPS — CRUD + assign/remove geofences to/from groups
 #
