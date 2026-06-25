@@ -581,6 +581,7 @@ def action_user():
                             obj=f"User {AccountID} {'unblocked' if Action == 'active' else 'blocked'}",
                             domain='RBAC',
                             severity='Alarm',
+                            tenant_id=g.current_user.get('account_root') if hasattr(g, 'current_user') else None,
                             ip_address=request.remote_addr,
                             meta={"target_uid": AccountID, "new_status": Action}
                         )
@@ -640,6 +641,7 @@ def assign_user_role(user_uid):
                     obj=f"Role '{role_name}' assigned to user {user_uid}",
                     domain='RBAC',
                     severity='Alarm',
+                    tenant_id=g.current_user.get('account_root'),
                     ip_address=request.remote_addr,
                     meta={"target_uid": user_uid, "role_name": role_name, "updated_by": updated_by}
                 )
@@ -690,6 +692,7 @@ def reset_password(user_uid):
                     obj=f"Admin reset password for user {user_uid}",
                     domain='RBAC',
                     severity='Alarm',
+                    tenant_id=g.current_user.get('account_root'),
                     ip_address=request.remote_addr,
                     meta={"target_uid": user_uid}
                 )

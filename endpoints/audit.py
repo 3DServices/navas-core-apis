@@ -29,6 +29,11 @@ def get_audit_events():
     dbconnect = psycopg2.connect(current_app.config['db_link'])
 
     try:
+        # Auto-migrate: add flagged column if it doesn't exist
+        with dbconnect:
+            with dbconnect.cursor() as _cur:
+                _cur.execute("ALTER TABLE dll_audit_events ADD COLUMN IF NOT EXISTS flagged BOOLEAN DEFAULT false")
+
         domain = request.args.get('domain')
         severity = request.args.get('severity')
         actor = request.args.get('actor')
@@ -38,6 +43,17 @@ def get_audit_events():
         date_to = request.args.get('date_to')
         tenant_id = request.args.get('tenant_id')
         search = request.args.get('search')
+
+        # SECURITY: Enforce tenant scoping for non-admin users.
+        # Customers can only see their own tenant's audit events.
+        user_role = g.current_user.get('user_role', '') if hasattr(g, 'current_user') else ''
+        account_type = g.current_user.get('account_type', '') if hasattr(g, 'current_user') else ''
+        if user_role not in ('super_admin', 'system') and account_type != 'system_account':
+            # Force tenant_id to the authenticated user's account_root
+            tenant_id = g.current_user.get('account_root', '') if hasattr(g, 'current_user') else ''
+            if not tenant_id:
+                dbconnect.close()
+                return reply('error', 403, 'Unable to determine tenant scope', '')
 
         # Validate domain
         if domain and domain not in VALID_DOMAINS:
@@ -51,7 +67,7 @@ def get_audit_events():
         if range_val and range_val not in VALID_RANGES:
             return reply('error', 400, f'Invalid range. Valid: {", ".join(VALID_RANGES.keys())}', '')
 
-        query = "SELECT id, timestamp, actor, action, object, domain, severity, tenant_id, ip_address, hash_prev, hash_this, meta FROM dll_audit_events WHERE 1=1"
+        query = "SELECT id, timestamp, actor, action, object, domain, severity, tenant_id, ip_address, hash_prev, hash_this, meta, COALESCE(flagged, false) as flagged FROM dll_audit_events WHERE 1=1"
         params = []
 
         if domain:
@@ -113,10 +129,92 @@ def get_audit_events():
                         "ip_address": row['ip_address'],
                         "hash_prev": row['hash_prev'],
                         "hash_this": row['hash_this'],
-                        "meta": row['meta'] if row['meta'] else {}
+                        "meta": row['meta'] if row['meta'] else {},
+                        "flagged": row['flagged']
                     })
 
                 return reply('success', 200, 'Audit events retrieved', events)
+
+    except Exception as error:
+        return reply('error', 500, str(error), '')
+    finally:
+        dbconnect.close()
+
+
+# ==========================================
+# 1b. PATCH /audit/events/<id>/flag
+# ==========================================
+@audit_bp.route("/audit/events/<event_id>/flag", methods=["PATCH"])
+@require_permission('audit.view')
+def flag_audit_event(event_id):
+    dbconnect = psycopg2.connect(current_app.config['db_link'])
+
+    try:
+        payload = request.get_json() or {}
+        flagged = payload.get('flagged', True)
+
+        # SECURITY: Enforce tenant scoping for non-admin users.
+        user_role = g.current_user.get('user_role', '') if hasattr(g, 'current_user') else ''
+        account_type = g.current_user.get('account_type', '') if hasattr(g, 'current_user') else ''
+
+        with dbconnect:
+            with dbconnect.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                if user_role not in ('super_admin', 'system') and account_type != 'system_account':
+                    tenant_id = g.current_user.get('account_root', '')
+                    cursor.execute(
+                        "UPDATE dll_audit_events SET flagged = %s WHERE id = %s AND tenant_id = %s RETURNING id",
+                        (bool(flagged), str(event_id), str(tenant_id))
+                    )
+                else:
+                    cursor.execute(
+                        "UPDATE dll_audit_events SET flagged = %s WHERE id = %s RETURNING id",
+                        (bool(flagged), str(event_id))
+                    )
+
+                row = cursor.fetchone()
+                if not row:
+                    return reply('error', 404, 'Event not found or access denied', '')
+
+                return reply('success', 200, f'Event {"flagged" if flagged else "unflagged"}', {"id": event_id, "flagged": flagged})
+
+    except Exception as error:
+        return reply('error', 500, str(error), '')
+    finally:
+        dbconnect.close()
+
+
+# ==========================================
+# 1c. DELETE /audit/events/<id>
+# ==========================================
+@audit_bp.route("/audit/events/<event_id>", methods=["DELETE"])
+@require_permission('audit.view')
+def delete_audit_event(event_id):
+    dbconnect = psycopg2.connect(current_app.config['db_link'])
+
+    try:
+        # SECURITY: Enforce tenant scoping for non-admin users.
+        user_role = g.current_user.get('user_role', '') if hasattr(g, 'current_user') else ''
+        account_type = g.current_user.get('account_type', '') if hasattr(g, 'current_user') else ''
+
+        with dbconnect:
+            with dbconnect.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                if user_role not in ('super_admin', 'system') and account_type != 'system_account':
+                    tenant_id = g.current_user.get('account_root', '')
+                    cursor.execute(
+                        "DELETE FROM dll_audit_events WHERE id = %s AND tenant_id = %s RETURNING id",
+                        (str(event_id), str(tenant_id))
+                    )
+                else:
+                    cursor.execute(
+                        "DELETE FROM dll_audit_events WHERE id = %s RETURNING id",
+                        (str(event_id),)
+                    )
+
+                row = cursor.fetchone()
+                if not row:
+                    return reply('error', 404, 'Event not found or access denied', '')
+
+                return reply('success', 200, 'Event deleted', {"id": event_id})
 
     except Exception as error:
         return reply('error', 500, str(error), '')
@@ -404,6 +502,12 @@ def request_export():
         redact_pii = data.get('redact_pii', True)
         include_raw_payloads = data.get('include_raw_payloads', False)
         approver_ids = data.get('approver_ids', [])
+
+        # SECURITY: Enforce tenant scoping for non-admin users.
+        user_role = g.current_user.get('user_role', '') if hasattr(g, 'current_user') else ''
+        account_type = g.current_user.get('account_type', '') if hasattr(g, 'current_user') else ''
+        if user_role not in ('super_admin', 'system') and account_type != 'system_account':
+            tenant_id = g.current_user.get('account_root', '') if hasattr(g, 'current_user') else ''
 
         if not tenant_id:
             return reply('error', 400, 'tenant_id is required', '')

@@ -17,8 +17,12 @@ CREATE TABLE IF NOT EXISTS dll_audit_events (
     hash_prev VARCHAR(200),
     hash_this VARCHAR(200),
     meta JSONB DEFAULT '{}',
+    flagged BOOLEAN DEFAULT false,
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+-- Add flagged column if table already exists
+ALTER TABLE dll_audit_events ADD COLUMN IF NOT EXISTS flagged BOOLEAN DEFAULT false;
 
 CREATE INDEX IF NOT EXISTS idx_audit_events_domain ON dll_audit_events(domain);
 CREATE INDEX IF NOT EXISTS idx_audit_events_severity ON dll_audit_events(severity);

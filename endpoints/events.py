@@ -152,6 +152,29 @@ def mark_notification_read(notification_uid):
         return reply("error", 500, f"Error updating notification: {str(e)}", "")
 
 
+@device_eventsbp.route("/notifications/<owner_uid>/mark-all-read", methods=["PUT"])
+def mark_all_notifications_read(owner_uid):
+    """Mark all notifications as read for an owner."""
+    try:
+        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        cur = dbconnect.cursor()
+
+        cur.execute("""
+            UPDATE dll_event_notifications
+            SET is_read = TRUE
+            WHERE owner_uid = %s AND is_read = FALSE
+        """, (owner_uid,))
+        updated = cur.rowcount
+        dbconnect.commit()
+        cur.close()
+        dbconnect.close()
+
+        return reply("success", 200, "All notifications marked as read", {"updated": updated})
+
+    except Exception as e:
+        return reply("error", 500, f"Error marking notifications as read: {str(e)}", "")
+
+
 @device_eventsbp.route("/notifications/<owner_uid>/unread-count", methods=["GET"])
 def get_unread_count(owner_uid):
     """Get the count of unread notifications for an owner."""
