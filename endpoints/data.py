@@ -1908,7 +1908,7 @@ def geocoding():
                 "https://nominatim.openstreetmap.org/reverse",
                 params={"lat": LatitudeCords, "lon": LongitudeCords, "format": "json"},
                 headers={"User-Agent": "NarvasFleet/1.0 (support@navas.ug)"},
-                timeout=60,
+                timeout=6,
             )
             api_reply = geocode_request.json() if geocode_request.ok else {}
 
