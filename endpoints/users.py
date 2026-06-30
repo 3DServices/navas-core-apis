@@ -213,7 +213,7 @@ def auth_user():
                 with dbconnect.cursor() as cursor:
                     # Fetch user by username only (password verified with bcrypt below)
                     cursor.execute(
-                        "SELECT access_status, account_root, account_uid, account_clearance, account_type, log_password, display_name "
+                        "SELECT access_status, account_root, account_uid, account_clearance, account_type, log_password "
                         "FROM dll_access_relay WHERE log_username=%s;",
                         (UsernameInputed,)
                     )
@@ -251,7 +251,6 @@ def auth_user():
                             account_root = data_adapter[1]
                             account_role = data_adapter[3]
                             account_type = data_adapter[4]
-                            account_name = data_adapter[6] or ""  # display_name
 
                             # Update last login timestamp
                             cursor.execute("UPDATE dll_access_relay SET last_login_at = NOW() WHERE account_uid = %s", (account_uid,))
@@ -267,7 +266,6 @@ def auth_user():
                                 "account_root": account_root,
                                 "account_role": account_role,
                                 "account_type": account_type,
-                                "account_name": account_name,
                                 "access_token": access_token,
                             }
 

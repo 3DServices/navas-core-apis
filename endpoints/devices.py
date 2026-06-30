@@ -1221,7 +1221,7 @@ def create_new_device_event():
     try:
         payload_data = request.get_json()
 
-        if(len(str(payload_data['data']['event_name'])) > 2) and (len(str(payload_data['data']['event_description'])) > 2) and (len(str(payload_data['data']['event_condition'])) > 2) and (len(str(payload_data['data']['event_owner_uid'])) > 2):
+        if(len(str(payload_data['data']['event_name'])) > 2) and (len(str(payload_data['data']['event_description'])) > 2) and (len(str(payload_data['data']['event_condition'])) > 2) and (len(str(payload_data['data']['event_condition_value'])) > 0) and (len(str(payload_data['data']['event_owner_uid'])) > 2):
 
             EventName = str(payload_data['data']['event_name'])
             EventDescription = str(payload_data['data']['event_description'])
@@ -1229,7 +1229,7 @@ def create_new_device_event():
             AlertEmail = str(payload_data['data']['alert_email'])
             AlertPhoneNumbers = str(payload_data['data']['alert_phone_numbers'])
             AlertChannels = json.dumps(payload_data['data']['alert_channels'])
-            EventCondition_value = str(payload_data['data'].get('event_condition_value', ''))
+            EventCondition_value = str(payload_data['data']['event_condition_value'])
             EventOwner = str(payload_data['data']['event_owner_uid'])
 
             EventID = str(uuid.uuid4())
@@ -1238,7 +1238,7 @@ def create_new_device_event():
                 with dbconnect.cursor() as cursor:
                     cursor.execute("INSERT INTO dll_device_events VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s);", (str(EventID), EventName, EventDescription, EventCondition, EventCondition_value, datetime.datetime.now().date(), EventOwner, '0', AlertChannels, AlertEmail, AlertPhoneNumbers,))
 
-                    return reply('success', 200, 'Event Creation SuccessFul', str(EventID))
+                    return reply('success', 200, 'Event Creation SuccessFul', '')
 
         else:
             return reply('error', 400, 'Something Is Missing', '')
@@ -1257,7 +1257,7 @@ def update_event(event_uid):
         dbconnect = psycopg2.connect(current_app.config['db_link'])
         payload_data = request.get_json()
 
-        if(len(str(payload_data['data']['event_name'])) > 2) and (len(str(payload_data['data']['event_description'])) > 2) and (len(str(payload_data['data']['event_condition'])) > 2):
+        if(len(str(payload_data['data']['event_name'])) > 2) and (len(str(payload_data['data']['event_description'])) > 2) and (len(str(payload_data['data']['event_condition'])) > 2) and (len(str(payload_data['data']['event_condition_value'])) > 0):
 
             EventName = str(payload_data['data']['event_name'])
             EventDescription = str(payload_data['data']['event_description'])
@@ -1265,7 +1265,7 @@ def update_event(event_uid):
             AlertEmail = str(payload_data['data']['alert_email'])
             AlertPhoneNumbers = str(payload_data['data']['alert_phone_numbers'])
             AlertChannels = json.dumps(payload_data['data']['alert_channels'])
-            EventCondition_value = str(payload_data['data'].get('event_condition_value', ''))
+            EventCondition_value = str(payload_data['data']['event_condition_value'])
             Event_UID = str(event_uid)
 
             with dbconnect:
