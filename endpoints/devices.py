@@ -308,7 +308,7 @@ def get_configured_devices():
                         _simcard_query = _cassandra_session.prepare("SELECT device_name, device_simcard, device_car_make, device_car_model, device_vin_number, device_car_type, events_attached, device_billing_status, device_client FROM dll_device_basic_data WHERE device_imei = ?")
                         rows_basic = _cassandra_session.execute(_simcard_query, (FoundIMEI,))
                         DeviceBasicData_Adapter = rows_basic[0] if rows_basic else None
-                        if True:
+                        if DeviceBasicData_Adapter:
                             SimCard = DeviceBasicData_Adapter.device_simcard
                             # Using PostgreSQL for dll_telecom_assets query
                             conn = get_postgres_connection()
@@ -511,7 +511,7 @@ def get_system32_configured_devices():
                         _simcard_query = _cassandra_session.prepare("SELECT device_name, device_simcard, device_car_make, device_car_model, device_vin_number, device_car_type, events_attached, device_billing_status, device_client FROM dll_device_basic_data WHERE device_imei = ?")
                         rows_basic = _cassandra_session.execute(_simcard_query, (FoundIMEI,))
                         DeviceBasicData_Adapter = rows_basic[0] if rows_basic else None
-                        if True:
+                        if DeviceBasicData_Adapter:
                             SimCard = DeviceBasicData_Adapter.device_simcard
                             # Using PostgreSQL for dll_telecom_assets query
                             conn = get_postgres_connection()

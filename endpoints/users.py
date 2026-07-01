@@ -251,7 +251,7 @@ def auth_user():
                             account_root = data_adapter[1]
                             account_role = data_adapter[3]
                             account_type = data_adapter[4]
-                            account_name = data_adapter[6] or ""  # display_name
+                            account_name = data_adapter[6] or UsernameInputed or ""  # display_name → username fallback
 
                             # Update last login timestamp
                             cursor.execute("UPDATE dll_access_relay SET last_login_at = NOW() WHERE account_uid = %s", (account_uid,))
@@ -350,7 +350,7 @@ def get_user_details(account_uid):
                     UserFullName = UserData[0] if UserData else str(CreatedBY)
 
                     user_data = {
-                        "account_name": data_adapter[10],
+                        "account_name": data_adapter[10] or data_adapter[8] or "",
                         "account_type": data_adapter[2],
                         "account_role": data_adapter[3],
                         "access_status": data_adapter[4],
