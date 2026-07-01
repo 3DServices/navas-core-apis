@@ -382,6 +382,14 @@ def UpdateToken(token_id):
             return response_out("success", "Token updated successfully", 200, {"token_name": _TokenName})
 
 
+def _safe_num(val):
+    """Coerce a value to a number, returning 0 for non-numeric strings (legacy data)."""
+    try:
+        n = float(val)
+        return int(n) if n == int(n) else n
+    except (TypeError, ValueError):
+        return 0
+
 @_token_billing.route("/tokens/<string:client_uid>/balance", methods=["GET"])
 @require_permission('tokens.view_balance')
 def ClientToken_Balance(client_uid):
@@ -440,10 +448,10 @@ def ClientToken_Balance(client_uid):
                 return response_out("success", "Client token balance retrieved successfully", 200, {
                     "client_uid": client_uid,
                     "client_name": client_name,
-                    "token_hours_left": token_balance[0],
-                    "token_hours_used": token_balance[1],
-                    "token_used_units": token_balance[4],
-                    "token_units_left": token_balance[5],
+                    "token_hours_left": _safe_num(token_balance[0]),
+                    "token_hours_used": _safe_num(token_balance[1]),
+                    "token_used_units": _safe_num(token_balance[4]),
+                    "token_units_left": _safe_num(token_balance[5]),
                     "token_status": token_balance[6],
                     "token_uid": token_balance[2],
                     "token_name": token_name,
@@ -459,10 +467,10 @@ def ClientToken_Balance(client_uid):
                     _runningTokens.append({
                         "client_uid": client_uid,
                         "client_name": client_name,
-                        "token_hours_left": token[0],
-                        "token_hours_used": token[1],
-                        "token_used_units": token[4],
-                        "token_units_left": token[5],
+                        "token_hours_left": _safe_num(token[0]),
+                        "token_hours_used": _safe_num(token[1]),
+                        "token_used_units": _safe_num(token[4]),
+                        "token_units_left": _safe_num(token[5]),
                         "token_status": token[6],
                         "token_uid": token[2],
                         "token_name": token_name,

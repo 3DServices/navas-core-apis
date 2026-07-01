@@ -233,7 +233,7 @@ def SpecialTokenAuthorization():
             with _dbconnect.cursor() as cursor:
                 for i in range(int(_QuantityAuthorized)):
                     _TokenBillingUID = str(uuid.uuid4())
-                    cursor.execute("INSERT INTO dll_user_token_accounts (client_uid, token_balance, token_status, token_hours_used, token_hours_left, token_billing_uid, token_units_left, token_used_units) VALUES(%s, %s, %s, %s, %s, %s, %s, %s)", (_ClientUID_Authorized, _TokenUID_Authorized, 'new', 'column deprecated use token_used_units column', 'column deprecated use token_units_left column', _TokenBillingUID, 'units_unfined_waiting_for_first_use', 'units_unfined_waiting_for_first_use',))
+                    cursor.execute("INSERT INTO dll_user_token_accounts (client_uid, token_balance, token_status, token_hours_used, token_hours_left, token_billing_uid, token_units_left, token_used_units) VALUES(%s, %s, %s, %s, %s, %s, %s, %s)", (_ClientUID_Authorized, _TokenUID_Authorized, 'new', 0, 0, _TokenBillingUID, 0, 0,))
 
         return reply('success', 200, 'Token(s) Authorized SuccessFully', '')
 

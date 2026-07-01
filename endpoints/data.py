@@ -1904,20 +1904,31 @@ def geocoding():
             #         LOCATION = AddrMunicipality + ', ' + AddrSubDivision + ', ' + AddrCountry
                     #LOCATION = api_data['results'][0]['formatted_address']
 
-            geocode_request = requests.get(
-                "https://nominatim.openstreetmap.org/reverse",
-                params={"lat": LatitudeCords, "lon": LongitudeCords, "format": "json"},
-                headers={"User-Agent": "NarvasFleet/1.0 (support@navas.ug)"},
-                timeout=6,
-            )
-            api_reply = geocode_request.json() if geocode_request.ok else {}
+            # Try Nominatim with retry (rate limit = 1 req/sec)
+            LOCATION = None
+            import time as _time
+            for _attempt in range(2):
+                try:
+                    geocode_request = requests.get(
+                        "https://nominatim.openstreetmap.org/reverse",
+                        params={"lat": LatitudeCords, "lon": LongitudeCords, "format": "json"},
+                        headers={"User-Agent": "NarvasFleet/1.0 (support@navas.ug)"},
+                        timeout=15,
+                    )
+                    if geocode_request.ok:
+                        api_reply = geocode_request.json()
+                        if 'display_name' in api_reply:
+                            LOCATION = api_reply['display_name']
+                            break
+                except Exception:
+                    pass
+                if _attempt == 0:
+                    _time.sleep(1.1)  # respect Nominatim 1 req/sec rate limit
 
-            if 'display_name' in api_reply:
-                LOCATION = api_reply['display_name']
-            else:
-                LOCATION = "geocodding_api_failure"
 
-            
+            # Fallback: return raw coordinates if geocoding failed
+            if not LOCATION:
+                LOCATION = f"{LatitudeCords}, {LongitudeCords}"
 
             geocodding_data = {
                 "location": LOCATION
