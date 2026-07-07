@@ -571,7 +571,7 @@ def action_user():
             Action = payload_data['data']['action']
             AccountID = payload_data['data']['account_uid']
 
-            if(Action == 'active') or (Action == 'locked'):
+            if(Action == 'active') or (Action == 'locked') or (Action == 'deactivated'):
                 with dbconnect:
                     with dbconnect.cursor() as cursor:
                         cursor.execute("UPDATE dll_access_relay SET access_status=%s WHERE account_uid=%s;", (str(Action), str(AccountID),))
@@ -591,7 +591,7 @@ def action_user():
                         return reply('success', 200, 'Action SuccessFull', '')
 
             else:
-                return reply('error', 400, 'Invalid action value (active or locked) expected', '')
+                return reply('error', 400, 'Invalid action value (active, locked, or deactivated) expected', '')
 
         else:
             return reply('error', 400, 'Something Is Missing', '')
@@ -599,7 +599,61 @@ def action_user():
     except Exception as error:
         logging.getLogger('users').exception('Operation failed: %s', error)
         return reply('error', 500, 'An internal error occurred', '')
-    
+
+
+# Deactivate / soft-delete a user account
+@users_bp.route("/users/<user_uid>/delete", methods=["POST"])
+@require_permission('users.delete')
+def delete_user(user_uid):
+    """Soft-delete a user by setting access_status to 'deactivated'."""
+    dbconnect = psycopg2.connect(current_app.config["db_link"])
+
+    try:
+        uid = str(user_uid).strip()
+        if len(uid) < 5:
+            return reply('error', 400, 'Invalid user UID', '')
+
+        with dbconnect:
+            with dbconnect.cursor() as cursor:
+                # Verify user exists and is not already deactivated
+                cursor.execute(
+                    "SELECT access_status, account_type FROM dll_access_relay WHERE account_uid=%s;",
+                    (uid,),
+                )
+                if cursor.rowcount == 0:
+                    return reply('error', 404, 'User not found', '')
+
+                row = cursor.fetchone()
+                if row[0] == 'deactivated':
+                    return reply('error', 400, 'User is already deactivated', '')
+
+                # Prevent deleting system accounts
+                if row[1] == 'system_account':
+                    return reply('error', 403, 'Cannot deactivate system accounts', '')
+
+                # Soft-delete: set status to deactivated
+                cursor.execute(
+                    "UPDATE dll_access_relay SET access_status='deactivated' WHERE account_uid=%s;",
+                    (uid,),
+                )
+
+                log_audit_event(
+                    actor=g.current_user['account_uid'] if hasattr(g, 'current_user') else 'system',
+                    action='DEACTIVATE_USER',
+                    obj=f"User {uid} deactivated (soft-deleted)",
+                    domain='RBAC',
+                    severity='Alarm',
+                    tenant_id=g.current_user.get('account_root') if hasattr(g, 'current_user') else None,
+                    ip_address=request.remote_addr,
+                    meta={"target_uid": uid, "previous_status": row[0]}
+                )
+
+                return reply('success', 200, 'User deactivated successfully', '')
+
+    except Exception as error:
+        logging.getLogger('users').exception('delete_user failed: %s', error)
+        return reply('error', 500, 'An internal error occurred', '')
+
 
 @users_bp.route("/users/<user_uid>/assign-role", methods=["PUT"])
 @require_permission('rbac.manage')
