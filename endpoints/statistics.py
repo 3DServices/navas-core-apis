@@ -314,7 +314,7 @@ def GetExpiredVEBATokens():
         with dbconnect:
             with dbconnect.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
                 cursor.execute("""
-                    SELECT 
+                    SELECT
                         uta.token_billing_uid,
                         uta.client_uid,
                         uta.token_balance AS token_id,
@@ -329,7 +329,14 @@ def GetExpiredVEBATokens():
                     JOIN dll_tokens_registry tr ON uta.token_balance = tr.token_id
                     LEFT JOIN dll_client_accounts ca ON uta.client_uid = ca.client_uid
                     WHERE LOWER(tr.token_type) = 'veba'
-                      AND (uta.token_status = 'expired' OR COALESCE(uta.token_hours_left::numeric, 0) <= 0)
+                      AND (
+                        uta.token_status = 'expired'
+                        OR COALESCE(
+                            CASE WHEN uta.token_hours_left IS NULL OR TRIM(uta.token_hours_left::text) = '' THEN 0
+                                 ELSE uta.token_hours_left::numeric END,
+                            0
+                        ) <= 0
+                      )
                     ORDER BY ca.client_name, uta.token_billing_uid
                 """)
 
