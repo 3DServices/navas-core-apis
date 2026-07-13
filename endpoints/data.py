@@ -12,7 +12,10 @@ from decimal import Decimal
 from .globals import reply
 from .globals import compare_years
 import base64
-import pandas as pd
+try:
+    import pandas as pd
+except ImportError:
+    pd = None  # Lazy: only needed for Excel report exports
 from psycopg2 import extras
 from flask import send_from_directory
 from .globals import check_device

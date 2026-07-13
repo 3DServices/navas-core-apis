@@ -199,6 +199,49 @@ def ListTokens():
             return response_out("success", "Tokens retrieved successfully", 200, _tokensBusket)
 
 
+@_token_billing.route("/tokens/product/<product_uid>/list", methods=["GET"])
+def ListTokensByProduct(product_uid):
+    """Return all tokens that belong to a specific product (by token_product_uid)."""
+    if not product_uid or str(product_uid).strip() == "":
+        return response_out("error", "product_uid is required", 400, [])
+
+    dbconnect = psycopg2.connect(current_app.config['db_link'])
+
+    with dbconnect:
+        with dbconnect.cursor() as cursor:
+            cursor.execute(
+                "SELECT token_id, token_name, token_type, token_parameters, date_created, "
+                "token_product_uid, billing_unit, billing_trigger, billing_conditions, billing_scope, "
+                "token_amount, token_currency "
+                "FROM dll_tokens_registry WHERE token_product_uid = %s ORDER BY id DESC",
+                (str(product_uid).strip(),)
+            )
+
+            if cursor.rowcount == 0:
+                return response_out("success", "No tokens found for this product", 200, [])
+
+            tokens = cursor.fetchall()
+            product = _fetch_product(cursor, product_uid)
+            _tokensList = []
+            for token in tokens:
+                _tokensList.append({
+                    "token_id": token[0],
+                    "token_name": token[1],
+                    "token_type": token[2],
+                    "token_parameters": json.loads(token[3]) if token[3] else [],
+                    "date_created": token[4],
+                    "token_product_uid": token[5],
+                    "billing_unit": token[6],
+                    "billing_trigger": token[7],
+                    "billing_conditions": token[8] if token[8] is not None else [],
+                    "billing_scope": token[9],
+                    "token_amount": float(token[10]) if token[10] is not None else None,
+                    "token_currency": token[11],
+                    "product": product
+                })
+            return response_out("success", "Tokens retrieved successfully", 200, _tokensList)
+
+
 @_token_billing.route("/tokens/budget-offer", methods=["POST"])
 def TokensBudgetOffer():
     """Given a currency and an amount, return the available tokens whose price
