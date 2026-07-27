@@ -1238,7 +1238,7 @@ def create_new_device_event():
                 with dbconnect.cursor() as cursor:
                     cursor.execute("INSERT INTO dll_device_events VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s);", (str(EventID), EventName, EventDescription, EventCondition, EventCondition_value, datetime.datetime.now().date(), EventOwner, '0', AlertChannels, AlertEmail, AlertPhoneNumbers,))
 
-                    return reply('success', 200, 'Event Creation SuccessFul', '')
+                    return reply('success', 200, 'Event Creation SuccessFul', str(EventID))
 
         else:
             return reply('error', 400, 'Something Is Missing', '')
