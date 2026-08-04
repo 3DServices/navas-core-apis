@@ -7,6 +7,7 @@ from flask import jsonify
 import datetime
 from flask import current_app
 import bcrypt
+import base64
 import logging
 from decimal import Decimal
 from .globals import reply, require_permission, require_auth, log_audit_event
@@ -213,7 +214,7 @@ def auth_user():
                 with dbconnect.cursor() as cursor:
                     # Fetch user by username only (password verified with bcrypt below)
                     cursor.execute(
-                        "SELECT access_status, account_root, account_uid, account_clearance, account_type, log_password "
+                        "SELECT access_status, account_root, account_uid, account_clearance, account_type, log_password, display_name "
                         "FROM dll_access_relay WHERE log_username=%s;",
                         (UsernameInputed,)
                     )
@@ -223,14 +224,24 @@ def auth_user():
                         data_adapter = cursor.fetchone()
                         stored_password = data_adapter[5]
 
-                        # Verify password — bcrypt only.
-                        # Legacy base64 fallback has been removed. Accounts
-                        # with non-bcrypt hashes must use the admin password
-                        # reset flow before they can log in.
+                        # Verify password — bcrypt preferred, base64 legacy fallback.
                         password_valid = False
                         if stored_password and stored_password.startswith('$2'):
                             password_valid = bcrypt.checkpw(RawPassword.encode(), stored_password.encode())
-                        # else: legacy hash — password_valid stays False
+                        elif stored_password:
+                            # Legacy base64 fallback — auto-upgrade to bcrypt on success
+                            try:
+                                decoded_pw = base64.b64decode(stored_password).decode()
+                                if decoded_pw == RawPassword:
+                                    password_valid = True
+                                    # Auto-upgrade: re-hash with bcrypt so future logins use bcrypt
+                                    upgraded_hash = bcrypt.hashpw(RawPassword.encode(), bcrypt.gensalt()).decode()
+                                    cursor.execute(
+                                        "UPDATE dll_access_relay SET log_password=%s WHERE log_username=%s",
+                                        (upgraded_hash, UsernameInputed)
+                                    )
+                            except Exception:
+                                pass  # not valid base64 — password_valid stays False
 
                         if not password_valid:
                             log_audit_event(
@@ -305,6 +316,15 @@ def auth_user():
                                 ip_address=request.remote_addr
                             )
                             return reply('error', 401, 'Account is blocked, contact support', '')
+
+                        elif(AccessStatus == 'deactivated'):
+                            return reply('error', 401, 'Account has been deactivated, contact support', '')
+
+                        elif(AccessStatus == 'password_reset_required'):
+                            return reply('error', 403, 'Password reset required, contact your administrator', '')
+
+                        else:
+                            return reply('error', 401, 'Account is not active, contact support', '')
 
                     elif(cursor.rowcount == 0):
                         log_audit_event(
@@ -858,7 +878,15 @@ def AuthUser():
                         _pw_valid = False
                         if _stored_pw and _stored_pw.startswith('$2'):
                             _pw_valid = bcrypt.checkpw(_userPassword.encode(), _stored_pw.encode())
-                        # else: legacy hash — _pw_valid stays False
+                        elif _stored_pw:
+                            try:
+                                _decoded = base64.b64decode(_stored_pw).decode()
+                                if _decoded == _userPassword:
+                                    _pw_valid = True
+                                    _upgraded = bcrypt.hashpw(_userPassword.encode(), bcrypt.gensalt()).decode()
+                                    cursor.execute("UPDATE dll_access_relay SET log_password=%s WHERE account_uid=%s", (_upgraded, str(_userAuthenticating)))
+                            except Exception:
+                                pass
 
                         if not _pw_valid:
                             return reply("error", 400, "Incorrect Password - Rejected", "")
@@ -932,7 +960,13 @@ def ResetPassword():
                         _pw_valid = False
                         if _stored_pw and _stored_pw.startswith('$2'):
                             _pw_valid = bcrypt.checkpw(_OldPassword.encode(), _stored_pw.encode())
-                        # else: legacy hash — _pw_valid stays False
+                        elif _stored_pw:
+                            try:
+                                _decoded = base64.b64decode(_stored_pw).decode()
+                                if _decoded == _OldPassword:
+                                    _pw_valid = True
+                            except Exception:
+                                pass
 
                         if not _pw_valid:
                             return reply("error", 400, "Invalid Old Password - Rejected", "")
