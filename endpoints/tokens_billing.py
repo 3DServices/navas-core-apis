@@ -732,6 +732,41 @@ def RestoreSubscription():
                 return response_out("error", "Device subscription not found", 404, "")
 
 
+@_token_billing.route("/subscriptions/token/<token_billing_uid>/devices", methods=["GET"])
+def DevicesForToken(token_billing_uid):
+    """List the devices subscribed to a specific token (by token_billing_uid).
+
+    Returns the device IMEIs plus each subscription's status and start time,
+    so the client can show 'which of my vehicles are on this token'.
+    """
+    try:
+        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        with dbconnect:
+            with dbconnect.cursor() as cursor:
+                cursor.execute(
+                    "SELECT device_imei_number, subscription_status, start_date, start_counting_time "
+                    "FROM dll_device_subscriptions WHERE token_billing_uid=%s",
+                    (str(token_billing_uid),)
+                )
+
+                if cursor.rowcount == 0:
+                    return response_out("success", "No devices on this token", 200, [])
+
+                devices = []
+                for row in cursor.fetchall():
+                    devices.append({
+                        "device_imei": row[0],
+                        "subscription_status": row[1],
+                        "start_date": str(row[2]) if row[2] else "",
+                        "start_time": str(row[3]) if row[3] else ""
+                    })
+
+                return response_out("success", "Devices for token retrieved", 200, devices)
+
+    except Exception as error:
+        return response_out("error", str(error), 500, [])
+
+
 @_token_billing.route("/subscriptions/device/status", methods=["POST"])
 @require_permission('subscriptions.view_status')
 def CheckSubscriptionStatus():

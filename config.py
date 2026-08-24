@@ -48,6 +48,15 @@ BASE_URL = os.environ.get(
 JWT_ACCESS_EXPIRY_MINUTES = int(os.environ.get("JWT_ACCESS_EXPIRY_MINUTES", "30"))
 JWT_REFRESH_EXPIRY_DAYS = int(os.environ.get("JWT_REFRESH_EXPIRY_DAYS", "7"))
 
+# ── Waswa AI Assistant (OpenRouter) ────────────────────────────────────────
+# The API key is optional at startup so the app still boots without it; the
+# /assistant/chat endpoint returns a clear 503 when it is not configured.
+# Set OPENROUTER_API_KEY in your .env (gitignored) or server environment.
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o")
+OPENROUTER_SITE_URL = os.environ.get("OPENROUTER_SITE_URL", BASE_URL)
+OPENROUTER_SITE_NAME = os.environ.get("OPENROUTER_SITE_NAME", "OLIWA Mobile")
+
 # CORS — allowed origins for credential-bearing requests
 
 CORS_ORIGINS = [
