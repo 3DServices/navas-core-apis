@@ -25,3 +25,5 @@ python-dotenv
 # Note: On Linux systems, you may need to install system dependencies:
 # sudo apt install -y libpango-1.0-0 libpango1.0-dev
 # sudo apt install -y libcairo2 libcairo2-dev
+
+APScheduler

@@ -57,6 +57,17 @@ OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o")
 OPENROUTER_SITE_URL = os.environ.get("OPENROUTER_SITE_URL", BASE_URL)
 OPENROUTER_SITE_NAME = os.environ.get("OPENROUTER_SITE_NAME", "OLIWA Mobile")
 
+
+# ── Auto-Renew worker (Phase 2) ────────────────────────────────────────────
+# AUTO_RENEW_ENABLED starts the embedded scheduler. AUTO_RENEW_LIVE controls
+# whether the sweep actually mutates subscriptions; when false it only records
+# what it WOULD do to dll_auto_renew_log (safe dry-run). Keep both off until
+# the behaviour has been validated against real data.
+AUTO_RENEW_ENABLED = os.environ.get("AUTO_RENEW_ENABLED", "false").lower() == "true"
+AUTO_RENEW_LIVE = os.environ.get("AUTO_RENEW_LIVE", "false").lower() == "true"
+AUTO_RENEW_INTERVAL_MINUTES = int(
+    os.environ.get("AUTO_RENEW_INTERVAL_MINUTES", "15"))
+
 # CORS — allowed origins for credential-bearing requests
 
 CORS_ORIGINS = [

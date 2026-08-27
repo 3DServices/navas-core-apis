@@ -62,6 +62,42 @@ app.config['db_link'] = DB_LINK
 app.config['base_url'] = BASE_URL
 
 
+# ── Auto-Renew scheduler (Phase 2, opt-in) ─────────────────────────────────
+# Off by default. Enable with AUTO_RENEW_ENABLED=true; it stays in dry-run
+# (logging only) until AUTO_RENEW_LIVE=true. For multi-worker deployments
+# (e.g. gunicorn with several workers) prefer an external cron calling
+# POST /subscriptions/auto-renew/run instead, so the sweep runs once per tick.
+def _start_auto_renew_scheduler():
+    import os
+    from config import (
+        AUTO_RENEW_ENABLED, AUTO_RENEW_LIVE, AUTO_RENEW_INTERVAL_MINUTES,
+    )
+    if not AUTO_RENEW_ENABLED:
+        return
+    # Under the Werkzeug debug reloader, only start in the child process.
+    if os.environ.get('WERKZEUG_RUN_MAIN') == 'false':
+        return
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from endpoints.auto_renew_worker import run_auto_renew_sweep
+        scheduler = BackgroundScheduler(daemon=True)
+        scheduler.add_job(
+            lambda: run_auto_renew_sweep(live=AUTO_RENEW_LIVE),
+            'interval',
+            minutes=AUTO_RENEW_INTERVAL_MINUTES,
+            id='auto_renew_sweep',
+            replace_existing=True,
+        )
+        scheduler.start()
+        mode = 'LIVE' if AUTO_RENEW_LIVE else 'dry-run'
+        print(f"[auto-renew] scheduler started ({mode}, "
+              f"every {AUTO_RENEW_INTERVAL_MINUTES}m)")
+    except Exception as e:
+        print(f"[auto-renew] scheduler failed to start: {e}")
+
+
+_start_auto_renew_scheduler()
+
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", debug=True)

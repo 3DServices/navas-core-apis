@@ -840,3 +840,124 @@ def RenewSubscription():
                     )
                     dbconnect.commit()
                     return response_out("success", "Device Subscription Started Successfully", 200, "")
+
+# ── Auto-Renew settings ───────────────────────────────────────────────
+# Per-client preference for automatically renewing device subscriptions from
+# the client's existing wallet balance. These endpoints only read/write the
+# preference; the actual automatic renewal runs in a separate worker (Phase 2).
+
+_AUTO_RENEW_DEFAULTS = {
+    "enabled": False,
+    "paused": False,
+    "target_hours": 50,
+    "renewal_period": 1,
+}
+
+
+@_token_billing.route("/subscriptions/auto-renew/<client_uid>", methods=["GET"])
+def GetAutoRenewSettings(client_uid):
+    """Return the client's auto-renew settings, or defaults if none saved yet."""
+    try:
+        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        with dbconnect:
+            with dbconnect.cursor() as cursor:
+                cursor.execute(
+                    "SELECT enabled, paused, target_hours, renewal_period "
+                    "FROM dll_auto_renew_settings WHERE client_uid=%s",
+                    (str(client_uid),),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    data = dict(_AUTO_RENEW_DEFAULTS)
+                    data["configured"] = False
+                else:
+                    data = {
+                        "enabled": row[0],
+                        "paused": row[1],
+                        "target_hours": row[2],
+                        "renewal_period": row[3],
+                        "configured": True,
+                    }
+                return response_out("success", "Auto-renew settings", 200, data)
+    except Exception as error:
+        return response_out("error", str(error), 500, "")
+
+
+@_token_billing.route("/subscriptions/auto-renew", methods=["POST"])
+def SaveAutoRenewSettings():
+    """Create or update a client's auto-renew settings (upsert by client_uid)."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        data = payload.get('data') or {}
+
+        client_uid = str(data.get('client_uid', '')).strip()
+        if not client_uid:
+            return response_out("error", "client_uid is required", 400, "")
+
+        enabled = bool(data.get('enabled', False))
+        paused = bool(data.get('paused', False))
+
+        def _as_int(value, fallback):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return fallback
+
+        target_hours = _as_int(data.get('target_hours', 50), 50)
+        renewal_period = _as_int(data.get('renewal_period', 1), 1)
+        if target_hours < 0:
+            target_hours = 0
+        if renewal_period < 1:
+            renewal_period = 1
+
+        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        with dbconnect:
+            with dbconnect.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO dll_auto_renew_settings
+                        (client_uid, enabled, paused, target_hours, renewal_period, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (client_uid) DO UPDATE SET
+                        enabled        = EXCLUDED.enabled,
+                        paused         = EXCLUDED.paused,
+                        target_hours   = EXCLUDED.target_hours,
+                        renewal_period = EXCLUDED.renewal_period,
+                        updated_at     = NOW()
+                    """,
+                    (client_uid, enabled, paused, target_hours, renewal_period),
+                )
+                dbconnect.commit()
+
+        return response_out("success", "Auto-renew settings saved", 200, {
+            "enabled": enabled,
+            "paused": paused,
+            "target_hours": target_hours,
+            "renewal_period": renewal_period,
+            "configured": True,
+        })
+    except Exception as error:
+        return response_out("error", str(error), 500, "")
+
+
+@_token_billing.route("/subscriptions/auto-renew/run", methods=["POST"])
+@require_permission('subscriptions.renew')
+def RunAutoRenewSweep():
+    """Manually trigger one auto-renew sweep (for testing or external cron).
+
+    Body (optional): {"data": {"live": true|false}}. When 'live' is omitted the
+    server's AUTO_RENEW_LIVE default is used; sending live:false forces a safe
+    dry-run that only writes to dll_auto_renew_log.
+    """
+    try:
+        from config import AUTO_RENEW_LIVE
+        from .auto_renew_worker import run_auto_renew_sweep
+
+        payload = request.get_json(silent=True) or {}
+        data = payload.get('data') or {}
+        live = data['live'] if isinstance(data.get('live'), bool) else AUTO_RENEW_LIVE
+
+        summary = run_auto_renew_sweep(live=bool(live))
+        return response_out("success", "Auto-renew sweep complete", 200, summary)
+    except Exception as error:
+        return response_out("error", str(error), 500, "")
