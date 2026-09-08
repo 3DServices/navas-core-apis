@@ -1506,12 +1506,12 @@ def update_device():
             len(str(update_payload['data']['device_imei'])) > 4
             and len(str(update_payload['data']['device_name'])) > 1
             and len(str(update_payload['data']['simcard'])) > 4
-            and len(str(update_payload['data']['car_make'])) > 4
-            and len(str(update_payload['data']['car_model'])) > 4
+            and len(str(update_payload['data']['car_make'])) > 2
+            and len(str(update_payload['data']['car_model'])) > 2
             and len(str(update_payload['data']['client'])) > 4
-            and len(str(update_payload['data']['vin_number'])) > 4
+            and len(str(update_payload['data']['vin_number'])) > 2
             and len(str(update_payload['data']['car_type'])) > 1
-            and len(str(update_payload['data']['current_simcard'])) > 4
+            and len(str(update_payload['data']['current_simcard'])) > 3
         ):
 
             UpdateImei = str(update_payload['data']['device_imei'])
