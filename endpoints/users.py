@@ -1,10 +1,12 @@
 from flask import Flask
 from flask import Blueprint
-from flask import request, make_response, g
+from flask import request, make_response, g, send_from_directory
 import psycopg2
 from flask import json
 from flask import jsonify
 import datetime
+import os
+from werkzeug.utils import secure_filename
 from flask import current_app
 import bcrypt
 import base64
@@ -18,6 +20,21 @@ from config import JWT_REFRESH_EXPIRY_DAYS
 
 
 users_bp = Blueprint('users_bp', __name__)
+
+# ── Profile photo upload config ───────────────────────────────────────────────
+_ALLOWED_PROFILE_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
+_MAX_PROFILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PROFILE_UPLOAD_DIR = os.path.join(_PROJECT_ROOT, "uploads", "profiles")
+
+
+def _allowed_profile_photo(filename):
+    return "." in filename and \
+        filename.rsplit(".", 1)[1].lower() in _ALLOWED_PROFILE_EXTENSIONS
+
+
+def _ensure_profile_dir():
+    os.makedirs(_PROFILE_UPLOAD_DIR, exist_ok=True)
 
 @users_bp.route("/", methods=["GET", "POST"])
 def home():
@@ -368,6 +385,10 @@ def get_user_details(account_uid):
                     UserData = cursor.fetchone()
                     UserFullName = UserData[0] if UserData else str(CreatedBY)
 
+                    # Profile fields added in migration 024 (appended columns).
+                    profile_pic = data_adapter[16] if len(data_adapter) > 16 else None
+                    date_of_birth = data_adapter[17] if len(data_adapter) > 17 else None
+
                     user_data = {
                         "account_name": data_adapter[10] or data_adapter[8] or "",
                         "account_type": data_adapter[2],
@@ -380,7 +401,9 @@ def get_user_details(account_uid):
                         "billing_type": data_adapter[14],
                         "primary_account": data_adapter[0],
                         "token_balance": data_adapter[15],
-                        "date_created": data_adapter[5]
+                        "date_created": data_adapter[5],
+                        "profile_pic": profile_pic or "",
+                        "date_of_birth": str(date_of_birth) if date_of_birth else ""
                     }
                     return reply('success', 200, 'Account Found', user_data)
 
@@ -852,6 +875,144 @@ def change_password(user_uid):
         _logger.exception('change_password failed: %s', error)
         return reply('error', 500, 'Could not change password', '')
     
+
+def _can_edit_profile(caller, user_uid):
+    """A user may edit their own profile; privileged accounts may edit anyone."""
+    is_self = str(user_uid) == caller.get('account_uid')
+    is_privileged = caller.get('role') in ('super_admin', 'system') \
+        or caller.get('account_type') == 'system_account'
+    return is_self or is_privileged
+
+
+@users_bp.route("/users/<user_uid>/profile", methods=["PUT"])
+@require_auth
+def update_profile(user_uid):
+    """Update editable profile fields for a user. Currently: date_of_birth.
+
+    Regular users may only edit their own profile.
+    Body: { "data": { "date_of_birth": "YYYY-MM-DD" | "" } }
+    """
+    try:
+        if not _can_edit_profile(g.current_user, user_uid):
+            return reply('error', 403, 'You can only edit your own profile', '')
+
+        payload = request.get_json() or {}
+        data = payload.get('data', {}) if isinstance(payload, dict) else {}
+        raw_dob = str(data.get('date_of_birth', '')).strip()
+
+        dob_value = None
+        if raw_dob:
+            try:
+                dob_value = datetime.datetime.strptime(raw_dob, "%Y-%m-%d").date()
+            except ValueError:
+                return reply('error', 400, 'date_of_birth must be YYYY-MM-DD', '')
+
+        dbconnect = psycopg2.connect(current_app.config["db_link"])
+        with dbconnect:
+            with dbconnect.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE dll_access_relay SET date_of_birth=%s WHERE account_uid=%s",
+                    (dob_value, str(user_uid),)
+                )
+                if cursor.rowcount == 0:
+                    return reply('error', 404, 'User not found', '')
+        return reply('success', 200, 'Profile updated', {
+            "date_of_birth": raw_dob
+        })
+
+    except Exception as error:
+        logging.getLogger('users').exception('update_profile failed: %s', error)
+        return reply('error', 500, 'Could not update profile', '')
+
+
+@users_bp.route("/users/<user_uid>/profile-photo", methods=["POST"])
+@require_auth
+def upload_profile_photo(user_uid):
+    """Upload/replace a user's profile picture.
+
+    Accepts multipart/form-data with a "photo" file field (jpg/jpeg/png/webp,
+    max 5 MB). Saves the file, stores its relative URL on dll_access_relay,
+    deletes any previous photo, and returns { photo_url }.
+    """
+    try:
+        if not _can_edit_profile(g.current_user, user_uid):
+            return reply('error', 403, 'You can only change your own photo', '')
+
+        if "photo" not in request.files:
+            return reply('error', 400, "No file field 'photo' in the request", '')
+
+        photo = request.files["photo"]
+        if not photo.filename:
+            return reply('error', 400, 'Empty filename', '')
+        if not _allowed_profile_photo(photo.filename):
+            return reply(
+                'error', 400,
+                "File type not allowed. Accepted: " +
+                ", ".join(sorted(_ALLOWED_PROFILE_EXTENSIONS)),
+                '')
+
+        photo_bytes = photo.read()
+        if len(photo_bytes) > _MAX_PROFILE_SIZE_BYTES:
+            return reply('error', 400, 'Photo exceeds the 5 MB limit', '')
+
+        ext = photo.filename.rsplit(".", 1)[1].lower()
+        safe_name = f"{secure_filename(str(user_uid))}_{uuid.uuid4().hex[:12]}.{ext}"
+
+        _ensure_profile_dir()
+        file_path = os.path.join(_PROFILE_UPLOAD_DIR, safe_name)
+        with open(file_path, "wb") as f:
+            f.write(photo_bytes)
+
+        photo_url = f"/users/profile-photos/{safe_name}"
+
+        dbconnect = psycopg2.connect(current_app.config["db_link"])
+        with dbconnect:
+            with dbconnect.cursor() as cursor:
+                cursor.execute(
+                    "SELECT profile_pic FROM dll_access_relay WHERE account_uid=%s",
+                    (str(user_uid),)
+                )
+                if cursor.rowcount == 0:
+                    try:
+                        os.remove(file_path)
+                    except OSError:
+                        pass
+                    return reply('error', 404, 'User not found', '')
+
+                old = cursor.fetchone()[0]
+                cursor.execute(
+                    "UPDATE dll_access_relay SET profile_pic=%s WHERE account_uid=%s",
+                    (photo_url, str(user_uid),)
+                )
+
+        # Best-effort cleanup of the previous photo.
+        if old:
+            old_name = str(old).rsplit("/", 1)[-1]
+            old_path = os.path.join(_PROFILE_UPLOAD_DIR, old_name)
+            if old_path != file_path and os.path.isfile(old_path):
+                try:
+                    os.remove(old_path)
+                except OSError:
+                    pass
+
+        return reply('success', 200, 'Photo uploaded', {"photo_url": photo_url})
+
+    except Exception as error:
+        logging.getLogger('users').exception('upload_profile_photo failed: %s', error)
+        return reply('error', 500, 'Could not upload photo', '')
+
+
+@users_bp.route("/users/profile-photos/<filename>", methods=["GET"])
+def serve_profile_photo(filename):
+    """Serve an uploaded profile photo. The filename carries a random slug."""
+    safe = secure_filename(filename)
+    if not safe or not _allowed_profile_photo(safe):
+        return reply('error', 400, 'Invalid filename', '')
+    _ensure_profile_dir()
+    if not os.path.isfile(os.path.join(_PROFILE_UPLOAD_DIR, safe)):
+        return reply('error', 404, 'Photo not found', '')
+    return send_from_directory(_PROFILE_UPLOAD_DIR, safe, max_age=86400)
+
 
 #Authenticate Block
 @users_bp.route("/authenticate/command", methods=["POST"])

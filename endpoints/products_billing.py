@@ -33,6 +33,7 @@ def CreateNewProduct():
     _payloadRequestObject = request.get_json()
 
     _productName = _payloadRequestObject['data']['product_name'].lower()
+    _serviceType = str(_payloadRequestObject['data'].get('service_type', '')).strip() or None
 
     if(str(_productName).strip() == ""):
         return response_out("error", "Product name cannot be empty", 400, None)
@@ -45,10 +46,10 @@ def CreateNewProduct():
                 return response_out("error", "Product with the same name already exists", 400, None)
 
             _productUid = str(uuid.uuid4())
-            dbcursor.execute("INSERT INTO abi_products_manager (product_uid, product_name) VALUES (%s, %s)", (_productUid, _productName))
+            dbcursor.execute("INSERT INTO abi_products_manager (product_uid, product_name, service_type) VALUES (%s, %s, %s)", (_productUid, _productName, _serviceType))
             dbconnect.commit()
 
-    return response_out("success", "Product created successfully", 200, {"product_uid": _productUid, "product_name": _productName})
+    return response_out("success", "Product created successfully", 200, {"product_uid": _productUid, "product_name": _productName, "service_type": _serviceType or ""})
 
 
 @_products_billing.route("/billing/products/list", methods=["GET"])
@@ -58,7 +59,7 @@ def ListProducts():
 
     with dbconnect:
         with dbconnect.cursor() as dbcursor:
-            dbcursor.execute("SELECT product_uid, product_name FROM abi_products_manager ORDER BY id DESC")
+            dbcursor.execute("SELECT product_uid, product_name, service_type, product_code, product_description FROM abi_products_manager ORDER BY service_type NULLS LAST, product_name")
 
             if(dbcursor.rowcount == 0):
                 return response_out("success", "No products found", 200, [])
@@ -69,7 +70,10 @@ def ListProducts():
     for product in products:
         products_list.append({
             "product_uid": product[0],
-            "product_name": product[1]
+            "product_name": product[1],
+            "service_type": product[2] or "",
+            "product_code": product[3] or "",
+            "product_description": product[4] or ""
         })
 
     return response_out("success", "Products retrieved successfully", 200, products_list)
@@ -104,6 +108,9 @@ def UpdateProduct():
 
     _productUid = _payloadRequestObject['data']['product_uid']
     _newProductName = _payloadRequestObject['data']['new_product_name'].lower()
+    # service_type is optional; only updated when provided in the payload.
+    _hasServiceType = 'service_type' in _payloadRequestObject['data']
+    _serviceType = str(_payloadRequestObject['data'].get('service_type', '')).strip() or None
 
     if(str(_newProductName).strip() == ""):
         return response_out("error", "New product name cannot be empty", 400, None)
@@ -115,7 +122,10 @@ def UpdateProduct():
             if(dbcursor.rowcount == 0):
                 return response_out("error", "Product not found", 404, None)
 
-            dbcursor.execute("UPDATE abi_products_manager SET product_name = %s WHERE product_uid = %s", (_newProductName, _productUid))
+            if _hasServiceType:
+                dbcursor.execute("UPDATE abi_products_manager SET product_name = %s, service_type = %s WHERE product_uid = %s", (_newProductName, _serviceType, _productUid))
+            else:
+                dbcursor.execute("UPDATE abi_products_manager SET product_name = %s WHERE product_uid = %s", (_newProductName, _productUid))
             dbconnect.commit()
 
-    return response_out("success", "Product updated successfully", 200, {"product_uid": _productUid, "product_name": _newProductName})
+    return response_out("success", "Product updated successfully", 200, {"product_uid": _productUid, "product_name": _newProductName, "service_type": _serviceType or ""})

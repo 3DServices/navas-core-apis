@@ -504,9 +504,40 @@ def ClientToken_Balance(client_uid):
 
             elif cursor.rowcount > 1:
                 _tokens_existing = cursor.fetchall()
+
+                # Batch-resolve token names + products instead of running two
+                # queries per row (an N+1 storm that made large accounts time
+                # out). Two queries total, regardless of how many tokens.
+                token_uids = list({t[2] for t in _tokens_existing if t[2]})
+                reg_map = {}
+                if token_uids:
+                    cursor.execute(
+                        "SELECT token_id, token_name, token_product_uid "
+                        "FROM dll_tokens_registry WHERE token_id = ANY(%s)",
+                        (token_uids,)
+                    )
+                    for r in cursor.fetchall():
+                        reg_map[r[0]] = (r[1], r[2])
+
+                product_uids = list({v[1] for v in reg_map.values() if v[1]})
+                prod_map = {}
+                if product_uids:
+                    cursor.execute(
+                        "SELECT product_uid, product_name "
+                        "FROM abi_products_manager WHERE product_uid = ANY(%s)",
+                        (product_uids,)
+                    )
+                    for r in cursor.fetchall():
+                        prod_map[r[0]] = {"product_uid": r[0], "product_name": r[1]}
+
                 _runningTokens = []
                 for token in _tokens_existing:
-                    token_name, product = _resolve_token(cursor, token[2])
+                    reg = reg_map.get(token[2])
+                    if reg is None:
+                        token_name, product = "Token Deleted", None
+                    else:
+                        token_name = reg[0]
+                        product = prod_map.get(reg[1])
                     _runningTokens.append({
                         "client_uid": client_uid,
                         "client_name": client_name,
@@ -851,6 +882,13 @@ _AUTO_RENEW_DEFAULTS = {
     "paused": False,
     "target_hours": 50,
     "renewal_period": 1,
+    "top_up_enabled": False,
+    "top_up_token_uid": "",
+    "top_up_quantity": 1,
+    "momo_number": "",
+    "daily_topup_limit": 1,
+    "channels": "in_app",
+    "consent": False,
 }
 
 
@@ -862,7 +900,9 @@ def GetAutoRenewSettings(client_uid):
         with dbconnect:
             with dbconnect.cursor() as cursor:
                 cursor.execute(
-                    "SELECT enabled, paused, target_hours, renewal_period "
+                    "SELECT enabled, paused, target_hours, renewal_period, "
+                    "top_up_enabled, top_up_token_uid, top_up_quantity, "
+                    "momo_number, daily_topup_limit, channels, consent_at "
                     "FROM dll_auto_renew_settings WHERE client_uid=%s",
                     (str(client_uid),),
                 )
@@ -876,6 +916,13 @@ def GetAutoRenewSettings(client_uid):
                         "paused": row[1],
                         "target_hours": row[2],
                         "renewal_period": row[3],
+                        "top_up_enabled": row[4],
+                        "top_up_token_uid": row[5] or "",
+                        "top_up_quantity": row[6] if row[6] is not None else 1,
+                        "momo_number": row[7] or "",
+                        "daily_topup_limit": row[8] if row[8] is not None else 1,
+                        "channels": row[9] or "in_app",
+                        "consent": row[10] is not None,
                         "configured": True,
                     }
                 return response_out("success", "Auto-renew settings", 200, data)
@@ -910,22 +957,51 @@ def SaveAutoRenewSettings():
         if renewal_period < 1:
             renewal_period = 1
 
+        # ── Auto top-up fields ─────────────────────────────────────────────
+        top_up_enabled = bool(data.get('top_up_enabled', False))
+        top_up_token_uid = str(data.get('top_up_token_uid', '')).strip()
+        top_up_quantity = _as_int(data.get('top_up_quantity', 1), 1)
+        if top_up_quantity < 1:
+            top_up_quantity = 1
+        momo_number = str(data.get('momo_number', '')).strip()
+        daily_topup_limit = _as_int(data.get('daily_topup_limit', 1), 1)
+        if daily_topup_limit < 1:
+            daily_topup_limit = 1
+        channels = str(data.get('channels', 'in_app')).strip() or 'in_app'
+        # consent is sticky: once given it stays until explicitly withdrawn.
+        consent = bool(data.get('consent', False))
+        consent_clause = "NOW()" if consent else "NULL"
+
         dbconnect = psycopg2.connect(current_app.config['db_link'])
         with dbconnect:
             with dbconnect.cursor() as cursor:
                 cursor.execute(
-                    """
+                    f"""
                     INSERT INTO dll_auto_renew_settings
-                        (client_uid, enabled, paused, target_hours, renewal_period, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, NOW())
+                        (client_uid, enabled, paused, target_hours, renewal_period,
+                         top_up_enabled, top_up_token_uid, top_up_quantity,
+                         momo_number, daily_topup_limit, channels,
+                         consent_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                            {consent_clause}, NOW())
                     ON CONFLICT (client_uid) DO UPDATE SET
-                        enabled        = EXCLUDED.enabled,
-                        paused         = EXCLUDED.paused,
-                        target_hours   = EXCLUDED.target_hours,
-                        renewal_period = EXCLUDED.renewal_period,
-                        updated_at     = NOW()
+                        enabled           = EXCLUDED.enabled,
+                        paused            = EXCLUDED.paused,
+                        target_hours      = EXCLUDED.target_hours,
+                        renewal_period    = EXCLUDED.renewal_period,
+                        top_up_enabled    = EXCLUDED.top_up_enabled,
+                        top_up_token_uid  = EXCLUDED.top_up_token_uid,
+                        top_up_quantity   = EXCLUDED.top_up_quantity,
+                        momo_number       = EXCLUDED.momo_number,
+                        daily_topup_limit = EXCLUDED.daily_topup_limit,
+                        channels          = EXCLUDED.channels,
+                        consent_at        = COALESCE(EXCLUDED.consent_at,
+                                                     dll_auto_renew_settings.consent_at),
+                        updated_at        = NOW()
                     """,
-                    (client_uid, enabled, paused, target_hours, renewal_period),
+                    (client_uid, enabled, paused, target_hours, renewal_period,
+                     top_up_enabled, top_up_token_uid, top_up_quantity,
+                     momo_number, daily_topup_limit, channels),
                 )
                 dbconnect.commit()
 
@@ -934,6 +1010,13 @@ def SaveAutoRenewSettings():
             "paused": paused,
             "target_hours": target_hours,
             "renewal_period": renewal_period,
+            "top_up_enabled": top_up_enabled,
+            "top_up_token_uid": top_up_token_uid,
+            "top_up_quantity": top_up_quantity,
+            "momo_number": momo_number,
+            "daily_topup_limit": daily_topup_limit,
+            "channels": channels,
+            "consent": consent,
             "configured": True,
         })
     except Exception as error:
