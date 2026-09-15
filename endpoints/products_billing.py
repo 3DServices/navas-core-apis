@@ -11,7 +11,7 @@ import base64
 import uuid
 import pytz
 from datetime import datetime
-from .globals import require_permission
+from .globals import require_permission, require_auth
 
 _products_billing = Blueprint("ProductsBilling", __name__)
 
@@ -77,6 +77,46 @@ def ListProducts():
         })
 
     return response_out("success", "Products retrieved successfully", 200, products_list)
+
+
+@_products_billing.route("/billing/products/addons", methods=["GET"])
+@require_auth
+def ListAddonProducts():
+    """Client-facing add-on catalogue (PPMM).
+
+    Unlike /billing/products/list this is JWT-only (any signed-in user),
+    not gated behind the admin `products.view_only` permission, so mobile
+    clients can browse the add-on apps they may subscribe to. Returns the
+    full product row (uid, name, service_type, code, description).
+    """
+    dbconnect = psycopg2.connect(current_app.config['db_link'])
+
+    with dbconnect:
+        with dbconnect.cursor() as dbcursor:
+            dbcursor.execute(
+                """
+                SELECT product_uid, product_name, service_type,
+                       product_code, product_description
+                FROM abi_products_manager
+                WHERE service_type ILIKE %s
+                ORDER BY product_name
+                """,
+                ('%add-on%',),
+            )
+
+            rows = dbcursor.fetchall()
+
+    products_list = []
+    for r in rows:
+        products_list.append({
+            "product_uid": r[0],
+            "product_name": r[1],
+            "service_type": r[2],
+            "product_code": r[3],
+            "product_description": r[4],
+        })
+
+    return response_out("success", "Add-on products retrieved successfully", 200, products_list)
 
 
 @_products_billing.route("/billing/products/delete", methods=["POST"])
