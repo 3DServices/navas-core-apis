@@ -1907,37 +1907,101 @@ def geocoding():
             #         LOCATION = AddrMunicipality + ', ' + AddrSubDivision + ', ' + AddrCountry
                     #LOCATION = api_data['results'][0]['formatted_address']
 
-            # Try Nominatim with retry (rate limit = 1 req/sec)
+            # ── Reverse geocode: cache → Google (keyed) → Nominatim → coords ──
+            from config import GOOGLE_MAPS_API_KEY
+
+            try:
+                lat_f = float(LatitudeCords)
+                lng_f = float(LongitudeCords)
+            except (TypeError, ValueError):
+                return reply('error', 200, 'Invalid coordinates', '')
+
+            # ~11 m cache buckets so repeated points reuse one lookup and we
+            # stay within provider rate limits.
+            lat_key = round(lat_f, 4)
+            lng_key = round(lng_f, 4)
+
             LOCATION = None
-            import time as _time
-            for _attempt in range(2):
-                try:
-                    geocode_request = requests.get(
-                        "https://nominatim.openstreetmap.org/reverse",
-                        params={"lat": LatitudeCords, "lon": LongitudeCords, "format": "json"},
-                        headers={"User-Agent": "NarvasFleet/1.0 (support@navas.ug)"},
-                        timeout=15,
-                    )
-                    if geocode_request.ok:
-                        api_reply = geocode_request.json()
-                        if 'display_name' in api_reply:
-                            LOCATION = api_reply['display_name']
-                            break
-                except Exception:
-                    pass
-                if _attempt == 0:
-                    _time.sleep(1.1)  # respect Nominatim 1 req/sec rate limit
+            _dbc = psycopg2.connect(current_app.config['db_link'])
+            try:
+                with _dbc:
+                    with _dbc.cursor() as _cur:
+                        _cur.execute(
+                            "SELECT location FROM dll_geocode_cache "
+                            "WHERE lat_key = %s AND lng_key = %s",
+                            (lat_key, lng_key),
+                        )
+                        _row = _cur.fetchone()
+                        if _row and _row[0]:
+                            return reply('success', 200, 'Location Found',
+                                         {"location": _row[0], "cached": True})
 
+                # 1) Google reverse geocoding (reliable at fleet volume) when a
+                #    key is configured.
+                if GOOGLE_MAPS_API_KEY:
+                    try:
+                        g = requests.get(
+                            "https://maps.googleapis.com/maps/api/geocode/json",
+                            params={"latlng": f"{lat_f},{lng_f}",
+                                    "key": GOOGLE_MAPS_API_KEY},
+                            timeout=15,
+                        )
+                        if g.ok:
+                            gj = g.json()
+                            results = gj.get("results") or []
+                            if gj.get("status") == "OK" and results:
+                                LOCATION = results[0].get("formatted_address")
+                    except Exception:
+                        pass
 
-            # Fallback: return raw coordinates if geocoding failed
+                # 2) Nominatim (free, rate-limited) fallback.
+                if not LOCATION:
+                    import time as _time
+                    for _attempt in range(2):
+                        try:
+                            geocode_request = requests.get(
+                                "https://nominatim.openstreetmap.org/reverse",
+                                params={"lat": LatitudeCords,
+                                        "lon": LongitudeCords, "format": "json"},
+                                headers={"User-Agent":
+                                         "NarvasFleet/1.0 (support@navas.ug)"},
+                                timeout=15,
+                            )
+                            if geocode_request.ok:
+                                api_reply = geocode_request.json()
+                                if 'display_name' in api_reply:
+                                    LOCATION = api_reply['display_name']
+                                    break
+                        except Exception:
+                            pass
+                        if _attempt == 0:
+                            _time.sleep(1.1)  # Nominatim: 1 req/sec
+
+                # 3) Cache a real result so we never re-hit the provider for it.
+                if LOCATION:
+                    try:
+                        with _dbc:
+                            with _dbc.cursor() as _cur:
+                                _cur.execute(
+                                    "INSERT INTO dll_geocode_cache "
+                                    "(lat_key, lng_key, location, created_at) "
+                                    "VALUES (%s, %s, %s, NOW()) "
+                                    "ON CONFLICT (lat_key, lng_key) DO UPDATE "
+                                    "SET location = EXCLUDED.location, "
+                                    "created_at = NOW()",
+                                    (lat_key, lng_key, LOCATION),
+                                )
+                    except Exception:
+                        pass  # cache write is best-effort
+            finally:
+                _dbc.close()
+
+            # Fallback: raw coordinates when geocoding failed. NOT cached, so a
+            # later request can still resolve a proper place name.
             if not LOCATION:
                 LOCATION = f"{LatitudeCords}, {LongitudeCords}"
 
-            geocodding_data = {
-                "location": LOCATION
-            }
-
-            return reply('success', 200, 'Location Found', geocodding_data)
+            return reply('success', 200, 'Location Found', {"location": LOCATION})
 
         else:
             return reply('error', 200, 'Something Is Missing', '')

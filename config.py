@@ -57,6 +57,14 @@ OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o")
 OPENROUTER_SITE_URL = os.environ.get("OPENROUTER_SITE_URL", BASE_URL)
 OPENROUTER_SITE_NAME = os.environ.get("OPENROUTER_SITE_NAME", "OLIWA Mobile")
 
+# ── Reverse geocoding (place names) ─────────────────────────────────────────
+# Optional. When GOOGLE_MAPS_API_KEY is set the /data-stream/location/geocoding
+# endpoint uses Google's reverse geocoder (reliable at fleet volume); otherwise
+# it falls back to the free Nominatim (OpenStreetMap) service, which is rate-
+# limited and only suitable for light use. Keep the key in .env (gitignored) or
+# the server environment — never commit it.
+GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
+
 
 # ── Auto-Renew worker (Phase 2) ────────────────────────────────────────────
 # AUTO_RENEW_ENABLED starts the embedded scheduler. AUTO_RENEW_LIVE controls
