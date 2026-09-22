@@ -70,6 +70,10 @@ _CONVERSATION_IDLE_MINUTES = 60
 # check its compatibility, answer; a model looping past that is stuck.
 _MAX_TOOL_ROUNDS = 4
 
+# Retries for a dropped connection to OpenRouter, and the pause before each.
+_CONNECT_RETRIES = 2
+_RETRY_BACKOFF = (0.6, 1.5)
+
 # Product tools (Phase 2) and document retrieval (Phase 3) are one list to the
 # model. Order matters a little: the product tools come first so that a question
 # naming a product is answered from the approved catalogue rather than from a
@@ -345,27 +349,41 @@ def _call_model(messages, allow_tools=True):
     if not allow_tools:
         payload["tool_choice"] = "none"
 
-    try:
-        resp = requests.post(
-            OPENROUTER_URL,
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "HTTP-Referer": OPENROUTER_SITE_URL,
-                "X-Title": OPENROUTER_SITE_NAME,
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=45,
-        )
-    except requests.Timeout:
-        _log('OpenRouter timed out after 45s (model=%s)', OPENROUTER_MODEL)
-        return {'status': 'error', 'code': 504,
-                'message': 'The assistant took too long to respond.'}
-    except requests.RequestException as error:
-        _log('OpenRouter unreachable: %s: %s',
-             error.__class__.__name__, error)
-        return {'status': 'error', 'code': 502,
-                'message': 'The assistant could not be reached right now.'}
+    # A dropped connection (RemoteDisconnected, SSL EOF, reset) is usually a
+    # blip on the network between here and OpenRouter, so it is retried a
+    # couple of times before the person sees an error. A timeout is not
+    # retried: the model may still be working, and waiting 45s twice is worse
+    # than saying so.
+    resp = None
+    for attempt in range(1 + _CONNECT_RETRIES):
+        try:
+            resp = requests.post(
+                OPENROUTER_URL,
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "HTTP-Referer": OPENROUTER_SITE_URL,
+                    "X-Title": OPENROUTER_SITE_NAME,
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=45,
+            )
+            break
+        except requests.Timeout:
+            _log('OpenRouter timed out after 45s (model=%s)', OPENROUTER_MODEL)
+            return {'status': 'error', 'code': 504,
+                    'message': 'Waswa took too long to answer. Please try again.'}
+        except requests.RequestException as error:
+            if attempt < _CONNECT_RETRIES:
+                _log('OpenRouter connection dropped (%s), retrying %s/%s',
+                     error.__class__.__name__, attempt + 1, _CONNECT_RETRIES)
+                time.sleep(_RETRY_BACKOFF[attempt])
+                continue
+            _log('OpenRouter unreachable after %s attempts: %s: %s',
+                 attempt + 1, error.__class__.__name__, error)
+            return {'status': 'error', 'code': 502,
+                    'message': "Waswa couldn't reach its AI service just now "
+                               "(a network drop). Please try again."}
 
     if resp.status_code != 200:
         _log('OpenRouter HTTP %s (model=%s): %s', resp.status_code,
