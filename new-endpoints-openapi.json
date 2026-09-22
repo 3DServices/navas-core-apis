@@ -1,0 +1,3505 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "NAVAS / OLIWA — new endpoints",
+    "version": "2026.09",
+    "description": "The endpoints added in this round: Waswa AI and its review console, a client's own team and audit trail, the geofence alert engine, and the changed fields on geofences, track playback, profile and alert rules.\n\nEvery call carries `Authorization: Bearer <JWT>` from POST /users/auth, except the public ones (sign-in, refresh, password reset, payment callbacks, images). Internal services send `X-Service-Key` instead.\n\nBodies use the app convention `{\"data\": {...}}`. Replies are always `{status, message, data}`."
+  },
+  "servers": [
+    {
+      "url": "https://narvas.3dservices.co.ug",
+      "description": "Production"
+    },
+    {
+      "url": "http://127.0.0.1:5000",
+      "description": "Local"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Waswa AI",
+      "description": "The assistant, for every app"
+    },
+    {
+      "name": "Waswa AI Console",
+      "description": "Review and approval, staff only"
+    },
+    {
+      "name": "Team",
+      "description": "A client's own users and sign-in history"
+    },
+    {
+      "name": "Alerts",
+      "description": "The server-side geofence alert engine"
+    },
+    {
+      "name": "Geofences",
+      "description": "Shape fields added to create, update and read"
+    },
+    {
+      "name": "Track playback",
+      "description": "Start and end times"
+    },
+    {
+      "name": "Profile",
+      "description": "Identity returned with permissions"
+    },
+    {
+      "name": "Events and alerts",
+      "description": "Alert rules, channels and unit attachment"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      },
+      "serviceKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Service-Key"
+      }
+    },
+    "schemas": {
+      "Envelope": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "success"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {}
+        }
+      }
+    }
+  },
+  "paths": {
+    "/assistant/chat": {
+      "post": {
+        "tags": [
+          "Waswa AI"
+        ],
+        "summary": "Ask Waswa a question",
+        "description": "Answers from the company's own documents and the caller's own data. A pricing question is never sent to a model.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                },
+                "example": {
+                  "status": "success",
+                  "message": "OK",
+                  "data": {
+                    "reply": "You have 34 units active.",
+                    "model": "<model id>",
+                    "conversation_uid": "conv-1",
+                    "message_uid": "msg-1",
+                    "verified_answers": [],
+                    "audience": "customer",
+                    "prompt_version": "v7",
+                    "router_tier": 3,
+                    "latency_ms": 2140,
+                    "intent": "fleet_status",
+                    "evidence": [],
+                    "context_unknown": {}
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "message": {
+                        "type": "string"
+                      },
+                      "surface": {
+                        "type": "string",
+                        "enum": [
+                          "cms",
+                          "oliwa_console",
+                          "mobile"
+                        ]
+                      },
+                      "module": {
+                        "type": "string"
+                      },
+                      "conversation_uid": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "message"
+                    ]
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              },
+              "example": {
+                "data": {
+                  "message": "How many units do I have active?",
+                  "surface": "oliwa_console",
+                  "module": "Token Subscription"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/feedback": {
+      "post": {
+        "tags": [
+          "Waswa AI"
+        ],
+        "summary": "Rate an answer",
+        "description": "Helpful or Wrong on one answer. Customers send no note.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "message_uid": {
+                        "type": "string"
+                      },
+                      "verdict": {
+                        "type": "string",
+                        "enum": [
+                          "good",
+                          "wrong"
+                        ]
+                      },
+                      "note": {
+                        "type": "string"
+                      },
+                      "surface": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "message_uid",
+                      "verdict"
+                    ]
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              },
+              "example": {
+                "data": {
+                  "message_uid": "msg-1",
+                  "verdict": "wrong",
+                  "surface": "oliwa_console"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/context": {
+      "get": {
+        "tags": [
+          "Waswa AI"
+        ],
+        "summary": "What Waswa knows about the caller",
+        "description": "Diagnostic: the caller's own context only.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                },
+                "example": {
+                  "status": "success",
+                  "message": "OK",
+                  "data": {
+                    "scope": {
+                      "account_uid": "u-1",
+                      "account_root": "mukwano"
+                    },
+                    "known": {},
+                    "unknown": {}
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Waswa AI"
+        ],
+        "summary": "What Waswa knows about the caller",
+        "description": "Diagnostic: the caller's own context only.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                },
+                "example": {
+                  "status": "success",
+                  "message": "OK",
+                  "data": {
+                    "scope": {
+                      "account_uid": "u-1",
+                      "account_root": "mukwano"
+                    },
+                    "known": {},
+                    "unknown": {}
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/assistant/knowledge": {
+      "get": {
+        "tags": [
+          "Waswa AI"
+        ],
+        "summary": "What a document search returns",
+        "description": "Without q, lists the documents Waswa can draw on.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "The search",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "product",
+            "in": "query",
+            "required": false,
+            "description": "Limit to one product",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "document_type",
+            "in": "query",
+            "required": false,
+            "description": "Limit to one document type",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many passages",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "include_unapproved",
+            "in": "query",
+            "required": false,
+            "description": "Reviewers only",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Waswa AI"
+        ],
+        "summary": "What a document search returns",
+        "description": "Without q, lists the documents Waswa can draw on.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "The search",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "product",
+            "in": "query",
+            "required": false,
+            "description": "Limit to one product",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "document_type",
+            "in": "query",
+            "required": false,
+            "description": "Limit to one document type",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many passages",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "include_unapproved",
+            "in": "query",
+            "required": false,
+            "description": "Reviewers only",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/assistant/console/summary": {
+      "get": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Review queue counts",
+        "description": "Needs waswa.review.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/assistant/console/queue": {
+      "get": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "The review queue",
+        "description": "Needs waswa.review.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "description": "flag, approval, recheck, document (comma-separated)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Max 200",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ]
+      }
+    },
+    "/assistant/console/conversations": {
+      "get": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Conversations",
+        "description": "Needs waswa.review.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "surface",
+            "in": "query",
+            "required": false,
+            "description": "cms, oliwa_console, mobile",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "flagged",
+            "in": "query",
+            "required": false,
+            "description": "true to show only flagged",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Max 100",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ]
+      }
+    },
+    "/assistant/console/conversations/{conversation_uid}": {
+      "get": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "One conversation with its messages, evidence and feedback",
+        "description": "Needs waswa.review.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "conversation_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/assistant/console/answers": {
+      "get": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Corrections",
+        "description": "Needs waswa.review.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "draft, submitted, approved, rejected, retired",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "Search the question",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Draft a correction",
+        "description": "Needs waswa.review. Question and answer are both required.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "question": {
+                        "type": "string"
+                      },
+                      "answer": {
+                        "type": "string"
+                      },
+                      "question_variants": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "audience": {
+                        "type": "string",
+                        "enum": [
+                          "staff",
+                          "everyone"
+                        ]
+                      },
+                      "country_scope": {
+                        "type": "string"
+                      },
+                      "product_uid": {
+                        "type": "string"
+                      },
+                      "sensitivity": {
+                        "type": "string"
+                      },
+                      "feedback_uid": {
+                        "type": "string"
+                      },
+                      "source_message_uid": {
+                        "type": "string"
+                      },
+                      "based_on_source_uid": {
+                        "type": "string"
+                      },
+                      "based_on_note": {
+                        "type": "string"
+                      },
+                      "review_due": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "question",
+                      "answer"
+                    ]
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              },
+              "example": {
+                "data": {
+                  "question": "What does a token cover?",
+                  "answer": "A token covers one unit for the period stated on the package.",
+                  "audience": "everyone"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/answers/{answer_uid}": {
+      "get": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "One correction",
+        "description": "Needs waswa.review.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "answer_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Edit a correction",
+        "description": "Needs waswa.review.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "answer_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "question": {
+                        "type": "string"
+                      },
+                      "answer": {
+                        "type": "string"
+                      },
+                      "audience": {
+                        "type": "string"
+                      },
+                      "review_due": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/answers/{answer_uid}/submit": {
+      "post": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Submit a correction for approval",
+        "description": "Needs waswa.review.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "answer_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/assistant/console/answers/{answer_uid}/retire": {
+      "post": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Retire a correction",
+        "description": "Needs waswa.review.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "answer_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "reason": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/answers/{answer_uid}/decide": {
+      "post": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Approve or reject a correction",
+        "description": "Needs waswa.approve.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "answer_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "decision": {
+                        "type": "string",
+                        "enum": [
+                          "approve",
+                          "reject"
+                        ]
+                      },
+                      "note": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "decision"
+                    ]
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              },
+              "example": {
+                "data": {
+                  "decision": "approve"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/answers/{answer_uid}/confirm": {
+      "post": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Reconfirm a correction that is due for review",
+        "description": "Needs waswa.approve.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "answer_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "review_due": {
+                        "type": "string"
+                      },
+                      "note": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/feedback/{feedback_uid}/resolve": {
+      "post": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Resolve a flag",
+        "description": "Needs waswa.review.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "feedback_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "resolution": {
+                        "type": "string"
+                      },
+                      "note": {
+                        "type": "string"
+                      },
+                      "answer_uid": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "resolution"
+                    ]
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/sources": {
+      "get": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Documents Waswa draws on",
+        "description": "Needs waswa.review. Also returns document types, size limit, allowed extensions and the upload readiness check.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "include_removed",
+            "in": "query",
+            "required": false,
+            "description": "true to include removed documents",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_old",
+            "in": "query",
+            "required": false,
+            "description": "true to include superseded versions",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/assistant/console/sources/upload": {
+      "post": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Upload a document",
+        "description": "Needs waswa.review. multipart/form-data, not JSON. Max 25 MB; .pdf, .docx, .xlsx, .md, .txt.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "document_type": {
+                    "type": "string",
+                    "enum": [
+                      "procedure",
+                      "policy",
+                      "manual",
+                      "faq",
+                      "strategy",
+                      "user_stories",
+                      "kpi",
+                      "journey_map",
+                      "catalogue",
+                      "other"
+                    ]
+                  },
+                  "authority_level": {
+                    "type": "integer",
+                    "minimum": 2,
+                    "maximum": 6
+                  },
+                  "audience": {
+                    "type": "string",
+                    "enum": [
+                      "staff",
+                      "everyone"
+                    ]
+                  },
+                  "replaces_source_uid": {
+                    "type": "string"
+                  },
+                  "version_label": {
+                    "type": "string"
+                  },
+                  "redactions": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/sources/{source_uid}": {
+      "get": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "One document",
+        "description": "Needs waswa.review.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "source_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/assistant/console/sources/{source_uid}/review": {
+      "post": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Approve or reject a document",
+        "description": "Needs waswa.approve.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "source_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "decision": {
+                        "type": "string"
+                      },
+                      "note": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "decision"
+                    ]
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/sources/{source_uid}/audience": {
+      "post": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Who can see a document",
+        "description": "Needs waswa.approve.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "source_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "audience": {
+                        "type": "string",
+                        "enum": [
+                          "staff",
+                          "everyone"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "audience"
+                    ]
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/sources/{source_uid}/details": {
+      "post": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Change a document's details",
+        "description": "Needs waswa.approve.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "source_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "title": {
+                        "type": "string"
+                      },
+                      "document_type": {
+                        "type": "string"
+                      },
+                      "authority_level": {
+                        "type": "integer"
+                      },
+                      "version_label": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/sources/{source_uid}/remove": {
+      "post": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Remove a document",
+        "description": "Needs waswa.approve.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "source_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "reason": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/sources/{source_uid}/restore": {
+      "post": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Restore a removed document",
+        "description": "Needs waswa.approve.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "source_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/assistant/console/authority-levels": {
+      "get": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Authority levels",
+        "description": "Needs waswa.review.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/assistant/console/match": {
+      "get": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Preview which corrections match",
+        "description": "Needs waswa.review. Not recorded as a real question.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "The question to try",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": false,
+            "description": "staff or everyone",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Waswa AI Console"
+        ],
+        "summary": "Preview which corrections match",
+        "description": "Needs waswa.review. Not recorded as a real question.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "The question to try",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": false,
+            "description": "staff or everyone",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/team/me": {
+      "get": {
+        "tags": [
+          "Team"
+        ],
+        "summary": "Who am I, and may I manage the team",
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                },
+                "example": {
+                  "status": "success",
+                  "message": "OK",
+                  "data": {
+                    "account_uid": "u-1",
+                    "account_root": "mukwano",
+                    "role": "client_admin",
+                    "role_label": "Administrator",
+                    "can_manage_team": true,
+                    "roles": [
+                      {
+                        "role": "client_admin",
+                        "label": "Administrator"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/team/members": {
+      "get": {
+        "tags": [
+          "Team"
+        ],
+        "summary": "The client's own users",
+        "description": "Administrators only. Removed users are left out.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                },
+                "example": {
+                  "status": "success",
+                  "message": "OK",
+                  "data": [
+                    {
+                      "account_uid": "u-2",
+                      "display_name": "Sarah N",
+                      "username": "sarah",
+                      "email": "sarah@mukwano.co.ug",
+                      "role": "client_operator",
+                      "role_label": "Operator",
+                      "is_admin": false,
+                      "status": "active",
+                      "date_created": "2026-09-01",
+                      "last_login_at": "2026-09-22T08:14:00",
+                      "is_me": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Team"
+        ],
+        "summary": "Add a user",
+        "description": "Administrators only. 409 when the username is taken.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                },
+                "example": {
+                  "status": "success",
+                  "message": "OK",
+                  "data": {
+                    "account_uid": "u-2"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          },
+          "409": {
+            "description": "Username already taken"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "display_name": {
+                        "type": "string"
+                      },
+                      "username": {
+                        "type": "string"
+                      },
+                      "email": {
+                        "type": "string"
+                      },
+                      "password": {
+                        "type": "string",
+                        "minLength": 8
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "client_admin",
+                          "client_operator",
+                          "client_viewer"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "display_name",
+                      "username",
+                      "password",
+                      "role"
+                    ]
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              },
+              "example": {
+                "data": {
+                  "display_name": "Sarah Nakato",
+                  "username": "sarah",
+                  "email": "sarah@mukwano.co.ug",
+                  "password": "choose-a-strong-one",
+                  "role": "client_viewer"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/team/members/{uid}": {
+      "put": {
+        "tags": [
+          "Team"
+        ],
+        "summary": "Change a user's name, role or status",
+        "description": "Administrators only. You cannot change your own role or block yourself.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "uid",
+            "in": "path",
+            "required": true,
+            "description": "The user's account_uid",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "display_name": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "active",
+                          "blocked"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Team"
+        ],
+        "summary": "Remove a user",
+        "description": "Administrators only. The user is deactivated, not deleted.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/team/members/{uid}/reset-password": {
+      "post": {
+        "tags": [
+          "Team"
+        ],
+        "summary": "Reset a user's password",
+        "description": "Administrators only. The temporary password is shown once.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                },
+                "example": {
+                  "status": "success",
+                  "message": "OK",
+                  "data": {
+                    "temporary_password": "T3mp-...",
+                    "username": "sarah"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/team/audit": {
+      "get": {
+        "tags": [
+          "Team"
+        ],
+        "summary": "Sign-ins and team changes",
+        "description": "Administrators only. The client's own account, newest first, max 500.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                },
+                "example": {
+                  "status": "success",
+                  "message": "OK",
+                  "data": [
+                    {
+                      "timestamp": "2026-09-22T08:14:00",
+                      "who": "sarah",
+                      "action": "LOGIN",
+                      "detail": "",
+                      "ip_address": "102.0.0.1"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "description": "1-365, default 30",
+            "schema": {
+              "type": "integer"
+            },
+            "example": 30
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "description": "all, signins, failed, team",
+            "schema": {
+              "type": "string"
+            },
+            "example": "all"
+          }
+        ]
+      }
+    },
+    "/alerts/run": {
+      "post": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Run one geofence sweep",
+        "description": "Internal (X-Service-Key) or a staff login. live=false is a dry run.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                },
+                "example": {
+                  "status": "success",
+                  "message": "OK",
+                  "data": {
+                    "rules": 12,
+                    "units_checked": 240,
+                    "units_skipped_no_position": 3,
+                    "units_skipped_stale": 5,
+                    "units_skipped_unchanged": 180,
+                    "first_seen": 0,
+                    "alerts": 2,
+                    "live": true,
+                    "errors": []
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "live": {
+                        "type": "boolean"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              },
+              "example": {
+                "data": {
+                  "live": true
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "serviceKey": []
+          }
+        ]
+      }
+    },
+    "/alerts/health": {
+      "get": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "What the alert engine knows",
+        "description": "Staff only (alarms.view or devices.view).",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                },
+                "example": {
+                  "status": "success",
+                  "message": "OK",
+                  "data": {
+                    "geofence_rules": 12,
+                    "tracked_unit_zones": 480,
+                    "last_sweep": "2026-09-22 14:03:11",
+                    "alerts_last_24h": 7
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        }
+      }
+    },
+    "/geozones/create": {
+      "post": {
+        "tags": [
+          "Geofences"
+        ],
+        "summary": "Create a geofence",
+        "description": "The server computes geozone_points from the shape.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "geozone_name": {
+                        "type": "string"
+                      },
+                      "geozone_decription": {
+                        "type": "string"
+                      },
+                      "geozone_owner": {
+                        "type": "string"
+                      },
+                      "geozone_shape": {
+                        "type": "string",
+                        "enum": [
+                          "polygon",
+                          "circle",
+                          "line"
+                        ]
+                      },
+                      "geozone_shape_params": {
+                        "type": "object",
+                        "description": "polygon {points:[{lat,lng}]}, circle {center:{lat,lng}, radius_m}, line {points:[...], width_m}"
+                      },
+                      "geozone_color": {
+                        "type": "string"
+                      },
+                      "geozone_label_color": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "geozone_name",
+                      "geozone_owner"
+                    ]
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              },
+              "example": {
+                "data": {
+                  "geozone_name": "Main depot",
+                  "geozone_decription": "Kampala yard",
+                  "geozone_owner": "mukwano",
+                  "geozone_shape": "circle",
+                  "geozone_shape_params": {
+                    "center": {
+                      "lat": 0.31,
+                      "lng": 32.58
+                    },
+                    "radius_m": 500
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/geozones/{geozone_id}/update": {
+      "put": {
+        "tags": [
+          "Geofences"
+        ],
+        "summary": "Change a geofence",
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "geozone_id",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "new_geozone_name": {
+                        "type": "string"
+                      },
+                      "new_geozone_decription": {
+                        "type": "string"
+                      },
+                      "new_geozone_points": {
+                        "type": "string"
+                      },
+                      "geozone_shape": {
+                        "type": "string",
+                        "enum": [
+                          "polygon",
+                          "circle",
+                          "line"
+                        ]
+                      },
+                      "geozone_shape_params": {
+                        "type": "object",
+                        "description": "polygon {points:[{lat,lng}]}, circle {center:{lat,lng}, radius_m}, line {points:[...], width_m}"
+                      },
+                      "geozone_color": {
+                        "type": "string"
+                      },
+                      "geozone_label_color": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/geozones/{owner_uid}/list/{access_level}/load": {
+      "get": {
+        "tags": [
+          "Geofences"
+        ],
+        "summary": "List a customer's geofences",
+        "description": "access_level is 'client' for a customer.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                },
+                "example": {
+                  "status": "success",
+                  "message": "OK",
+                  "data": [
+                    {
+                      "geozone_uid": "gz-1",
+                      "geozone_name": "Main depot",
+                      "geozone_description": "Kampala yard",
+                      "geozone_points": "[[32.58,0.31]]",
+                      "geozone_shape": "circle",
+                      "geozone_shape_params": {
+                        "center": {
+                          "lat": 0.31,
+                          "lng": 32.58
+                        },
+                        "radius_m": 500
+                      },
+                      "date_created": "2026-09-20"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "owner_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "access_level",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            },
+            "example": "client"
+          }
+        ]
+      }
+    },
+    "/geozones/{geozone_id}/details": {
+      "get": {
+        "tags": [
+          "Geofences"
+        ],
+        "summary": "One geofence",
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "geozone_id",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/data-stream/trips/history": {
+      "post": {
+        "tags": [
+          "Track playback"
+        ],
+        "summary": "Trip history for a unit",
+        "description": "from_time and to_time are optional; without them the whole day is returned.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "device_imei": {
+                        "type": "string"
+                      },
+                      "from_date": {
+                        "type": "string"
+                      },
+                      "to_date": {
+                        "type": "string"
+                      },
+                      "from_time": {
+                        "type": "string",
+                        "description": "HH:MM or HH:MM:SS"
+                      },
+                      "to_time": {
+                        "type": "string",
+                        "description": "HH:MM or HH:MM:SS"
+                      },
+                      "offset_log": {
+                        "type": "integer"
+                      },
+                      "record_count": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "device_imei",
+                      "from_date",
+                      "to_date"
+                    ]
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              },
+              "example": {
+                "data": {
+                  "device_imei": "864636050000000",
+                  "from_date": "22-09-2026",
+                  "to_date": "22-09-2026",
+                  "from_time": "08:00",
+                  "to_time": "17:30",
+                  "offset_log": 0,
+                  "record_count": 5000
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-stream/trips/history/replay": {
+      "post": {
+        "tags": [
+          "Track playback"
+        ],
+        "summary": "Positions for playback",
+        "description": "Same fields. Page with offset_log; records come back newest first.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "device_imei": {
+                        "type": "string"
+                      },
+                      "from_date": {
+                        "type": "string"
+                      },
+                      "to_date": {
+                        "type": "string"
+                      },
+                      "from_time": {
+                        "type": "string",
+                        "description": "HH:MM or HH:MM:SS"
+                      },
+                      "to_time": {
+                        "type": "string",
+                        "description": "HH:MM or HH:MM:SS"
+                      },
+                      "offset_log": {
+                        "type": "integer"
+                      },
+                      "record_count": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "device_imei",
+                      "from_date",
+                      "to_date"
+                    ]
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              },
+              "example": {
+                "data": {
+                  "device_imei": "864636050000000",
+                  "from_date": "22-09-2026",
+                  "to_date": "22-09-2026",
+                  "from_time": "08:00",
+                  "to_time": "17:30",
+                  "offset_log": 0,
+                  "record_count": 5000
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/rbac/users/{user_uid}/permissions": {
+      "get": {
+        "tags": [
+          "Profile"
+        ],
+        "summary": "A user's own permissions and identity",
+        "description": "A user may only ask for their own; anyone else answers 403.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                },
+                "example": {
+                  "status": "success",
+                  "message": "OK",
+                  "data": {
+                    "role": "client_admin",
+                    "role_uid": "r-1",
+                    "permissions": [
+                      {
+                        "permission_uid": "p-1",
+                        "permission_name": "geofences.view",
+                        "permission_description": "",
+                        "permission_module": "geofences"
+                      }
+                    ],
+                    "account_type": "client",
+                    "is_customer": true,
+                    "display_name": "Agatha",
+                    "username": "agatha",
+                    "client_uid": "mukwano",
+                    "client_name": "Mukwano Co Ltd"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "user_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/events/create": {
+      "post": {
+        "tags": [
+          "Events and alerts"
+        ],
+        "summary": "Create an alert rule",
+        "description": "alert_phone_numbers is required when sms or whatsapp is chosen.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "event_name": {
+                        "type": "string"
+                      },
+                      "event_description": {
+                        "type": "string"
+                      },
+                      "event_condition": {
+                        "type": "string",
+                        "enum": [
+                          "speed_threshold",
+                          "geofence_breach",
+                          "ignition_change",
+                          "low_battery",
+                          "device_offline"
+                        ]
+                      },
+                      "event_condition_value": {
+                        "type": "string",
+                        "description": "For geofence_breach, a JSON string: {\"zones\":[uid],\"breach_type\":\"enter|exit|both\"}"
+                      },
+                      "alert_channels": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "email",
+                            "sms",
+                            "whatsapp",
+                            "push"
+                          ]
+                        }
+                      },
+                      "alert_email": {
+                        "type": "string"
+                      },
+                      "alert_phone_numbers": {
+                        "type": "string"
+                      },
+                      "event_owner_uid": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "event_name",
+                      "event_condition",
+                      "event_owner_uid"
+                    ]
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              },
+              "example": {
+                "data": {
+                  "event_name": "Left the depot",
+                  "event_description": "Any unit leaving the Kampala yard",
+                  "event_condition": "geofence_breach",
+                  "event_condition_value": "{\"zones\":[\"gz-1\"],\"breach_type\":\"exit\"}",
+                  "alert_channels": [
+                    "email",
+                    "whatsapp"
+                  ],
+                  "alert_email": "ops@mukwano.co.ug",
+                  "alert_phone_numbers": "+256770123456",
+                  "event_owner_uid": "u-1"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/events/{event_uid}/update": {
+      "post": {
+        "tags": [
+          "Events and alerts"
+        ],
+        "summary": "Change an alert rule",
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "event_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "event_name": {
+                        "type": "string"
+                      },
+                      "event_description": {
+                        "type": "string"
+                      },
+                      "event_condition": {
+                        "type": "string",
+                        "enum": [
+                          "speed_threshold",
+                          "geofence_breach",
+                          "ignition_change",
+                          "low_battery",
+                          "device_offline"
+                        ]
+                      },
+                      "event_condition_value": {
+                        "type": "string",
+                        "description": "For geofence_breach, a JSON string: {\"zones\":[uid],\"breach_type\":\"enter|exit|both\"}"
+                      },
+                      "alert_channels": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "email",
+                            "sms",
+                            "whatsapp",
+                            "push"
+                          ]
+                        }
+                      },
+                      "alert_email": {
+                        "type": "string"
+                      },
+                      "alert_phone_numbers": {
+                        "type": "string"
+                      },
+                      "event_owner_uid": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              },
+              "example": {
+                "data": {
+                  "event_name": "Left the depot",
+                  "event_description": "Any unit leaving the Kampala yard",
+                  "event_condition": "geofence_breach",
+                  "event_condition_value": "{\"zones\":[\"gz-1\"],\"breach_type\":\"exit\"}",
+                  "alert_channels": [
+                    "email",
+                    "whatsapp"
+                  ],
+                  "alert_email": "ops@mukwano.co.ug",
+                  "alert_phone_numbers": "+256770123456",
+                  "event_owner_uid": "u-1"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/devices/events/{event_uid}/attach": {
+      "post": {
+        "tags": [
+          "Events and alerts"
+        ],
+        "summary": "Attach units to a rule",
+        "description": "Only attached units raise an alert.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "event_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "device_list": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [
+                      "device_list"
+                    ]
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              },
+              "example": {
+                "data": {
+                  "device_list": [
+                    "864636050000000"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/devices/{device_id}/events/{event_uid}/remove": {
+      "put": {
+        "tags": [
+          "Events and alerts"
+        ],
+        "summary": "Detach a unit from a rule",
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Not allowed, or not your record"
+          },
+          "500": {
+            "description": "Server error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "event_uid",
+            "in": "path",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

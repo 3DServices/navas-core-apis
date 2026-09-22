@@ -9,7 +9,7 @@ import random
 from flask import current_app
 import base64
 from decimal import Decimal
-from .globals import reply, require_permission
+from .globals import reply, require_permission, require_staff
 import base64
 import requests
 from .globals import check_device
@@ -383,6 +383,7 @@ def RenewDevice(device_imei, renewal_period, account_uid_renewing):
 
 
 @finance_bp.route("/finance/payments", methods=["GET"])
+@require_staff('finance.payments.view', 'money.view', 'finance.view')
 def GetPayments():
     try:
         _dbconnect = psycopg2.connect(current_app.config['db_link'])

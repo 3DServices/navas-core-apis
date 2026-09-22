@@ -20,7 +20,7 @@ import pytz
 from datetime import datetime
 from .globals import SubscriptionManager
 from zoneinfo import ZoneInfo
-from .globals import require_permission
+from .globals import require_permission, require_staff
 
 _KLA = ZoneInfo("Africa/Kampala")
 
@@ -574,6 +574,7 @@ def ClientToken_Balance(client_uid):
 
 #transfer token
 @_token_billing.route("/tokens/transfer", methods=["POST"])
+@require_staff('tokens.transfer', 'tokens.update')
 def TransferToken():
     dbconnect = psycopg2.connect(current_app.config['db_link'])
     _payload = request.get_json()

@@ -70,6 +70,26 @@ _CONVERSATION_IDLE_MINUTES = 60
 # check its compatibility, answer; a model looping past that is stuck.
 _MAX_TOOL_ROUNDS = 4
 
+# Apps that send the screen the question came from: surface -> (who, app).
+_SCREEN_SURFACES = {
+    'cms': ('staff member', 'CMS'),
+    'oliwa_console': ('customer', 'OLIWA tracking console'),
+}
+
+# A closing "Source: …" line names an internal document. Staff get it when a
+# search actually returned something; customers never do (the documents are
+# ours, not theirs, and they cannot open them). Matches plain or **bold**.
+_SOURCE_LINE = re.compile(r'^\s*(?:[*_]{1,2})?source(?:s)?\s*(?:[*_]{1,2})?\s*:', re.I)
+
+
+def _tidy_source_line(text, keep):
+    """Drop "Source:" lines unless [keep]. Returns the cleaned text."""
+    if keep:
+        return text
+    kept = [line for line in text.split('\n') if not _SOURCE_LINE.match(line)]
+    return re.sub(r'\n{3,}', '\n\n', '\n'.join(kept)).strip()
+
+
 # Retries for a dropped connection to OpenRouter, and the pause before each.
 _CONNECT_RETRIES = 2
 _RETRY_BACKOFF = (0.6, 1.5)
@@ -630,9 +650,17 @@ def AssistantChat():
         if verified:
             messages.append({"role": "system",
                              "content": waswa_answers.render_for_prompt(verified)})
-        if module and surface == "cms":
+        if audience != 'staff':
             messages.append({"role": "system", "content": (
-                f"The staff member is asking from the CMS \"{module}\" screen. "
+                "This person is a customer, not 3D Services staff. Do not add "
+                "a source line and do not name any document, file or internal "
+                "system. Answer in plain words from what you were given; if "
+                "nothing you were given covers it, say so and offer who can "
+                "help.")})
+        if module and surface in _SCREEN_SURFACES:
+            who, app = _SCREEN_SURFACES[surface]
+            messages.append({"role": "system", "content": (
+                f"The {who} is asking from the {app} \"{module}\" screen. "
                 "Read short or ambiguous questions in that context. You do not "
                 "see what is on their screen; if the question depends on live "
                 "figures from it that you have not been given, say so.")})
@@ -648,6 +676,7 @@ def AssistantChat():
         text = None
         finish_reason = None
         answered = False
+        docs_found = False          # a document search returned something
         for _ in range(_MAX_TOOL_ROUNDS):
             outcome = _call_model(messages)
             if outcome['status'] != 'ok':
@@ -686,6 +715,8 @@ def AssistantChat():
                     # chunk it was built from, and that varies per search.
                     authority = waswa_knowledge.authority_of(result)
                     kind = 'document'
+                    if isinstance(result, dict) and result.get('found'):
+                        docs_found = True
                 evidence.append((
                     kind, f'{tool_name}({_evidence_arg(arguments)})', authority))
                 messages.append({
@@ -712,6 +743,10 @@ def AssistantChat():
         if truncated:
             _log('reply hit max_tokens and was cut off (conversation=%s)',
                  conversation_uid)
+
+        # A source line only when staff asked and a document was really read
+        # this turn — never a citation copied from an example.
+        text = _tidy_source_line(text, keep=(audience == 'staff' and docs_found))
 
         if not text:
             _log('model returned empty content (finish_reason=%s, '

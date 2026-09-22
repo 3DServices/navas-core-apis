@@ -5,7 +5,7 @@ import datetime
 import uuid
 from flask import current_app
 from flask import g
-from .globals import reply, require_permission, require_auth, log_audit_event
+from .globals import reply, require_permission, require_auth, log_audit_event, is_customer_account
 
 
 rbac_bp = Blueprint('rbac', __name__)
@@ -637,14 +637,36 @@ def get_user_permissions(user_uid):
             with dbconnect.cursor() as cursor:
                 # Get user's role from dll_access_relay
                 cursor.execute(
-                    "SELECT account_clearance FROM dll_access_relay WHERE account_uid = %s",
+                    "SELECT account_clearance, account_type, account_root, display_name, log_username "
+                    "FROM dll_access_relay WHERE account_uid = %s",
                     (str(user_uid),)
                 )
 
                 if cursor.rowcount == 0:
                     return reply('error', 404, 'User not found', '')
 
-                user_role = cursor.fetchone()[0]
+                user_role, account_type, account_root, display_name, username = cursor.fetchone()
+
+                # The client this login belongs to (its account_root is the
+                # client UID), so the apps can show "Mukwano Co Ltd".
+                client_name = None
+                if account_root:
+                    cursor.execute(
+                        "SELECT client_name FROM dll_client_accounts WHERE client_uid = %s",
+                        (str(account_root),)
+                    )
+                    row = cursor.fetchone()
+                    client_name = row[0] if row else None
+
+                # Apps decide what to show from this, not from cookies.
+                identity = {
+                    "account_type": account_type,
+                    "is_customer": is_customer_account(user_role, account_type),
+                    "display_name": display_name or username or "",
+                    "username": username or "",
+                    "client_uid": account_root or "",
+                    "client_name": client_name or "",
+                }
 
                 # Get role_uid from role name
                 cursor.execute(
@@ -653,7 +675,7 @@ def get_user_permissions(user_uid):
                 )
 
                 if cursor.rowcount == 0:
-                    return reply('success', 200, 'No role mapping found for user', {"role": user_role, "permissions": []})
+                    return reply('success', 200, 'No role mapping found for user', {"role": user_role, "permissions": [], **identity})
 
                 role_data = cursor.fetchone()
                 role_uid = role_data[0]
@@ -677,7 +699,8 @@ def get_user_permissions(user_uid):
                 return reply('success', 200, 'User permissions retrieved', {
                     "role": role_name,
                     "role_uid": role_uid,
-                    "permissions": permissions
+                    "permissions": permissions,
+                    **identity
                 })
 
     except Exception as error:

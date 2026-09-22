@@ -120,16 +120,26 @@ def build_context(account_uid, surface='mobile', conn=None):
             # reach the caller instead of a generic "unknown".
             tokens, reason = _guard('token position', _token_position,
                                     cur, account_root)
+            if client and not tokens and reason == _NO_TOKEN_ROWS.format(account_root):
+                # The customer record exists and simply holds no packs: that is
+                # a balance of none, which the customer should be told, not an
+                # unknown ("I don't have that information").
+                tokens, reason = {'token_packs': 0,
+                                  'note': 'this account holds no token packs yet'}, None
             _place(known, unknown, 'token_balance_and_burn_rate', tokens, reason)
 
             products_apps, reason = _guard('product lookup', _active_products,
                                            cur, account_root)
             products, apps = products_apps if products_apps else (None, None)
+            if client and not products_apps and reason == _NO_PRODUCT_ROWS:
+                products, apps, reason = 'none (no token packs yet)', 'none', None
             _place(known, unknown, 'active_products', products, reason)
             _place(known, unknown, 'active_apps', apps, reason)
 
             units, reason = _guard('subscribed units', _subscribed_units,
                                    cur, account_root)
+            if client and not units and reason == _NO_UNIT_ROWS:
+                units, reason = {'subscribed_units': 0}, None
             _place(known, unknown, 'asset_count_and_types', units, reason)
 
             incidents, reason = _guard('open incidents', _open_incidents,
@@ -185,6 +195,14 @@ def _place(known, unknown, slot, value, reason):
         known[slot] = value
     else:
         unknown[slot] = reason or 'no rows for this account'
+
+
+# "Nothing found" reasons that mean the customer holds none, as opposed to a
+# lookup that could not tell. build_context turns these into a known zero when
+# the customer record itself was found.
+_NO_TOKEN_ROWS = 'no rows in dll_user_token_accounts for client_uid {}'
+_NO_PRODUCT_ROWS = 'this client holds no token rows'
+_NO_UNIT_ROWS = "no dll_device_subscriptions joined to this client's token accounts"
 
 
 # ── Individual lookups ──────────────────────────────────────────────────────
@@ -255,8 +273,7 @@ def _token_position(cur, client_uid):
     )
     row = cur.fetchone()
     if not row or not row[0]:
-        return None, (f'no rows in dll_user_token_accounts for client_uid '
-                      f'{client_uid}')
+        return None, _NO_TOKEN_ROWS.format(client_uid)
 
     (packs, active_packs, statuses, units_left, numeric_left,
      units_used, numeric_used, awaiting, null_left) = row
@@ -339,7 +356,7 @@ def _active_products(cur, client_uid):
         )
         packs, matched_tokens, with_product, with_row = cur.fetchone()
         if not packs:
-            return None, 'this client holds no token rows'
+            return None, _NO_PRODUCT_ROWS
         if not matched_tokens:
             return None, (
                 f'{packs} token rows, but none of their token_balance values '
@@ -386,8 +403,7 @@ def _subscribed_units(cur, client_uid):
     )
     rows = cur.fetchall() if cur.rowcount > 0 else []
     if not rows:
-        return None, ('no dll_device_subscriptions joined to this client\'s '
-                      'token accounts')
+        return None, _NO_UNIT_ROWS
     by_status = {(r[0] or 'unknown'): int(r[1]) for r in rows}
     return {
         'subscribed_units': sum(by_status.values()),

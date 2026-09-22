@@ -1316,6 +1316,29 @@ def trips_history():
 
 
 #Trips history replay without IOs
+def _playback_times(data):
+    """(from_time, to_time) as zero-padded HH:MM:SS, (None, None) when no
+    times were sent, or ('invalid', None)."""
+    import re as _re
+    raw_from = str(data.get('from_time') or '').strip()
+    raw_to = str(data.get('to_time') or '').strip()
+    if not raw_from and not raw_to:
+        return None, None
+
+    def _norm(value, default, seconds):
+        value = value or default
+        m = _re.match(r'^(\d{1,2}):(\d{2})(?::(\d{2}))?$', value)
+        if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59 or (m.group(3) and int(m.group(3)) > 59):
+            return None
+        return f"{int(m.group(1)):02d}:{m.group(2)}:{m.group(3) or seconds}"
+
+    t_from = _norm(raw_from, '00:00', '00')
+    t_to = _norm(raw_to, '23:59', '59')
+    if not t_from or not t_to:
+        return 'invalid', None
+    return t_from, t_to
+
+
 @data_stream.route("/data-stream/trips/history/replay", methods=["POST"])
 def trips_history_replay():
 
@@ -1332,6 +1355,12 @@ def trips_history_replay():
             Offset_Record = payload_data['data']['offset_log']
             Record_Count = int(payload_data['data']['record_count'])
 
+            # Optional start / end time (HH:MM or HH:MM:SS) for a playback of
+            # part of a day. Without them the whole of each day is returned.
+            TimeFrom, TimeTo = _playback_times(payload_data['data'])
+            if TimeFrom == 'invalid':
+                return reply('error', 400, 'Start and end times must be HH:MM', '')
+
             device_billing_check = check_device(DeviceImei)
 
             if(device_billing_check == 'running'):
@@ -1341,7 +1370,14 @@ def trips_history_replay():
 
                         with dbconnect:
                             with dbconnect.cursor() as cursor:
-                                cursor.execute("SELECT data_longitude, data_latitude, speed_log, data_hdop, local_system_datestamp, record_io_events_uid, geocoded_location, local_system_timestamp, data_connected_satelites, batch_uid, data_idx, ROW_NUMBER() OVER (ORDER BY data_idx DESC) AS row_index FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY data_longitude, data_latitude ORDER BY data_idx DESC) AS row_num FROM dll_location_registry WHERE data_device_imei = %s AND TO_DATE(local_system_datestamp, 'DD-MM-YYYY') BETWEEN TO_DATE(%s, 'DD-MM-YYYY') AND TO_DATE(%s, 'DD-MM-YYYY')) AS subquery WHERE row_num = 1 ORDER BY data_idx DESC LIMIT %s OFFSET %s;", (DeviceImei, FromDate, ToDate, Record_Count, Offset_Record,))
+                                if TimeFrom:
+                                    # A start and end time as well as dates: points on the
+                                    # first day from TimeFrom, on the last day up to TimeTo,
+                                    # everything on the days between. Times are compared as
+                                    # zero-padded HH:MM:SS text, so no row can fail a cast.
+                                    cursor.execute("SELECT data_longitude, data_latitude, speed_log, data_hdop, local_system_datestamp, record_io_events_uid, geocoded_location, local_system_timestamp, data_connected_satelites, batch_uid, data_idx, ROW_NUMBER() OVER (ORDER BY data_idx DESC) AS row_index FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY data_longitude, data_latitude ORDER BY data_idx DESC) AS row_num FROM dll_location_registry WHERE data_device_imei = %s AND TO_DATE(local_system_datestamp, 'DD-MM-YYYY') BETWEEN TO_DATE(%s, 'DD-MM-YYYY') AND TO_DATE(%s, 'DD-MM-YYYY') AND (TO_DATE(local_system_datestamp, 'DD-MM-YYYY') > TO_DATE(%s, 'DD-MM-YYYY') OR local_system_timestamp >= %s) AND (TO_DATE(local_system_datestamp, 'DD-MM-YYYY') < TO_DATE(%s, 'DD-MM-YYYY') OR local_system_timestamp <= %s)) AS subquery WHERE row_num = 1 ORDER BY data_idx DESC LIMIT %s OFFSET %s;", (DeviceImei, FromDate, ToDate, FromDate, TimeFrom, ToDate, TimeTo, Record_Count, Offset_Record,))
+                                else:
+                                    cursor.execute("SELECT data_longitude, data_latitude, speed_log, data_hdop, local_system_datestamp, record_io_events_uid, geocoded_location, local_system_timestamp, data_connected_satelites, batch_uid, data_idx, ROW_NUMBER() OVER (ORDER BY data_idx DESC) AS row_index FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY data_longitude, data_latitude ORDER BY data_idx DESC) AS row_num FROM dll_location_registry WHERE data_device_imei = %s AND TO_DATE(local_system_datestamp, 'DD-MM-YYYY') BETWEEN TO_DATE(%s, 'DD-MM-YYYY') AND TO_DATE(%s, 'DD-MM-YYYY')) AS subquery WHERE row_num = 1 ORDER BY data_idx DESC LIMIT %s OFFSET %s;", (DeviceImei, FromDate, ToDate, Record_Count, Offset_Record,))
 
                                 if(cursor.rowcount >= 1):
 

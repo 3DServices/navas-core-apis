@@ -117,7 +117,25 @@ def _get_user_permissions(account_uid):
     Returns:
         (user_role, account_type, account_root, permissions)
         or (None, None, None, []) on failure.
+
+    Cached for the rest of the request, so the access guard and the route's
+    decorator share one lookup.
     """
+    try:
+        cached = getattr(g, '_user_permissions', None)
+    except RuntimeError:
+        cached = None
+    if cached and cached[0] == str(account_uid):
+        return cached[1]
+    result = _load_user_permissions(account_uid)
+    try:
+        g._user_permissions = (str(account_uid), result)
+    except RuntimeError:
+        pass
+    return result
+
+
+def _load_user_permissions(account_uid):
     dbconnect = psycopg2.connect(current_app.config['db_link'])
     try:
         with dbconnect:
@@ -167,6 +185,41 @@ def _get_user_permissions(account_uid):
         dbconnect.close()
 
 
+# ── Customer accounts ─────────────────────────────────────────────────────────
+# Customers (fleet owners using OLIWA and the mobile app) never skip permission
+# checks. Their role names are shared with staff ("admin" exists in both), so
+# the role's database permissions can't be trusted for them either: a customer
+# may use exactly the endpoints below, which act on their own fleet, and
+# nothing else. Staff-only endpoints (clients, users, RBAC, audit, token and
+# product catalogue changes) answer 403 to every customer account.
+CUSTOMER_ROLES = frozenset({'customer', 'customer_tracker'})
+CUSTOMER_ACCOUNT_TYPES = frozenset({'client', 'customer', 'customer_tracker'})
+CUSTOMER_PERMISSIONS = frozenset({
+    # their own devices, balance, subscriptions and payments
+    'devices.view', 'devices.command',
+    'tokens.view_balance',
+    'subscriptions.view_status', 'subscriptions.renew',
+    'finance.view',
+    'products.view_only', 'products.variants.view_only',
+    # VEBA marketplace
+    'can_browse_asset_listings', 'can_list_asset_on_marketplace',
+    'can_edit_asset_listing', 'can_view_unit_digital_twin',
+    'can_book_asset', 'can_view_booking',
+    'can_approve_booking_request', 'can_reject_booking_request',
+    'can_archive_booking_request', 'can_delete_booking_request',
+})
+
+
+def is_customer_account(role, account_type):
+    """True for a fleet customer's login (including a customer org's admin)."""
+    return (str(role or '').lower() in CUSTOMER_ROLES
+            or str(account_type or '').lower() in CUSTOMER_ACCOUNT_TYPES)
+
+
+def _is_platform_admin(role, account_type):
+    return role in ('super_admin', 'system') or account_type == 'system_account'
+
+
 def require_permission(*required_perms):
     """
     Decorator that enforces RBAC permission checks on endpoints.
@@ -204,8 +257,14 @@ def require_permission(*required_perms):
                 'permissions': user_permissions
             }
 
-            # Super admin, system, and customer_tracker bypass permission checks
-            if user_role in ('super_admin', 'system', 'customer_tracker') or account_type == 'system_account':
+            # Super admin and system accounts bypass permission checks.
+            if _is_platform_admin(user_role, account_type):
+                return f(*args, **kwargs)
+
+            # Customers: only the customer allow-list, whatever their role says.
+            if is_customer_account(user_role, account_type):
+                if required_perms and not any(p in CUSTOMER_PERMISSIONS for p in required_perms):
+                    return reply('error', 403, 'This action is not available to customer accounts.', '')
                 return f(*args, **kwargs)
 
             # Check if user has ANY of the required permissions
@@ -214,6 +273,42 @@ def require_permission(*required_perms):
                 if not has_permission:
                     return reply('error', 403, f'Permission denied. Required: {", ".join(required_perms)}', '')
 
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+
+def require_staff(*required_perms):
+    """
+    For endpoints that act across tenants (all payments, moving tokens between
+    clients): refuses every customer account, then applies the normal
+    permission check for staff.
+    """
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            account_uid = _extract_account_uid()
+            if not account_uid:
+                return reply('error', 401, 'Authentication required. Provide Authorization header.', '')
+
+            user_role, account_type, account_root, user_permissions = _get_user_permissions(account_uid)
+            if user_role is None:
+                return reply('error', 401, 'Invalid or inactive account.', '')
+
+            g.current_user = {
+                'account_uid': account_uid,
+                'role': user_role,
+                'account_type': account_type,
+                'account_root': account_root,
+                'permissions': user_permissions
+            }
+
+            if is_customer_account(user_role, account_type):
+                return reply('error', 403, 'This action is only available to 3D Services staff.', '')
+            if _is_platform_admin(user_role, account_type):
+                return f(*args, **kwargs)
+            if required_perms and not any(p in user_permissions for p in required_perms):
+                return reply('error', 403, f'Permission denied. Required: {", ".join(required_perms)}', '')
             return f(*args, **kwargs)
         return decorated_function
     return decorator
