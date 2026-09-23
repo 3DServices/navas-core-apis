@@ -58,6 +58,37 @@ limiter.limit("3/minute")(app.view_functions.get('auth_bp.forgot_password', lamb
 def _preflight(path):
     return ("", 204)
 
+
+# The catch-all above matches EVERY path, for OPTIONS only. Without the two
+# handlers below, Flask sees "this path matches a rule, but not for GET" and
+# answers 405 Method Not Allowed for every unknown URL — so a missing or
+# not-yet-deployed endpoint looks like a method mistake. These make the answer
+# honest, and JSON, which is what every client here expects.
+@app.errorhandler(404)
+def _not_found(error):
+    from flask import jsonify, request as _request
+    return jsonify({
+        "status": "error",
+        "message": f"No such endpoint: {_request.method} {_request.path}",
+        "data": "",
+    }), 404
+
+
+@app.errorhandler(405)
+def _method_not_allowed(error):
+    from flask import jsonify, request as _request
+    allowed = [m for m in (getattr(error, "valid_methods", None) or [])
+               if m not in ("OPTIONS", "HEAD")]
+    if not allowed:
+        # Only the preflight rule matched: the endpoint doesn't exist here.
+        return _not_found(error)
+    return jsonify({
+        "status": "error",
+        "message": f"{_request.method} is not allowed on {_request.path}. "
+                   f"Use {', '.join(sorted(allowed))}.",
+        "data": "",
+    }), 405
+
 app.config['db_link'] = DB_LINK
 app.config['base_url'] = BASE_URL
 

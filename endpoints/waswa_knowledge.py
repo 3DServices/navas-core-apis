@@ -353,15 +353,50 @@ def knowledge_sources(document_type=None, audience='everyone'):
                 for r in rows
             ]
             quotable = [d for d in documents if d['quotable']]
+
+            # Why the list is empty matters: "nothing uploaded" and "uploaded
+            # but not visible to this reader" look identical from outside, and
+            # the old note talked about "the titles above" when there were none.
+            notes = []
+            if documents and not quotable:
+                notes.append(
+                    'No document is approved yet, so knowledge_search will '
+                    'return nothing. Say you do not have it in approved '
+                    'information; do not answer from the titles above.')
+            elif not documents:
+                cur.execute("SELECT COUNT(*) FROM dll_waswa_sources WHERE active = TRUE")
+                loaded = cur.fetchone()[0]
+                if not loaded:
+                    notes.append('No documents have been uploaded yet, so '
+                                 'knowledge_search will return nothing.')
+                else:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM dll_waswa_sources "
+                        "WHERE active = TRUE AND NOT (audience = ANY(%s))",
+                        (_audiences(audience),))
+                    hidden = cur.fetchone()[0]
+                    cur.execute(
+                        "SELECT COUNT(*) FROM dll_waswa_sources WHERE active = TRUE "
+                        "AND authority_level NOT IN (SELECT authority_level "
+                        "FROM dll_waswa_authority_levels WHERE may_quote = TRUE)")
+                    unquotable = cur.fetchone()[0]
+                    why = []
+                    if hidden:
+                        why.append(f'{hidden} visible to staff only')
+                    if unquotable:
+                        why.append(f'{unquotable} at an authority level that may not be quoted')
+                    notes.append(
+                        f'{loaded} document(s) are loaded, but none can be '
+                        f'read to a "{audience}" reader'
+                        + (' (' + ', '.join(why) + ')' if why else '')
+                        + ', so knowledge_search will return nothing.')
+
             return {
                 'documents': documents,
                 'total': len(documents),
                 'quotable': len(quotable),
-                'notes': ([] if quotable else
-                          ['No document is approved yet, so knowledge_search '
-                           'will return nothing. Say you do not have it in '
-                           'approved information; do not answer from the '
-                           'titles above.']),
+                'audience': audience,
+                'notes': notes,
             }
     finally:
         conn.close()

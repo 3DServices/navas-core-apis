@@ -76,11 +76,13 @@ def caller(account_uid):
         _get_user_permissions(account_uid)
     if role is None:
         return None
-    is_admin = (role in _ADMIN_ROLES or account_type == 'system_account'
-                or (str(role).lower() in _STAFF_ADMIN_ROLES
-                    and str(account_type or '').lower() not in _CUSTOMER_ACCOUNT_TYPES))
+    role_name = str(role or '').strip().lower()
+    account_kind = str(account_type or '').strip().lower()
+    is_admin = (role_name in _ADMIN_ROLES or account_kind == 'system_account'
+                or (role_name in _STAFF_ADMIN_ROLES
+                    and account_kind not in _CUSTOMER_ACCOUNT_TYPES))
     granted = set(permissions or [])
-    if str(account_type or '').lower() in _CUSTOMER_ACCOUNT_TYPES:
+    if account_kind in _CUSTOMER_ACCOUNT_TYPES:
         # A customer account never holds a Waswa permission, even if someone
         # ticks waswa.* on a role that customer admins share (e.g. 'admin').
         granted = {p for p in granted if not p.startswith('waswa.')}
