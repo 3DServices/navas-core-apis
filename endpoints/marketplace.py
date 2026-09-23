@@ -1132,6 +1132,14 @@ def _row_to_request(row: dict) -> dict:
                 rs["daily_rate"] = float(rs["daily_rate"])
             except (TypeError, ValueError):
                 pass
+    # asset_summary rides along from the listing (see list_booking_requests),
+    # so both request tables can show the asset's name instead of its UID.
+    summary = out.get("asset_summary")
+    if isinstance(summary, str):
+        try:
+            out["asset_summary"] = json.loads(summary)
+        except json.JSONDecodeError:
+            out["asset_summary"] = None
     for k in ("start_date", "end_date", "created_at", "updated_at"):
         if out.get(k) is not None:
             out[k] = out[k].isoformat()
@@ -1458,29 +1466,34 @@ def list_booking_requests():
 
     where_clauses: list[str] = []
     params: list[Any] = []
+    # Columns are named r.* because the query joins the listing for the asset's
+    # name, and both tables have a "status".
     if direction == "incoming":
-        where_clauses.append("owner_root = %s")
+        where_clauses.append("r.owner_root = %s")
         params.append(account_root)
     elif direction == "outgoing":
-        where_clauses.append("requester_root = %s")
+        where_clauses.append("r.requester_root = %s")
         params.append(account_root)
     elif direction == "both":
-        where_clauses.append("(owner_root = %s OR requester_root = %s)")
+        where_clauses.append("(r.owner_root = %s OR r.requester_root = %s)")
         params.extend([account_root, account_root])
     # direction == "all" → no account filter, returns everything
 
     if status_filter:
-        where_clauses.append("status = %s")
+        where_clauses.append("r.status = %s")
         params.append(status_filter)
 
+    # The asset's name lives on the listing, so bring it along: without it both
+    # request tables could only show "asset-3f2a…" where a name belongs.
+    select = (
+        "SELECT r.*, l.asset_summary AS asset_summary "
+        "FROM dll_booking_requests r "
+        "LEFT JOIN dll_marketplace_listings l ON l.listing_uid = r.listing_uid "
+    )
     if where_clauses:
-        sql = (
-            "SELECT * FROM dll_booking_requests "
-            "WHERE " + " AND ".join(where_clauses) + " "
-            "ORDER BY created_at DESC"
-        )
+        sql = select + "WHERE " + " AND ".join(where_clauses) + " ORDER BY r.created_at DESC"
     else:
-        sql = "SELECT * FROM dll_booking_requests ORDER BY created_at DESC"
+        sql = select + "ORDER BY r.created_at DESC"
 
     try:
         dbconnect = _open_conn()

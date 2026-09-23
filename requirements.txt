@@ -27,3 +27,4 @@ python-dotenv
 # sudo apt install -y libcairo2 libcairo2-dev
 
 APScheduler
+pdfplumber

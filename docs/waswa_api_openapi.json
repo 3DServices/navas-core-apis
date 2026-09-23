@@ -1,0 +1,1315 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Waswa AI \u2014 Assistant & Console",
+    "version": "Phase A (migration 041)"
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:5000",
+      "description": "Local \u2014 change to your API host"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  },
+  "paths": {
+    "/assistant/chat": {
+      "post": {
+        "summary": "Chat with Waswa",
+        "tags": [
+          "Waswa \u00b7 Chat"
+        ],
+        "description": "Any signed-in user. Returns reply, conversation_uid, message_uid (use it to flag), verified_answers, evidence, audience. surface: mobile | cms | console.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "message": {
+                        "type": "string"
+                      },
+                      "surface": {
+                        "type": "string"
+                      },
+                      "conversation_uid": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "example": {
+                "data": {
+                  "message": "How do tracking tokens work?",
+                  "surface": "mobile",
+                  "conversation_uid": ""
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/feedback": {
+      "post": {
+        "summary": "Flag or rate an answer",
+        "tags": [
+          "Waswa \u00b7 Chat"
+        ],
+        "description": "Any signed-in user. verdict: wrong | unhelpful | good. Only on your own conversation unless you hold waswa.review.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "message_uid": {
+                        "type": "string"
+                      },
+                      "verdict": {
+                        "type": "string"
+                      },
+                      "note": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "example": {
+                "data": {
+                  "message_uid": "<from chat reply>",
+                  "verdict": "wrong",
+                  "note": "Explain how tokens work, not my balance"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/context": {
+      "get": {
+        "summary": "What Waswa knows about me (diagnostic)",
+        "tags": [
+          "Waswa \u00b7 Diagnostics"
+        ],
+        "description": "Any signed-in user. ",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        }
+      }
+    },
+    "/assistant/knowledge": {
+      "get": {
+        "summary": "What document search returns (diagnostic)",
+        "tags": [
+          "Waswa \u00b7 Diagnostics"
+        ],
+        "description": "Any signed-in user. Uses the caller's audience, exactly as chat would.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        },
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "Question to search; omit to list documents",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_unapproved",
+            "in": "query",
+            "required": false,
+            "description": "true \u2014 reviewers only",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "product",
+            "in": "query",
+            "required": false,
+            "description": "e.g. OLIWA",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "document_type",
+            "in": "query",
+            "required": false,
+            "description": "procedure | strategy | user_stories | kpi",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/assistant/console/summary": {
+      "get": {
+        "summary": "Badge counts and 30-day numbers",
+        "tags": [
+          "Waswa \u00b7 Console"
+        ],
+        "description": "Permission: waswa.review. ",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        }
+      }
+    },
+    "/assistant/console/queue": {
+      "get": {
+        "summary": "Review queue",
+        "tags": [
+          "Waswa \u00b7 Console"
+        ],
+        "description": "Permission: waswa.review. Each item carries card {id, badge HITL|HIC, title, sub} for WaswaTriagePanel.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        },
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "description": "flag,approval,recheck,document (comma list)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "default 50",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ]
+      }
+    },
+    "/assistant/console/conversations": {
+      "get": {
+        "summary": "Recent conversations",
+        "tags": [
+          "Waswa \u00b7 Console"
+        ],
+        "description": "Permission: waswa.review. ",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        },
+        "parameters": [
+          {
+            "name": "surface",
+            "in": "query",
+            "required": false,
+            "description": "mobile | cms | console",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "flagged",
+            "in": "query",
+            "required": false,
+            "description": "true = only with wrong/unhelpful flags",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "default 30",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ]
+      }
+    },
+    "/assistant/console/conversations/{conversation_uid}": {
+      "get": {
+        "summary": "One conversation with evidence and feedback",
+        "tags": [
+          "Waswa \u00b7 Console"
+        ],
+        "description": "Permission: waswa.review. ",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        },
+        "parameters": [
+          {
+            "name": "conversation_uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/assistant/console/answers": {
+      "get": {
+        "summary": "List corrections",
+        "tags": [
+          "Waswa \u00b7 Corrections"
+        ],
+        "description": "Permission: waswa.review. ",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        },
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "draft,pending,approved,rejected,retired",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "search text",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ]
+      },
+      "post": {
+        "summary": "Draft a correction",
+        "tags": [
+          "Waswa \u00b7 Corrections"
+        ],
+        "description": "Permission: waswa.review. audience: staff | everyone (default staff). Currency amounts are refused. Money/approval/account wording becomes policy = 2 approvers.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "question": {
+                        "type": "string"
+                      },
+                      "question_variants": {
+                        "type": "string"
+                      },
+                      "answer": {
+                        "type": "string"
+                      },
+                      "audience": {
+                        "type": "string"
+                      },
+                      "feedback_uid": {
+                        "type": "string"
+                      },
+                      "based_on_source_uid": {
+                        "type": "string"
+                      },
+                      "based_on_note": {
+                        "type": "string"
+                      },
+                      "country_scope": {
+                        "type": "string"
+                      },
+                      "review_due": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "example": {
+                "data": {
+                  "question": "How do tracking tokens work?",
+                  "question_variants": "what are tokens\nhow are tokens deducted",
+                  "answer": "<plain answer, no prices>",
+                  "audience": "everyone",
+                  "feedback_uid": "",
+                  "based_on_source_uid": "",
+                  "based_on_note": "",
+                  "country_scope": "",
+                  "review_due": ""
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/answers/{answer_uid}": {
+      "get": {
+        "summary": "One correction with its decisions",
+        "tags": [
+          "Waswa \u00b7 Corrections"
+        ],
+        "description": "Permission: waswa.review. ",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        },
+        "parameters": [
+          {
+            "name": "answer_uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "summary": "Edit a correction",
+        "tags": [
+          "Waswa \u00b7 Corrections"
+        ],
+        "description": "Permission: waswa.review. Draft/pending/rejected: edited in place, approvals cleared. Approved: creates a new version; the live one stays until it is approved.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        },
+        "parameters": [
+          {
+            "name": "answer_uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "answer": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "example": {
+                "data": {
+                  "answer": "<revised answer>"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/answers/{answer_uid}/submit": {
+      "post": {
+        "summary": "Submit for approval",
+        "tags": [
+          "Waswa \u00b7 Corrections"
+        ],
+        "description": "Permission: waswa.review. ",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        },
+        "parameters": [
+          {
+            "name": "answer_uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/assistant/console/answers/{answer_uid}/decide": {
+      "post": {
+        "summary": "Approve or reject",
+        "tags": [
+          "Waswa \u00b7 Corrections"
+        ],
+        "description": "Permission: waswa.approve. decision: approve | reject (reject needs a note). The author can never approve their own.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        },
+        "parameters": [
+          {
+            "name": "answer_uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "decision": {
+                        "type": "string"
+                      },
+                      "note": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "example": {
+                "data": {
+                  "decision": "approve",
+                  "note": ""
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/answers/{answer_uid}/confirm": {
+      "post": {
+        "summary": "Recheck done \u2014 still correct",
+        "tags": [
+          "Waswa \u00b7 Corrections"
+        ],
+        "description": "Permission: waswa.approve. ",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        },
+        "parameters": [
+          {
+            "name": "answer_uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "review_due": {
+                        "type": "string"
+                      },
+                      "note": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "example": {
+                "data": {
+                  "review_due": "2027-03-21",
+                  "note": "Still correct"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/answers/{answer_uid}/retire": {
+      "post": {
+        "summary": "Retire a correction",
+        "tags": [
+          "Waswa \u00b7 Corrections"
+        ],
+        "description": "Permission: waswa.review. ",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        },
+        "parameters": [
+          {
+            "name": "answer_uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "reason": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "example": {
+                "data": {
+                  "reason": "Policy changed"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/feedback/{feedback_uid}/resolve": {
+      "post": {
+        "summary": "Close a flag",
+        "tags": [
+          "Waswa \u00b7 Console"
+        ],
+        "description": "Permission: waswa.review. resolution: correction | document | data_fix | dismissed. Approving a correction made from a flag closes it automatically.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        },
+        "parameters": [
+          {
+            "name": "feedback_uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "resolution": {
+                        "type": "string"
+                      },
+                      "note": {
+                        "type": "string"
+                      },
+                      "answer_uid": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "example": {
+                "data": {
+                  "resolution": "dismissed",
+                  "note": "Answer was correct",
+                  "answer_uid": ""
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/sources": {
+      "get": {
+        "summary": "Documents and their state",
+        "tags": [
+          "Waswa \u00b7 Documents"
+        ],
+        "description": "Permission: waswa.review. ",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        }
+      }
+    },
+    "/assistant/console/sources/{source_uid}/review": {
+      "post": {
+        "summary": "Approve or reject a document",
+        "tags": [
+          "Waswa \u00b7 Documents"
+        ],
+        "description": "Permission: waswa.approve. ",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        },
+        "parameters": [
+          {
+            "name": "source_uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "decision": {
+                        "type": "string"
+                      },
+                      "note": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "example": {
+                "data": {
+                  "decision": "approve",
+                  "note": ""
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/sources/{source_uid}/audience": {
+      "post": {
+        "summary": "Release a document to customers",
+        "tags": [
+          "Waswa \u00b7 Documents"
+        ],
+        "description": "Permission: waswa.approve. staff | everyone.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        },
+        "parameters": [
+          {
+            "name": "source_uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "audience": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "example": {
+                "data": {
+                  "audience": "everyone"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/console/match": {
+      "get": {
+        "summary": "Which corrections a question would hit",
+        "tags": [
+          "Waswa \u00b7 Diagnostics"
+        ],
+        "description": "Permission: waswa.review. Preview only; does not count as a match.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Refused by a rule; message says why"
+          },
+          "401": {
+            "description": "Not signed in"
+          },
+          "403": {
+            "description": "Missing permission"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Wrong state for this action"
+          }
+        },
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "question",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "audience",
+            "in": "query",
+            "required": false,
+            "description": "staff | everyone",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

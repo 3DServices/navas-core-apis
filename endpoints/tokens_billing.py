@@ -10,6 +10,7 @@ from flask import current_app
 import base64
 from decimal import Decimal, InvalidOperation
 from .globals import reply
+from . import token_values
 import base64
 import requests
 from .globals import check_device
@@ -19,7 +20,7 @@ import pytz
 from datetime import datetime
 from .globals import SubscriptionManager
 from zoneinfo import ZoneInfo
-from .globals import require_permission
+from .globals import require_permission, require_staff
 
 _KLA = ZoneInfo("Africa/Kampala")
 
@@ -426,12 +427,24 @@ def UpdateToken(token_id):
 
 
 def _safe_num(val):
-    """Coerce a value to a number, returning 0 for non-numeric strings (legacy data)."""
-    try:
-        n = float(val)
-        return int(n) if n == int(n) else n
-    except (TypeError, ValueError):
+    """Coerce a value to a number, returning 0 for non-numeric strings.
+
+    Kept so the response shape does not change, but a 0 from here is not a
+    measurement — the billing columns are text and hold sentences such as
+    "column deprecated use token_units_left column" or
+    "units_unfined_waiting_for_first_use". Callers should also emit
+    _value_state() beside the number so a client can tell a real zero from an
+    unreadable column.
+    """
+    n = token_values.number_or(val, None)
+    if n is None:
         return 0
+    return int(n) if n == int(n) else n
+
+
+def _value_state(val):
+    """Why the number beside this is what it is (see token_values)."""
+    return token_values.state(val)
 
 @_token_billing.route("/tokens/<string:client_uid>/balance", methods=["GET"])
 @require_permission('tokens.view_balance')
@@ -495,6 +508,9 @@ def ClientToken_Balance(client_uid):
                     "token_hours_used": _safe_num(token_balance[1]),
                     "token_used_units": _safe_num(token_balance[4]),
                     "token_units_left": _safe_num(token_balance[5]),
+                    # Whether those numbers were read or defaulted to 0.
+                    "token_hours_state": _value_state(token_balance[0]),
+                    "token_units_state": _value_state(token_balance[5]),
                     "token_status": token_balance[6],
                     "token_uid": token_balance[2],
                     "token_name": token_name,
@@ -545,6 +561,8 @@ def ClientToken_Balance(client_uid):
                         "token_hours_used": _safe_num(token[1]),
                         "token_used_units": _safe_num(token[4]),
                         "token_units_left": _safe_num(token[5]),
+                        "token_hours_state": _value_state(token[0]),
+                        "token_units_state": _value_state(token[5]),
                         "token_status": token[6],
                         "token_uid": token[2],
                         "token_name": token_name,
@@ -556,6 +574,7 @@ def ClientToken_Balance(client_uid):
 
 #transfer token
 @_token_billing.route("/tokens/transfer", methods=["POST"])
+@require_staff('tokens.transfer', 'tokens.update')
 def TransferToken():
     dbconnect = psycopg2.connect(current_app.config['db_link'])
     _payload = request.get_json()

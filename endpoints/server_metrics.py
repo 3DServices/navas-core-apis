@@ -108,6 +108,21 @@ class DiskCounters:
 
 def read_diskstats() -> Dict[str, DiskCounters]:
     devices: Dict[str, DiskCounters] = {}
+    if not os.path.exists("/proc/diskstats"):
+        # Not Linux (e.g. the API running on a Windows or Mac laptop):
+        # use psutil's per-disk counters instead, converted to sectors.
+        try:
+            counters = psutil.disk_io_counters(perdisk=True) or {}
+        except Exception:
+            counters = {}
+        for name, c in counters.items():
+            devices[name] = DiskCounters(
+                reads_completed=c.read_count,
+                writes_completed=c.write_count,
+                sectors_read=c.read_bytes // SECTOR_SIZE,
+                sectors_written=c.write_bytes // SECTOR_SIZE,
+            )
+        return devices
     with open("/proc/diskstats", "r", encoding="utf-8") as f:
         for line in f:
             parts = line.split()

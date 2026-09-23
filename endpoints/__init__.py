@@ -27,6 +27,9 @@ from .marketplace import marketplace_bp
 from .events import device_eventsbp
 from .assistant import assistant_bp
 from .pause import pause_bp
+from .team import team_bp
+from .alert_engine import alerts_bp
+from .access_guard import register_access_guard
 
 def Sentinel_Fleet():
     app = Flask(__name__)
@@ -59,8 +62,13 @@ def Sentinel_Fleet():
     app.register_blueprint(device_eventsbp)
     app.register_blueprint(assistant_bp)
     app.register_blueprint(pause_bp)
+    app.register_blueprint(team_bp)
+    app.register_blueprint(alerts_bp)
 
     # Register metrics middleware
     register_metrics_middleware(app)
+
+    # Sign-in and tenant checks in front of every route (see access_guard.py)
+    register_access_guard(app)
 
     return app

@@ -96,7 +96,43 @@ def _start_auto_renew_scheduler():
         print(f"[auto-renew] scheduler failed to start: {e}")
 
 
+def _start_alert_scheduler():
+    """Geofence alerts are decided on the server (endpoints/alert_engine.py).
+    Off by default; set ALERT_ENGINE_ENABLED=true to sweep on a timer, or call
+    POST /alerts/run from cron instead (better with several workers)."""
+    import os
+    if os.environ.get('ALERT_ENGINE_ENABLED', 'false').lower() != 'true':
+        return
+    if os.environ.get('WERKZEUG_RUN_MAIN') == 'false':
+        return
+    try:
+        interval = max(1, int(os.environ.get('ALERT_ENGINE_INTERVAL_MINUTES', '2')))
+    except ValueError:
+        interval = 2
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from endpoints.alert_engine import run_alert_sweep
+
+        def _sweep():
+            with app.app_context():
+                try:
+                    summary = run_alert_sweep(live=True)
+                    if summary.get('alerts') or summary.get('errors'):
+                        print(f"[alerts] {summary}")
+                except Exception as error:
+                    print(f"[alerts] sweep failed: {error}")
+
+        scheduler = BackgroundScheduler(daemon=True)
+        scheduler.add_job(_sweep, 'interval', minutes=interval,
+                          id='geofence_alert_sweep', replace_existing=True)
+        scheduler.start()
+        print(f"[alerts] geofence sweep started (every {interval}m)")
+    except Exception as error:
+        print(f"[alerts] scheduler failed to start: {error}")
+
+
 _start_auto_renew_scheduler()
+_start_alert_scheduler()
 
 
 if __name__ == '__main__':

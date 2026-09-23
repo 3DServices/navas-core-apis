@@ -7,6 +7,8 @@ from cassandra.auth import PlainTextAuthProvider
 from cassandra import ConsistencyLevel
 from cassandra.policies import TokenAwarePolicy, DCAwareRoundRobinPolicy
 
+from . import token_values
+
 _statistics = Blueprint("Statistics", __name__)
 
 # Cassandra connection configuration
@@ -70,8 +72,12 @@ def format_token_record(token):
         "token_name": token['token_name'],
         "token_type": token['token_type'],
         "token_status": token.get('token_status'),
-        "token_hours_left": float(token['token_hours_left']) if token['token_hours_left'] else 0,
-        "token_hours_used": float(token['token_hours_used']) if token['token_hours_used'] else 0,
+        # These two columns are deprecated and hold a notice, not a value.
+        # The number is kept so the response shape does not change; the state
+        # beside it says whether that number was read or is a fallback.
+        "token_hours_left": token_values.number_or(token['token_hours_left'], 0),
+        "token_hours_used": token_values.number_or(token['token_hours_used'], 0),
+        "token_hours_state": token_values.state(token['token_hours_left']),
         "token_currency": token['token_currency']
     }
 
@@ -208,7 +214,7 @@ def GetActiveVEBATokens():
                     LEFT JOIN dll_client_accounts ca ON uta.client_uid = ca.client_uid
                     WHERE LOWER(tr.token_type) = 'veba'
                       AND uta.token_status = 'active'
-                      AND COALESCE(uta.token_hours_left::numeric, 0) > 0
+                      AND navas_num(uta.token_hours_left) > 0
                     ORDER BY ca.client_name, uta.token_billing_uid
                 """)
 
@@ -270,7 +276,7 @@ def GetActiveVEBATokensByClient(client_uid):
                     WHERE uta.client_uid = %s
                       AND LOWER(tr.token_type) = 'veba'
                       AND uta.token_status = 'active'
-                      AND COALESCE(uta.token_hours_left::numeric, 0) > 0
+                      AND navas_num(uta.token_hours_left) > 0
                     ORDER BY uta.token_billing_uid
                 """, (client_uid,))
 
@@ -331,11 +337,7 @@ def GetExpiredVEBATokens():
                     WHERE LOWER(tr.token_type) = 'veba'
                       AND (
                         uta.token_status = 'expired'
-                        OR COALESCE(
-                            CASE WHEN uta.token_hours_left IS NULL OR TRIM(uta.token_hours_left::text) = '' THEN 0
-                                 ELSE uta.token_hours_left::numeric END,
-                            0
-                        ) <= 0
+                        OR navas_num(uta.token_hours_left) <= 0
                       )
                     ORDER BY ca.client_name, uta.token_billing_uid
                 """)
@@ -397,7 +399,7 @@ def GetExpiredVEBATokensByClient(client_uid):
                     JOIN dll_tokens_registry tr ON uta.token_balance = tr.token_id
                     WHERE uta.client_uid = %s
                       AND LOWER(tr.token_type) = 'veba'
-                      AND (uta.token_status = 'expired' OR COALESCE(uta.token_hours_left::numeric, 0) <= 0)
+                      AND (uta.token_status = 'expired' OR navas_num(uta.token_hours_left) <= 0)
                     ORDER BY uta.token_billing_uid
                 """, (client_uid,))
 
@@ -1492,8 +1494,9 @@ def GetPausedTokenSubscriptions():
                         "token_name": sub['token_name'],
                         "token_type": sub['token_type'],
                         "token_currency": sub['token_currency'],
-                        "token_hours_left": float(sub['token_hours_left']) if sub['token_hours_left'] else 0,
-                        "token_hours_used": float(sub['token_hours_used']) if sub['token_hours_used'] else 0
+                        "token_hours_left": token_values.number_or(sub['token_hours_left'], 0),
+                        "token_hours_used": token_values.number_or(sub['token_hours_used'], 0),
+                        "token_hours_state": token_values.state(sub['token_hours_left'])
                     })
 
                 return response_out(
@@ -1594,10 +1597,10 @@ def GetActiveTokenValue():
                     SELECT 
                         tr.token_currency,
                         COUNT(DISTINCT uta.token_billing_uid) AS active_accounts,
-                        SUM(uta.token_hours_left::numeric) AS total_hours_remaining,
-                        SUM(uta.token_hours_used::numeric) AS total_hours_consumed,
+                        SUM(navas_num(uta.token_hours_left)) AS total_hours_remaining,
+                        SUM(navas_num(uta.token_hours_used)) AS total_hours_consumed,
                         SUM(tr.token_amount::numeric) AS total_token_value,
-                        AVG(uta.token_hours_left::numeric) AS avg_hours_remaining,
+                        AVG(navas_num(uta.token_hours_left)) AS avg_hours_remaining,
                         COUNT(DISTINCT uta.client_uid) AS unique_clients
                     FROM dll_user_token_accounts uta
                     JOIN dll_tokens_registry tr ON uta.token_balance = tr.token_id
@@ -1616,7 +1619,7 @@ def GetActiveTokenValue():
                         tr.token_currency,
                         COUNT(uta.token_billing_uid) AS active_count,
                         SUM(tr.token_amount::numeric) AS total_value,
-                        AVG(uta.token_hours_left::numeric) AS avg_hours_left
+                        AVG(navas_num(uta.token_hours_left)) AS avg_hours_left
                     FROM dll_user_token_accounts uta
                     JOIN dll_tokens_registry tr ON uta.token_balance = tr.token_id
                     WHERE uta.token_status = 'active'
@@ -1702,20 +1705,20 @@ def GetLowBalanceAccounts():
                     LEFT JOIN dll_device_subscriptions ds ON uta.token_billing_uid = ds.token_billing_uid 
                         AND ds.subscription_status = 'active'
                     WHERE uta.token_status = 'active'
-                      AND uta.token_hours_left::numeric < 24
-                      AND uta.token_hours_left::numeric > 0
+                      AND navas_num(uta.token_hours_left) < 24
+                      AND navas_num(uta.token_hours_left) > 0
                       AND LOWER(tr.token_type) != 'veba'
                     GROUP BY uta.token_billing_uid, uta.client_uid, ca.client_name, ca.client_email,
                              uta.token_balance, uta.token_hours_left, uta.token_hours_used, uta.token_status,
                              tr.token_name, tr.token_type, tr.token_currency, tr.token_amount, tr.token_validity
-                    ORDER BY uta.token_hours_left::numeric ASC
+                    ORDER BY navas_num(uta.token_hours_left) ASC
                 """)
 
                 low_balance_accounts = cursor.fetchall()
                 result = []
                 
                 for account in low_balance_accounts:
-                    hours_left = float(account['token_hours_left']) if account['token_hours_left'] else 0
+                    hours_left = token_values.number_or(account['token_hours_left'], 0)
                     urgency_level = "critical" if hours_left < 6 else "high" if hours_left < 12 else "medium"
                     
                     result.append({
@@ -1730,7 +1733,8 @@ def GetLowBalanceAccounts():
                         "token_amount": float(account['token_amount']) if account['token_amount'] else 0,
                         "token_validity": account['token_validity'],
                         "hours_remaining": hours_left,
-                        "hours_used": float(account['token_hours_used']) if account['token_hours_used'] else 0,
+                        "hours_used": token_values.number_or(account['token_hours_used'], 0),
+                        "hours_state": token_values.state(account['token_hours_left']),
                         "active_devices": int(account['active_devices']),
                         "urgency_level": urgency_level
                     })
@@ -1781,8 +1785,8 @@ def GetExpiringSubscriptions():
                         tr.token_currency,
                         tr.token_amount,
                         CASE 
-                            WHEN uta.token_hours_left::numeric > 0 
-                            THEN FLOOR(uta.token_hours_left::numeric / 24)::integer
+                            WHEN navas_num(uta.token_hours_left) > 0 
+                            THEN FLOOR(navas_num(uta.token_hours_left) / 24)::integer
                             ELSE 0
                         END AS days_until_expiry
                     FROM dll_device_subscriptions ds
@@ -1790,8 +1794,8 @@ def GetExpiringSubscriptions():
                     LEFT JOIN dll_user_token_accounts uta ON ds.token_billing_uid = uta.token_billing_uid
                     LEFT JOIN dll_tokens_registry tr ON uta.token_balance = tr.token_id
                     WHERE ds.subscription_status = 'active'
-                      AND uta.token_hours_left::numeric > 0
-                      AND uta.token_hours_left::numeric <= (%s * 24)
+                      AND navas_num(uta.token_hours_left) > 0
+                      AND navas_num(uta.token_hours_left) <= (%s * 24)
                     ORDER BY days_until_expiry ASC, ca.client_name
                 """, (days_ahead,))
 

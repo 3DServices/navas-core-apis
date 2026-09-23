@@ -12,9 +12,50 @@ from decimal import Decimal
 from .globals import reply
 import base64
 import uuid
+import re
+from . import geozone_shapes
 
 
 geozones_bp = Blueprint('GeoZones', __name__)
+
+_HEX_COLOR = re.compile(r'^#[0-9A-Fa-f]{6}$')
+
+
+def _color(value):
+    """A #RRGGBB colour, or None."""
+    value = str(value or '').strip()
+    return value if _HEX_COLOR.match(value) else None
+
+
+def _shape_fields(columns, row):
+    """Shape and colour fields of a dll_geozones row (SELECT *), by column
+    name so it does not depend on column order. Rows from before migration
+    043 have no such columns and come back as a plain polygon."""
+    record = dict(zip(columns, row))
+    params = record.get('geozone_shape_params')
+    try:
+        params = json.loads(params) if params else None
+    except ValueError:
+        params = None
+    fields = {
+        "geozone_shape": record.get('geozone_shape') or 'polygon',
+        "geozone_shape_params": params,
+    }
+    if record.get('geozone_color'):
+        fields["geozone_color"] = record['geozone_color']
+    if record.get('geozone_label_color'):
+        fields["geozone_label_color"] = record['geozone_label_color']
+    return fields
+
+
+def _shape_error_reply(error):
+    """A friendly message when the shape columns are missing."""
+    text = str(error)
+    if 'geozone_shape' in text or 'geozone_color' in text:
+        return reply('error', 500, "The database is missing the geofence shape "
+                     "columns. Run python run_migration_043.py on the API server, "
+                     "then restart the API.", "")
+    return reply('error', 500, text, "")
 
 @geozones_bp.route("/geozones/create", methods=["POST"])
 def CreateGezone():
@@ -28,6 +69,17 @@ def CreateGezone():
         _GeoZonePoints = str(_geozone_payload['data']['geozone_points'])
         _GeoZoneOwner = str(_geozone_payload['data']['geozone_owner'])
 
+        # New form: a shape (polygon / circle / line) and its details. The
+        # stored ring is computed from the shape, not taken from the client.
+        try:
+            _Shaped = geozone_shapes.from_request(_geozone_payload['data'])
+        except geozone_shapes.ShapeError as shape_error:
+            return reply("error", 400, str(shape_error), "")
+        if _Shaped:
+            _Shape, _ShapeParams, _GeoZonePoints = _Shaped
+            _Color = _color(_geozone_payload['data'].get('geozone_color'))
+            _LabelColor = _color(_geozone_payload['data'].get('geozone_label_color'))
+
         if(len(_GeoZoneName) > 4) and (len(_GeoZoneDescription) > 5) and (len(_GeoZonePoints) > 2) and (len(_GeoZoneOwner) > 5):
 
             with _dbconnect:
@@ -36,9 +88,12 @@ def CreateGezone():
 
                     if(cursor.rowcount == 0):
                         _GeozoneID = str(uuid.uuid4())
-                        cursor.execute("INSERT INTO dll_geozones (geozone_uid, geozone_name, geozone_description, geozone_points, geozone_owner, date_created) VALUES(%s,%s,%s,%s,%s,%s)", (_GeozoneID, _GeoZoneName, _GeoZoneDescription, _GeoZonePoints, _GeoZoneOwner, str(datetime.datetime.now().date()),))
+                        if _Shaped:
+                            cursor.execute("INSERT INTO dll_geozones (geozone_uid, geozone_name, geozone_description, geozone_points, geozone_owner, date_created, geozone_shape, geozone_shape_params, geozone_color, geozone_label_color) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", (_GeozoneID, _GeoZoneName, _GeoZoneDescription, _GeoZonePoints, _GeoZoneOwner, str(datetime.datetime.now().date()), _Shape, _ShapeParams, _Color, _LabelColor,))
+                        else:
+                            cursor.execute("INSERT INTO dll_geozones (geozone_uid, geozone_name, geozone_description, geozone_points, geozone_owner, date_created) VALUES(%s,%s,%s,%s,%s,%s)", (_GeozoneID, _GeoZoneName, _GeoZoneDescription, _GeoZonePoints, _GeoZoneOwner, str(datetime.datetime.now().date()),))
 
-                        return reply('success', 200, "Geozone Created SuccessFully", "")
+                        return reply('success', 200, "Geozone Created SuccessFully", _GeozoneID)
 
                     elif(cursor.rowcount >= 1):
                         return reply("error", 400, "Geozone Name Exists", "")
@@ -47,7 +102,7 @@ def CreateGezone():
             return reply("error", 400, "Some Data Is Missing", "")
 
     except Exception as error:
-        return reply('error', 500, str(error), "")
+        return _shape_error_reply(error)
     
 
 @geozones_bp.route("/geozones/<string:geozone_id>/update", methods=["PUT"])
@@ -62,6 +117,13 @@ def UpdateGeozone(geozone_id):
         _GeoZonePoints = str(_geozone_payload['data']['new_geozone_points'])
         _GeozoneID = str(geozone_id)
 
+        try:
+            _Shaped = geozone_shapes.from_request(_geozone_payload['data'], prefix='new_')
+        except geozone_shapes.ShapeError as shape_error:
+            return reply("error", 400, str(shape_error), "")
+        if _Shaped:
+            _Shape, _ShapeParams, _GeoZonePoints = _Shaped
+
         if(len(_GeoZoneName) > 4) and (len(_GeoZoneDescription) > 5) and (len(_GeoZonePoints) > 5):
 
             with _dbconnect:
@@ -72,7 +134,10 @@ def UpdateGeozone(geozone_id):
                         return reply('error', 400, "Geozone Not Found", "")
 
                     elif(cursor.rowcount >= 1):
-                        cursor.execute("UPDATE dll_geozones SET geozone_name=%s, geozone_description=%s, geozone_points=%s WHERE geozone_uid=%s", (_GeoZoneName, _GeoZoneDescription, _GeoZonePoints, _GeozoneID,))
+                        if _Shaped:
+                            cursor.execute("UPDATE dll_geozones SET geozone_name=%s, geozone_description=%s, geozone_points=%s, geozone_shape=%s, geozone_shape_params=%s WHERE geozone_uid=%s", (_GeoZoneName, _GeoZoneDescription, _GeoZonePoints, _Shape, _ShapeParams, _GeozoneID,))
+                        else:
+                            cursor.execute("UPDATE dll_geozones SET geozone_name=%s, geozone_description=%s, geozone_points=%s WHERE geozone_uid=%s", (_GeoZoneName, _GeoZoneDescription, _GeoZonePoints, _GeozoneID,))
 
                         return reply("success", 200, "Geozone Updated", "")
 
@@ -80,7 +145,7 @@ def UpdateGeozone(geozone_id):
             return reply("error", 400, "Some Data Is Missing", "")
 
     except Exception as error:
-        return reply('error', 500, str(error), "")
+        return _shape_error_reply(error)
     
 
 @geozones_bp.route("/geozones/<string:owner_uid>/list/<string:access_level>/load", methods=["GET"])
@@ -102,6 +167,7 @@ def GetGeoZone(owner_uid, access_level):
                         if(cursor.rowcount >= 1):
 
                             _dataTunnelLink = cursor.fetchall()
+                            _Columns = [d[0] for d in cursor.description]
                             _dataHolder = []
 
                             for _Geozone in _dataTunnelLink:
@@ -111,7 +177,8 @@ def GetGeoZone(owner_uid, access_level):
                                     "geozone_uid": _Geozone[1],
                                     "geozone_description": _Geozone[3],
                                     "geozone_points": _Geozone[4],
-                                    "date_created": _Geozone[6]
+                                    "date_created": _Geozone[6],
+                                    **_shape_fields(_Columns, _Geozone)
                                 }
                                 _dataHolder.append(_SingleGeozone)
 
@@ -129,6 +196,7 @@ def GetGeoZone(owner_uid, access_level):
                         if(cursor.rowcount >= 1):
 
                             _dataTunnelLink = cursor.fetchall()
+                            _Columns = [d[0] for d in cursor.description]
                             _dataHolder = []
 
                             for _Geozone in _dataTunnelLink:
@@ -138,7 +206,8 @@ def GetGeoZone(owner_uid, access_level):
                                     "geozone_uid": _Geozone[1],
                                     "geozone_description": _Geozone[3],
                                     "geozone_points": _Geozone[4],
-                                    "date_created": _Geozone[6]
+                                    "date_created": _Geozone[6],
+                                    **_shape_fields(_Columns, _Geozone)
                                 }
                                 _dataHolder.append(_SingleGeozone)
 
@@ -156,6 +225,7 @@ def GetGeoZone(owner_uid, access_level):
                         if(cursor.rowcount >= 1):
 
                             _dataTunnelLink = cursor.fetchall()
+                            _Columns = [d[0] for d in cursor.description]
                             _dataHolder = []
 
                             for _Geozone in _dataTunnelLink:
@@ -173,7 +243,8 @@ def GetGeoZone(owner_uid, access_level):
                                         "geozone_points": _Geozone[4],
                                         "date_created": _Geozone[6],
                                         "geozone_owner": _Geozone[5],
-                                        "geozone_owner_name": _OwnerName
+                                        "geozone_owner_name": _OwnerName,
+                                        **_shape_fields(_Columns, _Geozone)
                                     }
                                     _dataHolder.append(_SingleGeozone)
 
@@ -190,7 +261,8 @@ def GetGeoZone(owner_uid, access_level):
                                             "geozone_points": _Geozone[4],
                                             "date_created": _Geozone[6],
                                             "geozone_owner": _Geozone[5],
-                                            "geozone_owner_name": _OwnerName
+                                            "geozone_owner_name": _OwnerName,
+                                        **_shape_fields(_Columns, _Geozone)
                                         }
                                         _dataHolder.append(_SingleGeozone)
 
@@ -356,15 +428,17 @@ def GetGeoZoneData(geozone_id):
 
             with _dbconnect:
                 with _dbconnect.cursor() as cursor:
-                    cursor.execute("SELECT geozone_name,geozone_description,geozone_points FROM dll_geozones WHERE geozone_uid=%s", (_geozoneID,))
+                    cursor.execute("SELECT * FROM dll_geozones WHERE geozone_uid=%s", (_geozoneID,))
 
                     if(cursor.rowcount == 1):
 
                         _dataTunnel = cursor.fetchone()
+                        _Record = dict(zip([d[0] for d in cursor.description], _dataTunnel))
                         _dataHolder = {
-                            "geozone_name": _dataTunnel[0],
-                            "geozone_description": _dataTunnel[1],
-                            "geopoints": _dataTunnel[2]
+                            "geozone_name": _Record['geozone_name'],
+                            "geozone_description": _Record['geozone_description'],
+                            "geopoints": _Record['geozone_points'],
+                            **_shape_fields(list(_Record.keys()), list(_Record.values()))
                         }
 
                         return reply("success", 200, "Found Geozone", _dataHolder)

@@ -1,3 +1,6 @@
 .venv
 .env
 __pycache__/
+
+# Documents uploaded through the Waswa AI Console (kept on the server, not in git)
+database/knowledge/uploads/
