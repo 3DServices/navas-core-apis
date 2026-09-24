@@ -78,8 +78,13 @@ def _gate(permission=None):
             if not who:
                 return reply('error', 401, 'Invalid or inactive account.', '')
             if permission and not wa.can(who, permission):
-                return reply('error', 403,
-                             f'This needs the {permission} permission.', '')
+                held = ', '.join(who['permissions']) or 'none'
+                return reply(
+                    'error', 403,
+                    f"This needs the {permission} permission. You are signed in "
+                    f"as role '{who['role']}' (account type '{who['account_type']}') "
+                    f"and hold: {held}. Grant it to that role under RBAC, or sign "
+                    f"in with an account that has it.", '')
             g.waswa_who = who
             try:
                 return func(*args, **kwargs)

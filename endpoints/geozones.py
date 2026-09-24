@@ -48,6 +48,18 @@ def _shape_fields(columns, row):
     return fields
 
 
+def _missing_fields(checks):
+    """A message naming what the body is missing, or ''. Each check is
+    (field, value, minimum length) — the old code answered "Some Data Is
+    Missing" without saying which, and crashed outright on an absent key."""
+    short = [name for name, value, least in checks if len(str(value or '')) < least]
+    if not short:
+        return ''
+    if len(short) == 1:
+        return short[0] + " is missing."
+    return "These are missing: " + ", ".join(short) + "."
+
+
 def _shape_error_reply(error):
     """A friendly message when the shape columns are missing."""
     text = str(error)
@@ -64,42 +76,56 @@ def CreateGezone():
         _dbconnect = psycopg2.connect(current_app.config['db_link'])
         _geozone_payload = request.get_json()
 
-        _GeoZoneName = str(_geozone_payload['data']['geozone_name']).lower()
-        _GeoZoneDescription = str(_geozone_payload['data']['geozone_decription'])
-        _GeoZonePoints = str(_geozone_payload['data']['geozone_points'])
-        _GeoZoneOwner = str(_geozone_payload['data']['geozone_owner'])
+        _Body = (_geozone_payload or {}).get('data') or {}
 
         # New form: a shape (polygon / circle / line) and its details. The
         # stored ring is computed from the shape, not taken from the client.
+        # Old form: geozone_points sent as the ring itself. A shape body has
+        # no geozone_points, so nothing here may insist on one.
         try:
-            _Shaped = geozone_shapes.from_request(_geozone_payload['data'])
+            _Shaped = geozone_shapes.from_request(_Body)
         except geozone_shapes.ShapeError as shape_error:
             return reply("error", 400, str(shape_error), "")
+
+        _GeoZoneName = str(_Body.get('geozone_name') or '').lower()
+        _GeoZoneDescription = str(_Body.get('geozone_decription')
+                                  or _Body.get('geozone_description') or '')
+        _GeoZoneOwner = str(_Body.get('geozone_owner') or '')
+        _Color = _LabelColor = None
+
         if _Shaped:
             _Shape, _ShapeParams, _GeoZonePoints = _Shaped
-            _Color = _color(_geozone_payload['data'].get('geozone_color'))
-            _LabelColor = _color(_geozone_payload['data'].get('geozone_label_color'))
-
-        if(len(_GeoZoneName) > 4) and (len(_GeoZoneDescription) > 5) and (len(_GeoZonePoints) > 2) and (len(_GeoZoneOwner) > 5):
-
-            with _dbconnect:
-                with _dbconnect.cursor() as cursor:
-                    cursor.execute("SELECT geozone_name FROM dll_geozones WHERE geozone_name=%s", (_GeoZoneName,))
-
-                    if(cursor.rowcount == 0):
-                        _GeozoneID = str(uuid.uuid4())
-                        if _Shaped:
-                            cursor.execute("INSERT INTO dll_geozones (geozone_uid, geozone_name, geozone_description, geozone_points, geozone_owner, date_created, geozone_shape, geozone_shape_params, geozone_color, geozone_label_color) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", (_GeozoneID, _GeoZoneName, _GeoZoneDescription, _GeoZonePoints, _GeoZoneOwner, str(datetime.datetime.now().date()), _Shape, _ShapeParams, _Color, _LabelColor,))
-                        else:
-                            cursor.execute("INSERT INTO dll_geozones (geozone_uid, geozone_name, geozone_description, geozone_points, geozone_owner, date_created) VALUES(%s,%s,%s,%s,%s,%s)", (_GeozoneID, _GeoZoneName, _GeoZoneDescription, _GeoZonePoints, _GeoZoneOwner, str(datetime.datetime.now().date()),))
-
-                        return reply('success', 200, "Geozone Created SuccessFully", _GeozoneID)
-
-                    elif(cursor.rowcount >= 1):
-                        return reply("error", 400, "Geozone Name Exists", "")
-
+            _Color = _color(_Body.get('geozone_color'))
+            _LabelColor = _color(_Body.get('geozone_label_color'))
         else:
-            return reply("error", 400, "Some Data Is Missing", "")
+            _GeoZonePoints = str(_Body.get('geozone_points') or '')
+
+        _Missing = _missing_fields(
+            [('geozone_name', _GeoZoneName, 5),
+             ('geozone_decription', _GeoZoneDescription, 6),
+             ('geozone_owner', _GeoZoneOwner, 6)]
+            + ([] if _Shaped else [('geozone_points', _GeoZonePoints, 3)]))
+        if _Missing:
+            return reply("error", 400, _Missing, "")
+
+        with _dbconnect:
+            with _dbconnect.cursor() as cursor:
+                # Scoped to the owner: two clients may each have a "main
+                # depot", and a clash across clients used to tell one of
+                # them that the other had a zone by that name.
+                cursor.execute("SELECT geozone_name FROM dll_geozones WHERE geozone_name=%s AND geozone_owner=%s", (_GeoZoneName, _GeoZoneOwner,))
+
+                if(cursor.rowcount == 0):
+                    _GeozoneID = str(uuid.uuid4())
+                    if _Shaped:
+                        cursor.execute("INSERT INTO dll_geozones (geozone_uid, geozone_name, geozone_description, geozone_points, geozone_owner, date_created, geozone_shape, geozone_shape_params, geozone_color, geozone_label_color) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", (_GeozoneID, _GeoZoneName, _GeoZoneDescription, _GeoZonePoints, _GeoZoneOwner, str(datetime.datetime.now().date()), _Shape, _ShapeParams, _Color, _LabelColor,))
+                    else:
+                        cursor.execute("INSERT INTO dll_geozones (geozone_uid, geozone_name, geozone_description, geozone_points, geozone_owner, date_created) VALUES(%s,%s,%s,%s,%s,%s)", (_GeozoneID, _GeoZoneName, _GeoZoneDescription, _GeoZonePoints, _GeoZoneOwner, str(datetime.datetime.now().date()),))
+
+                    return reply('success', 200, "Geozone Created SuccessFully", _GeozoneID)
+
+                elif(cursor.rowcount >= 1):
+                    return reply("error", 400, "You already have a geofence called '" + _GeoZoneName + "'.", "")
 
     except Exception as error:
         return _shape_error_reply(error)
@@ -112,37 +138,44 @@ def UpdateGeozone(geozone_id):
         _dbconnect = psycopg2.connect(current_app.config['db_link'])
         _geozone_payload = request.get_json()
 
-        _GeoZoneName = str(_geozone_payload['data']['new_geozone_name']).lower()
-        _GeoZoneDescription = str(_geozone_payload['data']['new_geozone_decription'])
-        _GeoZonePoints = str(_geozone_payload['data']['new_geozone_points'])
+        _Body = (_geozone_payload or {}).get('data') or {}
         _GeozoneID = str(geozone_id)
 
         try:
-            _Shaped = geozone_shapes.from_request(_geozone_payload['data'], prefix='new_')
+            _Shaped = geozone_shapes.from_request(_Body, prefix='new_')
         except geozone_shapes.ShapeError as shape_error:
             return reply("error", 400, str(shape_error), "")
+
+        _GeoZoneName = str(_Body.get('new_geozone_name') or '').lower()
+        _GeoZoneDescription = str(_Body.get('new_geozone_decription')
+                                  or _Body.get('new_geozone_description') or '')
+
         if _Shaped:
             _Shape, _ShapeParams, _GeoZonePoints = _Shaped
-
-        if(len(_GeoZoneName) > 4) and (len(_GeoZoneDescription) > 5) and (len(_GeoZonePoints) > 5):
-
-            with _dbconnect:
-                with _dbconnect.cursor() as cursor:
-                    cursor.execute("SELECT geozone_name FROM dll_geozones WHERE geozone_uid=%s", (_GeozoneID,))
-
-                    if(cursor.rowcount == 0):
-                        return reply('error', 400, "Geozone Not Found", "")
-
-                    elif(cursor.rowcount >= 1):
-                        if _Shaped:
-                            cursor.execute("UPDATE dll_geozones SET geozone_name=%s, geozone_description=%s, geozone_points=%s, geozone_shape=%s, geozone_shape_params=%s WHERE geozone_uid=%s", (_GeoZoneName, _GeoZoneDescription, _GeoZonePoints, _Shape, _ShapeParams, _GeozoneID,))
-                        else:
-                            cursor.execute("UPDATE dll_geozones SET geozone_name=%s, geozone_description=%s, geozone_points=%s WHERE geozone_uid=%s", (_GeoZoneName, _GeoZoneDescription, _GeoZonePoints, _GeozoneID,))
-
-                        return reply("success", 200, "Geozone Updated", "")
-
         else:
-            return reply("error", 400, "Some Data Is Missing", "")
+            _GeoZonePoints = str(_Body.get('new_geozone_points') or '')
+
+        _Missing = _missing_fields(
+            [('new_geozone_name', _GeoZoneName, 5),
+             ('new_geozone_decription', _GeoZoneDescription, 6)]
+            + ([] if _Shaped else [('new_geozone_points', _GeoZonePoints, 6)]))
+        if _Missing:
+            return reply("error", 400, _Missing, "")
+
+        with _dbconnect:
+            with _dbconnect.cursor() as cursor:
+                cursor.execute("SELECT geozone_name FROM dll_geozones WHERE geozone_uid=%s", (_GeozoneID,))
+
+                if(cursor.rowcount == 0):
+                    return reply('error', 400, "Geozone Not Found", "")
+
+                elif(cursor.rowcount >= 1):
+                    if _Shaped:
+                        cursor.execute("UPDATE dll_geozones SET geozone_name=%s, geozone_description=%s, geozone_points=%s, geozone_shape=%s, geozone_shape_params=%s WHERE geozone_uid=%s", (_GeoZoneName, _GeoZoneDescription, _GeoZonePoints, _Shape, _ShapeParams, _GeozoneID,))
+                    else:
+                        cursor.execute("UPDATE dll_geozones SET geozone_name=%s, geozone_description=%s, geozone_points=%s WHERE geozone_uid=%s", (_GeoZoneName, _GeoZoneDescription, _GeoZonePoints, _GeozoneID,))
+
+                    return reply("success", 200, "Geozone Updated", "")
 
     except Exception as error:
         return _shape_error_reply(error)
