@@ -91,3 +91,40 @@ CORS_ORIGINS = [
 #     "CORS_ORIGINS",
 #     "http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:3000,https://narvas.3dservices.co.ug,https://cms.3dservices.net",
 # ).split(",")
+
+# ── Cassandra (device telemetry) ───────────────────────────────────────────
+# The password used to sit in plain text in six endpoint files — data.py,
+# data_handler.py, devices.py, device_configs.py, management.py and
+# statistics.py — each with its own copy. It is read from the environment
+# here instead, and the app refuses to start without it: a default would put
+# the password straight back into the repository.
+#
+# The contact points and username are not secrets, so they keep working
+# defaults; override them per environment when the cluster moves.
+CASSANDRA_KEYSPACE = os.environ.get("CASSANDRA_KEYSPACE", "navas_iot_dbx")
+CASSANDRA_CONTACT_POINTS = [
+    host.strip()
+    for host in os.environ.get("CASSANDRA_CONTACT_POINTS", "165.232.128.208").split(",")
+    if host.strip()
+]
+CASSANDRA_PORT = int(os.environ.get("CASSANDRA_PORT", "9042"))
+CASSANDRA_USERNAME = os.environ.get("CASSANDRA_USERNAME", "cassandra")
+CASSANDRA_PASSWORD = _require_env("CASSANDRA_PASSWORD")
+CASSANDRA_LOCAL_DC = os.environ.get("CASSANDRA_LOCAL_DC", "datacenter1")
+
+
+# ── Payments (Santripe mobile money) ───────────────────────────────────────
+# Optional at startup so the app still boots without it; MoMoPayment_Charge
+# refuses the charge with a clear error when it is missing, rather than
+# sending a request that the gateway rejects.
+SANTRIPE_API_KEY = os.environ.get("SANTRIPE_API_KEY", "")
+SANTRIPE_COLLECTIONS_URL = os.environ.get(
+    "SANTRIPE_COLLECTIONS_URL",
+    "https://optimus.santripe.com/collections/mobile-money",
+)
+
+
+# ── Distance lookups (distancematrix.ai) ───────────────────────────────────
+# Optional. Without it Calculate_DistanceX reports that distances are not
+# configured instead of calling the service with an empty key.
+DISTANCEMATRIX_API_KEY = os.environ.get("DISTANCEMATRIX_API_KEY", "")

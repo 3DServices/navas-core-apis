@@ -24,12 +24,17 @@ management_bp = Blueprint('management', __name__)
 
 
 # Cassandra connection configuration
-CASSANDRA_KEYSPACE = 'navas_iot_dbx'
-CASSANDRA_CONTACT_POINTS = ['165.232.128.208']
-CASSANDRA_PORT = 9042
-CASSANDRA_USERNAME = 'cassandra'
-CASSANDRA_PASSWORD = 'Sterile-Nectar-Unrevised-Undertone-Stagnate1'
-CASSANDRA_LOCAL_DC = 'datacenter1'
+# Cassandra connection settings, including the password, come from the
+# environment via config.py. They used to be written out in full in each
+# of these six files.
+from config import (
+    CASSANDRA_KEYSPACE,
+    CASSANDRA_CONTACT_POINTS,
+    CASSANDRA_PORT,
+    CASSANDRA_USERNAME,
+    CASSANDRA_PASSWORD,
+    CASSANDRA_LOCAL_DC,
+)
 
 _cassandra_cluster = None
 _cassandra_session = None

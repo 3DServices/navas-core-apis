@@ -12,7 +12,8 @@ import bcrypt
 import base64
 import logging
 from decimal import Decimal
-from .globals import reply, require_permission, require_auth, log_audit_event
+from .globals import (reply, require_permission, require_permission_or_self,
+                      require_auth, log_audit_event)
 import uuid
 import requests
 from .jwt_utils import create_access_token, create_refresh_token
@@ -367,7 +368,8 @@ def auth_user():
 
 #get user details
 @users_bp.route("/users/<account_uid>/details", methods=["GET"])
-@require_permission('users.view')
+# Your own profile needs no permission; anyone else's still needs users.view.
+@require_permission_or_self('account_uid', 'users.view')
 def get_user_details(account_uid):
 
     dbconnect = psycopg2.connect(current_app.config['db_link'])

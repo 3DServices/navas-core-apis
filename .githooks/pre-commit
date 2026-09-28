@@ -1,0 +1,55 @@
+#!/bin/sh
+#
+# pre-commit — refuse a commit that carries a credential.
+#
+# This exists because nine live keys reached these repositories: a Cassandra
+# password copied into six files, a payment key, a Maps key typed straight
+# into a page, and three more sitting in commented-out lines. Removing them
+# does not stop the next one; this does.
+#
+# It reads only what is staged, and only the lines being ADDED.
+#
+# To skip it for one commit (be sure):   git commit --no-verify
+#
+# Installed with:   git config core.hooksPath .githooks
+
+added=$(git diff --cached --unified=0 --no-color | grep -E '^\+[^+]' | cut -c2-)
+fail=0
+
+report() {
+  if [ -n "$2" ]; then
+    echo "  ✗ $1"
+    echo "$2" | sed 's/^/      /' | cut -c1-100
+    fail=1
+  fi
+}
+
+# ── whole files that should never be committed ──────────────────────────────
+staged_files=$(git diff --cached --name-only --diff-filter=ACM)
+bad_files=$(echo "$staged_files" | grep -E '(^|/)\.env($|\.local$|\.production$)|\.pem$|\.p12$|\.pfx$|id_rsa$|\.bak(\.|$)' || true)
+if [ -n "$bad_files" ]; then
+  echo "  ✗ files that must not be committed"
+  echo "$bad_files" | sed 's/^/      /'
+  fail=1
+fi
+
+# ── credentials in the added lines ──────────────────────────────────────────
+report "Google API key"          "$(echo "$added" | grep -E 'AIza[A-Za-z0-9_-]{30,}'         || true)"
+report "Mapbox secret token"     "$(echo "$added" | grep -E '\bsk\.ey[A-Za-z0-9_.-]{20,}'    || true)"
+report "OpenRouter / OpenAI key" "$(echo "$added" | grep -E 'sk-(or-v1-)?[A-Za-z0-9]{20,}'   || true)"
+report "payment gateway key"     "$(echo "$added" | grep -E '\bpki_[A-Za-z0-9]{20,}'         || true)"
+report "AWS access key"          "$(echo "$added" | grep -E 'AKIA[0-9A-Z]{16}'               || true)"
+report "GitHub token"            "$(echo "$added" | grep -E 'gh[pousr]_[A-Za-z0-9]{20,}'     || true)"
+report "Slack token"             "$(echo "$added" | grep -E 'xox[baprs]-[A-Za-z0-9-]{10,}'   || true)"
+report "private key block"       "$(echo "$added" | grep -E 'BEGIN [A-Z ]*PRIVATE KEY'       || true)"
+report "key in a URL"            "$(echo "$added" | grep -Ei '[?&](key|api_?key|access_token|token)=[A-Za-z0-9_.-]{16,}' || true)"
+report "password in source"      "$(echo "$added" | grep -Ei '(password|passwd|secret)[a-z_]*[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"'$/{}]{8,}["'"'"']' | grep -viE '(os\.environ|getenv|import\.meta\.env|process\.env|_require_env|your|example|placeholder|changeme|reset-password|forgot-password)' || true)"
+
+if [ "$fail" -ne 0 ]; then
+  echo ""
+  echo "Commit stopped: the lines above look like credentials."
+  echo "Put the value in .env (gitignored) and read it from there, then commit again."
+  echo "If this is a false alarm:  git commit --no-verify"
+  exit 1
+fi
+exit 0

@@ -44,12 +44,17 @@ from cassandra.policies import TokenAwarePolicy, DCAwareRoundRobinPolicy
 from cassandra.query import BatchStatement, BatchType
 
 # Cassandra connection configuration
-CASSANDRA_KEYSPACE = 'navas_iot_dbx'
-CASSANDRA_CONTACT_POINTS = ['165.232.128.208']
-CASSANDRA_PORT = 9042
-CASSANDRA_USERNAME = 'cassandra'
-CASSANDRA_PASSWORD = 'Sterile-Nectar-Unrevised-Undertone-Stagnate1'
-CASSANDRA_LOCAL_DC = 'datacenter1'
+# Cassandra connection settings, including the password, come from the
+# environment via config.py. They used to be written out in full in each
+# of these six files.
+from config import (
+    CASSANDRA_KEYSPACE,
+    CASSANDRA_CONTACT_POINTS,
+    CASSANDRA_PORT,
+    CASSANDRA_USERNAME,
+    CASSANDRA_PASSWORD,
+    CASSANDRA_LOCAL_DC,
+)
 
 _cassandra_cluster = None
 _cassandra_session = None
@@ -283,8 +288,19 @@ def Config_Sources(GetThis, target_device_imei, target_io_records, target_actual
             return 'No-Configuration'
 
 def Calculate_DistanceX(Origin_Lat, Origin_Long, To_Lat, To_Long):
-    print("Executed Distance Calc")
-    RequestData = requests.get(f"https://api.distancematrix.ai/maps/api/distancematrix/json?origins={Origin_Lat}, {Origin_Long}&destinations={To_Lat}, {To_Long}&key=e7TojyncRvHeDpPQkq76vaEoJnxWBx8Cp9USPtreiwZ4MhSnVuTRGDqO0orgTdCS")
+    """Road distance and duration between two points, as a JSON string.
+
+    Every caller does json.loads() on the result, so every path out of here
+    must return JSON — returning a bare word breaks trip history with a
+    JSONDecodeError rather than degrading. 'CORDS_ERROR' is the marker the
+    callers already understand for "no distance available".
+    """
+    # The distancematrix.ai key used to be written into the URL below.
+    from config import DISTANCEMATRIX_API_KEY
+    if not DISTANCEMATRIX_API_KEY:
+        return json.dumps({"distance_covered": 'CORDS_ERROR',
+                           "time_covered": "Nothing"})
+    RequestData = requests.get(f"https://api.distancematrix.ai/maps/api/distancematrix/json?origins={Origin_Lat}, {Origin_Long}&destinations={To_Lat}, {To_Long}&key={DISTANCEMATRIX_API_KEY}")
     api_data = RequestData.json()
     
     if(api_data['rows'][0]['elements'][0]['status'] != 'ZERO_RESULTS') and (api_data['rows'][0]['elements'][0]['status'] == 'OK'):
@@ -299,12 +315,10 @@ def Calculate_DistanceX(Origin_Lat, Origin_Long, To_Lat, To_Long):
 
         return json.dumps(data_xc)
     
-    elif(api_data['rows'][0]['elements'][0]['status'] == 'ZERO_RESULTS'):
-        data_xc = {
-            "distance_covered": 'CORDS_ERROR',
-            "time_covered": "Nothing"
-        }
-        return json.dumps(data_xc)
+    # Any other status (OVER_QUERY_LIMIT, REQUEST_DENIED, NOT_FOUND) used to
+    # fall off the end and return None, which json.loads() then choked on.
+    return json.dumps({"distance_covered": 'CORDS_ERROR',
+                       "time_covered": "Nothing"})
 
 
 
@@ -1895,13 +1909,8 @@ def geocoding():
             LatitudeCords = str(payload_data['data']['latitude_cords'])
             LongitudeCords = str(payload_data['data']['logitude_cords'])
 
-            #Gecodding_data = requests.get(f"https://maps.googleapis.com/maps/api/geocode/json?latlng={ LatitudeCords },{ LongitudeCords}&key=AIzaSyBr0ESjtbQb7jRNfKeygf75Nm0Hub6i4ns")
-            #api_data = Gecodding_data.json()
 
-            # Gecodding_data = requests.get(f"https://api.mapbox.com/geocoding/v5/mapbox.places/{LongitudeCords},{LatitudeCords}.json?access_token=sk.eyJ1Ijoib211bG9uZ28iLCJhIjoiY21kb3ZoZnNmMDVybTJxcjJxMTU0a2l2OSJ9.4YphwEQuadKHV8Uk_r3u5A")
-            # api_data = Gecodding_data.json()
 
-            #Gecodding_data = requests.get(f"https://api.tomtom.com/search/2/reverseGeocode/{ LatitudeCords },{ LongitudeCords }.json?key=ISZP8XQsiEllwh7VGGg9Zp4tgFAEdfIG")
 
             # if('streetName' in api_data['addresses'][0]['address']):
 

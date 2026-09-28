@@ -50,11 +50,27 @@ _SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 _modules = {}
 
 
+def _script_path(name):
+    return os.path.join(_SCRIPTS, f'{name}.py')
+
+
 def _script(name):
-    """Import one of the scripts/ converters by path (scripts is not a package)."""
+    """Import one of the scripts/ converters by path (scripts is not a package).
+
+    A deployment that ships endpoints/ without scripts/ used to surface as a
+    bare "[Errno 2] No such file or directory: /var/www/.../ingest_waswa_
+    knowledge.py" on the reviewer's screen — a server path, and nothing they
+    could act on. Say what is wrong and who can fix it instead.
+    """
     if name not in _modules:
-        spec = importlib.util.spec_from_file_location(
-            f'waswa_{name}', os.path.join(_SCRIPTS, f'{name}.py'))
+        path = _script_path(name)
+        if not os.path.isfile(path):
+            raise RuleError(
+                'This server is missing the document converter '
+                f'(scripts/{name}.py), so uploads cannot be processed. '
+                'Deploy the scripts/ folder alongside endpoints/ and restart '
+                'the API.', 503)
+        spec = importlib.util.spec_from_file_location(f'waswa_{name}', path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         _modules[name] = module
@@ -73,6 +89,9 @@ def upload_readiness():
     return {
         'pdf': importlib.util.find_spec('pdfplumber') is not None,
         'xlsx': importlib.util.find_spec('openpyxl') is not None,
+        # Without the converter nothing can be ingested at all, whatever the
+        # file type — so the console can say so before anyone picks a file.
+        'converter': os.path.isfile(_script_path('ingest_waswa_knowledge')),
         'storage_writable': writable,
         'storage_path': os.path.abspath(root),
     }
