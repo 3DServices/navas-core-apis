@@ -200,6 +200,8 @@ CUSTOMER_PERMISSIONS = frozenset({
     'tokens.view_balance',
     'subscriptions.view_status', 'subscriptions.renew',
     'finance.view',
+    # buying their own tokens — /payments/tokens/buy
+    'finance.create',
     'products.view_only', 'products.variants.view_only',
     # VEBA marketplace
     'can_browse_asset_listings', 'can_list_asset_on_marketplace',
@@ -274,6 +276,50 @@ def require_permission(*required_perms):
                     return reply('error', 403, f'Permission denied. Required: {", ".join(required_perms)}', '')
 
             return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+
+def require_permission_or_self(param, *required_perms):
+    """require_permission, except that a signed-in user may always read their
+    OWN record without holding the permission.
+
+    GET /users/<account_uid>/details required 'users.view'. Customers do not
+    have it and must not be given it: /users/allx takes no owner parameter, so
+    the access guard cannot scope that route and the permission is the only
+    thing keeping the platform's whole user list private. The side effect was
+    that a customer could not open their own profile — the mobile app's
+    Profile screen 403'd for every fleet owner.
+
+    Reading your own record needs no capability: you are the record. Anyone
+    asking for somebody else's still goes through the normal check.
+
+    [param] is the name of the URL parameter holding the account uid.
+    """
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            account_uid = _extract_account_uid()
+            if not account_uid:
+                return reply('error', 401,
+                             'Authentication required. Provide Authorization header.', '')
+            if str(kwargs.get(param) or '') == str(account_uid):
+                # Still populate g.current_user for anything downstream.
+                role, account_type, account_root, permissions = \
+                    _get_user_permissions(account_uid)
+                if role is None:
+                    return reply('error', 401, 'Invalid or inactive account.', '')
+                g.current_user = {
+                    'account_uid': account_uid,
+                    'role': role,
+                    'account_type': account_type,
+                    'account_root': account_root,
+                    'permissions': permissions,
+                }
+                return f(*args, **kwargs)
+            # Somebody else's record — the ordinary rules apply. The permission
+            # lookup is cached on g, so this costs nothing extra.
+            return require_permission(*required_perms)(f)(*args, **kwargs)
         return decorated_function
     return decorator
 

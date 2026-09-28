@@ -4,3 +4,7 @@ __pycache__/
 
 # Documents uploaded through the Waswa AI Console (kept on the server, not in git)
 database/knowledge/uploads/
+
+# secrets and stale backups must never be committed
+*.bak
+*.bak.*

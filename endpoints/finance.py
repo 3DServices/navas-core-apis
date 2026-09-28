@@ -16,16 +16,29 @@ from .globals import check_device
 import uuid
 import string
 from .globals import SubscriptionManager
+from config import SANTRIPE_API_KEY, SANTRIPE_COLLECTIONS_URL
 
 finance_bp = Blueprint("Finance", __name__)
 
 def MoMoPayment_Charge(PhoneNumber, Country, Curreny, LocalAmount, PaymentReferance):
+    """Charge a mobile money number through Santripe.
+
+    The API key used to be written into this function; it now comes from
+    SANTRIPE_API_KEY in the environment. Without it the charge is refused
+    here rather than sent to the gateway with an empty key, which the gateway
+    rejects with a message no customer could act on.
+
+    The payload is never logged: it carries the key and the payer's phone
+    number, and it was going to the server log on every single charge.
+    """
+    if not SANTRIPE_API_KEY:
+        return "payment_not_configured"
     try:
         _Payload = {
-            "auth":{
-                "api_key":"pki_7ve43chhGgAEBag49ZNqJ6AZ3e29CGgqgHWgP9pxfw7AdjsMqx9ZFmaPqYHL7"
+            "auth": {
+                "api_key": SANTRIPE_API_KEY
             },
-            "data":{
+            "data": {
                 "local_country": Country,
                 "local_currency": Curreny.upper(),
                 "local_phone": PhoneNumber,
@@ -33,27 +46,32 @@ def MoMoPayment_Charge(PhoneNumber, Country, Curreny, LocalAmount, PaymentRefera
                 "app_transaction_uid": PaymentReferance
             }
         }
-        print(_Payload)
-        _DebitUser = requests.post('https://optimus.santripe.com/collections/mobile-money', data=json.dumps(_Payload), headers={"Content-type":"application/json"})
-        _ReplyFrom_API = _DebitUser.json()
-
-        return _ReplyFrom_API
+        _DebitUser = requests.post(SANTRIPE_COLLECTIONS_URL,
+                                   data=json.dumps(_Payload),
+                                   headers={"Content-type": "application/json"},
+                                   timeout=30)
+        return _DebitUser.json()
 
     except Exception as error:
         return "internal_error"
 
 
 @finance_bp.route("/payments/tokens/buy", methods=["POST"])
-#@require_permission('finance.create.mobile_money_payment')
+# This was commented out because 'finance.create.mobile_money_payment' does not
+# exist — it was never seeded into the permission catalog, so enabling it would
+# have refused everyone, staff included. 'finance.create' is the real
+# permission, and it is on the customer allow-list: buying your own tokens is
+# something a fleet owner does. The access guard separately checks that
+# token_buyer is the caller's own account, so nobody can bill another client.
+@require_permission('finance.create')
 def BuyTokens():
     try:
         _dbconnect = psycopg2.connect(current_app.config['db_link'])
         _payload = request.get_json()
 
-        # Debug: Print what we received
-        print("=== BUY TOKENS PAYLOAD ===")
-        print(json.dumps(_payload, indent=2))
-        print("==========================")
+        # The payload used to be printed here in full, on every purchase. It
+        # carries the customer's mobile money number, so it put a phone number
+        # in the server log for every token bought.
 
         # Validate required fields
         required_fields = ['token_buyer', 'token_uid', 'mobile_money_number', 'token_quantity']
@@ -104,11 +122,19 @@ def BuyTokens():
                 str(_TotalAmount_Payable), _PaymentReferance
             )
 
-            # Check if payment gateway returned an error
-            if _PaymentRoute == "internal_error":
+            # The charge helper answers with a word on failure and a dict on
+            # success. Anything that is not a dict must be handled here, or the
+            # subscript below raises TypeError and the customer gets a raw
+            # Python error instead of a payment message.
+            if _PaymentRoute == "payment_not_configured":
+                return reply("error", 503,
+                             "Mobile money payments are not set up on this "
+                             "server yet. Please contact support.", "")
+
+            if not isinstance(_PaymentRoute, dict):
                 return reply("error", 500, "Payment Gateway Error - Please Try Again", "")
 
-            _InitiatePayment = _PaymentRoute['status']
+            _InitiatePayment = _PaymentRoute.get('status')
 
             if _InitiatePayment == 'success':
                 RemoteReferance = _PaymentRoute['data']['api_referance']
