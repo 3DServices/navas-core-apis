@@ -195,7 +195,12 @@ def summary():
             'queue_total': sum(counts.values()),
             'corrections': answers,
             'last_30_days': {'answers': answered, 'feedback': verdicts},
-            'you': {'permissions': who['permissions']},
+            # can_self_approve lets the console show the "Publish now" option
+            # and the Approve button on your own upload only to people the
+            # server would actually let through. Without it the console has to
+            # guess, and offers buttons that fail.
+            'you': {'permissions': who['permissions'],
+                    'can_self_approve': bool(who.get('is_admin'))},
         }
     return _read(work)
 
