@@ -37,7 +37,7 @@ from xml.etree import ElementTree
 
 from flask import current_app
 
-from .waswa_answers import RuleError, log
+from .waswa_answers import RuleError, log, can, PERM_APPROVE
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 ALLOWED = {'.pdf', '.docx', '.xlsx', '.md', '.txt'}
@@ -401,6 +401,22 @@ def upload(cur, who, filename, data, form):
         {'source_uid': source_uid, 'replaces': replaces,
          'withheld_amounts': len(withheld)})
 
+    # "publish" on the form approves it in the same step, for people who are
+    # allowed to approve their own uploads. Training the assistant means
+    # loading a lot of documents, and upload -> find it in the list -> approve
+    # is three actions for something an administrator was going to approve
+    # anyway. review() decides whether they may; this only asks.
+    if str(form.get('publish') or '').strip().lower() in ('1', 'true', 'yes', 'on'):
+        # The upload route itself only requires waswa.review, so the approve
+        # permission has to be checked here — otherwise passing this flag
+        # would be a way around the approval gate entirely.
+        if not can(who, PERM_APPROVE):
+            raise RuleError('You can upload documents but not approve them, so '
+                            'this one has been saved for review instead of '
+                            'published.', 403)
+        review(cur, who, source_uid, 'approve',
+               _clean(form.get('publish_note')) or 'Published on upload.')
+
     result = get_source(cur, source_uid)
     result['withheld'] = withheld[:20]
     result['preview'] = [
@@ -417,7 +433,8 @@ def review(cur, who, source_uid, decision, note=None):
     doc = get_source(cur, source_uid, lock=True)
     if not doc['active']:
         raise RuleError('This document has been removed. Restore it first.', 409)
-    if decision == 'approved' and doc['ingested_by'] == who['account_uid']:
+    if (decision == 'approved' and doc['ingested_by'] == who['account_uid']
+            and not who.get('is_admin')):
         raise RuleError('You uploaded this document, so someone else has to '
                         'approve it.', 403)
     if decision == 'rejected' and doc['review_status'] == 'pending' and not _clean(note):
@@ -435,10 +452,17 @@ def review(cur, who, source_uid, decision, note=None):
                     (str(source_uid), doc['replaces_source_uid']))
         replaced = cur.fetchone()[0] if cur.rowcount else None
 
+    # Self-approval is recorded as such. Whoever reads this log later must be
+    # able to see that one person did both steps, rather than it looking like
+    # two people agreed.
+    self_approved = (decision == 'approved'
+                     and doc['ingested_by'] == who['account_uid'])
     log(cur, who, 'approval', f'document_{decision}',
-        _clean(note) or f"{doc['title']}: {decision}"
-        + (f' (replaces {replaced})' if replaced else ''),
-        {'source_uid': str(source_uid), 'replaced': doc['replaces_source_uid']})
+        (_clean(note) or f"{doc['title']}: {decision}"
+         + (f' (replaces {replaced})' if replaced else ''))
+        + (' [self-approved: uploader is an administrator]' if self_approved else ''),
+        {'source_uid': str(source_uid), 'replaced': doc['replaces_source_uid'],
+         'self_approved': self_approved})
     result = get_source(cur, source_uid)
     result['replaced_title'] = replaced
     return result
