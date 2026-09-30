@@ -15,6 +15,7 @@ from cassandra import ConsistencyLevel
 from cassandra.policies import TokenAwarePolicy, DCAwareRoundRobinPolicy
 from cassandra.query import SimpleStatement
 from .globals import reply, require_permission
+from .resources import resource_policy
 import base64
 from .globals import check_device
 from .device_listing import (LIVE_STATUSES, cassandra_in, live_snapshots, live_summary, matches, page_request,
@@ -1186,7 +1187,8 @@ def get_all_events():
 
                 with dbconnect:
                     with dbconnect.cursor() as cursor:
-                        cursor.execute("SELECT * FROM dll_device_events WHERE owner_org_uid=%s;", (Load_owner_uid,))
+                        _policy = resource_policy()
+                        cursor.execute("SELECT * FROM dll_device_events WHERE owner_org_uid=%s OR event_local_uid = ANY(%s);", (Load_owner_uid, _policy.granted_uids('event_rule')))
 
                         if(cursor.rowcount >= 1):
 
@@ -1210,6 +1212,9 @@ def get_all_events():
                                 events_data.append(single_event)
                             
                             cursor.close()
+                            events_data = _policy.apply('event_rule', events_data, 'event_uid')
+                            if not events_data:
+                                return reply('error', 400, 'No Events Found', '')
                             return reply('success', 200, 'Events Found', events_data)
 
                         elif(cursor.rowcount == 0):
@@ -1586,6 +1591,9 @@ def GetDevice_Events(device_imei):
                             }
                             _AttachedEvents.append(_SingleEvent)
 
+                        _AttachedEvents = resource_policy().apply('event_rule', _AttachedEvents, 'event_id')
+                        if not _AttachedEvents:
+                            return reply("error", 400, "No Events Attached", "")
                         return reply("success", 200, "Found Events", _AttachedEvents)
                     
                     elif(len(_deviceEventsList) == 0):
