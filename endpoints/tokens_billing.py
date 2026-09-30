@@ -20,7 +20,8 @@ import pytz
 from datetime import datetime
 from .globals import SubscriptionManager
 from zoneinfo import ZoneInfo
-from .globals import require_permission, require_staff
+from .globals import (require_permission, require_staff,
+                      resolve_wallet_owner, resolve_client_account)
 
 _KLA = ZoneInfo("Africa/Kampala")
 
@@ -453,6 +454,8 @@ def ClientToken_Balance(client_uid):
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
+            client_uid, owner_uids = resolve_wallet_owner(cursor, client_uid)
+
             cursor.execute(
                 "SELECT client_uid, client_name FROM dll_client_accounts WHERE client_uid=%s",
                 (client_uid,)
@@ -466,8 +469,8 @@ def ClientToken_Balance(client_uid):
 
             cursor.execute(
                 "SELECT token_hours_left, token_hours_used, token_balance, token_billing_uid, token_used_units, token_units_left, token_status "
-                "FROM dll_user_token_accounts WHERE client_uid=%s",
-                (client_uid,)
+                "FROM dll_user_token_accounts WHERE client_uid = ANY(%s)",
+                (owner_uids,)
             )
 
             if cursor.rowcount == 0:
@@ -585,6 +588,17 @@ def TransferToken():
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
+            # A transfer writes a wallet row for the destination, so the
+            # destination has to be a company — the same rule a purchase and a
+            # grant follow. Moving a customer's tokens onto a staff login, or
+            # onto a uid that was mistyped, would take them out of circulation
+            # with no screen anywhere to show where they went.
+            _ResolvedDestination = resolve_client_account(cursor, _DestinationClientUID)
+            if _ResolvedDestination is None:
+                return response_out(
+                    "error", "No client account matches destination_client_uid", 400, [])
+            _DestinationClientUID = _ResolvedDestination
+
             cursor.execute(
                 "SELECT token_hours_left, token_balance FROM dll_user_token_accounts "
                 "WHERE client_uid=%s AND token_billing_uid=%s",

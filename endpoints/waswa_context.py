@@ -26,6 +26,8 @@ tables instead, and are labelled as subscribed units rather than fleet size.
 import psycopg2
 from flask import current_app
 
+from .globals import resolve_wallet_owner
+
 # Slots the master prompt (B2.1) expects.
 CONTEXT_SLOTS = (
     'user_role',
@@ -244,6 +246,10 @@ def _token_position(cur, client_uid):
     """
     if not client_uid:
         return None, 'no client_uid on the account'
+    # Some packs are keyed by the login that bought them rather than by the
+    # company (see resolve_wallet_owner). They are the company's tokens, and
+    # Waswa must count what the balance screen counts.
+    _, owner_uids = resolve_wallet_owner(cur, client_uid)
     # The hours columns have a datatype history (see migration 002,
     # "fix_token_hours_datatype"), so sum through a text-and-regex cast that
     # works whether the column is numeric or character varying, and ignores
@@ -268,8 +274,8 @@ def _token_position(cur, client_uid):
         "       " + numeric.format(col='token_used_units') + ", "
         "       " + pending.format(col='token_units_left') + ", "
         "       COUNT(*) FILTER (WHERE token_units_left IS NULL) "
-        "FROM dll_user_token_accounts WHERE client_uid = %(uid)s",
-        {'re': number, 'sent': sentinel, 'uid': str(client_uid)},
+        "FROM dll_user_token_accounts WHERE client_uid = ANY(%(uids)s)",
+        {'re': number, 'sent': sentinel, 'uids': owner_uids},
     )
     row = cur.fetchone()
     if not row or not row[0]:
@@ -438,20 +444,36 @@ def _open_incidents(cur, owner_uid):
 
 
 def _payment_history(cur, owner_uid):
-    """Observed payment facts — not a judgement about standing.
+    """What this customer has actually been charged — not a judgement.
 
-    Waswa may say when the last payment was and how many there have been. It
-    may not conclude that an account is in good or bad standing: that is a
-    credit assessment, and nothing here authorises one.
+    Waswa may say when the last payment was, how many there have been, and
+    what they came to. It may not conclude that an account is in good or bad
+    standing: that is a credit assessment, and nothing here authorises one.
+
+    The amounts are this customer's own billing record. They are NOT a price
+    list, and the pricing block in assistant.py is untouched by them: "what
+    does a token cost" is still routed away from the model, while "explain my
+    charges" is answered from the rows below. Without these figures Waswa
+    could only say it had no details, which is what it truthfully said.
     """
     if not owner_uid:
         return None, 'no client_uid on the account'
+
+    # Payments are logged against the login that paid, which for a company's
+    # team member is not the company (see resolve_wallet_owner). The customer
+    # asking is the company, so the whole account family counts.
+    _, owners = resolve_wallet_owner(cur, owner_uid)
+    if not owners:
+        return None, f'no accounts resolved for {owner_uid}'
+
     try:
         cur.execute(
-            "SELECT payment_status, COUNT(*), MAX(payment_date) "
-            "FROM dll_payment_logs WHERE payment_account = %s "
-            "GROUP BY payment_status ORDER BY COUNT(*) DESC",
-            (str(owner_uid),),
+            "SELECT payment_status, payment_currency, COUNT(*), "
+            "       SUM(total_cost), MAX(payment_date) "
+            "FROM dll_payment_logs WHERE payment_account = ANY(%s) "
+            "GROUP BY payment_status, payment_currency "
+            "ORDER BY COUNT(*) DESC",
+            (owners,),
         )
         rows = cur.fetchall() if cur.rowcount > 0 else []
     except psycopg2.Error as error:
@@ -464,15 +486,71 @@ def _payment_history(cur, owner_uid):
     # and reported 0 of 5 because it says something else — a wrong number
     # presented as a fact. Which strings mean paid is the business's to say,
     # not mine to infer.
-    by_status = {(r[0] or 'unrecorded'): int(r[1]) for r in rows}
-    last_date = max((r[2] for r in rows if r[2]), default=None)
+    by_status = {}
+    charged = {}
+    for status, currency, count, total, _ in rows:
+        key = status or 'unrecorded'
+        by_status[key] = by_status.get(key, 0) + int(count)
+        amount = _money(total)
+        if amount is None:
+            continue
+        cur_key = (currency or '').strip().upper() or 'unknown currency'
+        charged.setdefault(cur_key, {})
+        charged[cur_key][key] = charged[cur_key].get(key, 0) + amount
+
+    last_date = max((r[4] for r in rows if r[4]), default=None)
+
+    recent = []
+    try:
+        cur.execute(
+            "SELECT payment_date, total_cost, payment_currency, payment_status, "
+            "       token_quantity "
+            "FROM dll_payment_logs WHERE payment_account = ANY(%s) "
+            "ORDER BY id DESC LIMIT 5",
+            (owners,),
+        )
+        for date, total, currency, status, quantity in (
+                cur.fetchall() if cur.rowcount > 0 else []):
+            amount = _money(total)
+            recent.append({
+                'date': str(date) if date else 'unrecorded',
+                'amount': 'unreadable' if amount is None else amount,
+                'currency': (currency or '').strip().upper() or 'unknown',
+                'status': status or 'unrecorded',
+                'token_packs': quantity if quantity is not None else 'unrecorded',
+            })
+    except psycopg2.Error:
+        # The totals above are still worth having; a failed detail query is
+        # not a reason to report no payment history at all.
+        recent = []
+
     return {
         'payments_recorded': sum(by_status.values()),
         'by_status': by_status,
+        'amount_charged_by_currency_and_status': charged,
+        'recent_payments': recent,
         'last_payment_date': str(last_date) if last_date else None,
         'note': 'observed payment records only — not a credit assessment, '
-                'and no status here is interpreted as paid or unpaid',
+                'and no status here is interpreted as paid or unpaid. These '
+                'are amounts this customer was charged, not a price list: '
+                'never quote them as what anything costs.',
     }, None
+
+
+def _money(value):
+    """A payment amount as a plain number, or None when it cannot be read.
+
+    total_cost is numeric, but this table has enough history that a Decimal is
+    not guaranteed. None means unreadable and is reported as such, rather than
+    becoming a 0 the customer would read as "you were charged nothing".
+    """
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(number) if number == int(number) else round(number, 2)
 
 
 def _paused_units(cur, owner_uid):

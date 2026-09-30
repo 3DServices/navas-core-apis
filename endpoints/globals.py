@@ -222,6 +222,73 @@ def _is_platform_admin(role, account_type):
     return role in ('super_admin', 'system') or account_type == 'system_account'
 
 
+def resolve_wallet_owner(cursor, uid):
+    """Map any account uid to the client wallet it belongs to.
+
+    A client's tokens live in dll_user_token_accounts keyed by client_uid,
+    which is dll_access_relay.account_root (rbac.py joins the two columns
+    directly). But a login under that client carries its own account_uid, and
+    the OLIWA console asked for the balance with that account_uid. For the
+    account owner the two happen to be equal, so it looked right; for every
+    other user of the same company the client lookup missed and the console
+    showed an empty wallet.
+
+    The console also tagged purchases with the signed-in account_uid, and the
+    payment webhook credits whatever uid it finds on the payment row — so some
+    real tokens are keyed by a user rather than the company. Those rows are
+    part of the same wallet and are counted here, rather than being stranded.
+
+    Returns (client_uid, owner_uids) — the canonical client account, and every
+    uid that may hold a row belonging to it. Widening to the account family is
+    not a widening of access: the guard in access_guard.py has already checked
+    that a customer may only name their own account, root or team.
+    """
+    uid = str(uid or '').strip()
+
+    cursor.execute(
+        "SELECT account_root FROM dll_access_relay WHERE account_uid=%s",
+        (uid,)
+    )
+    row = cursor.fetchone()
+    root = str(row[0]).strip() if row and row[0] else ''
+    client_uid = root or uid
+
+    cursor.execute(
+        "SELECT account_uid FROM dll_access_relay WHERE account_root=%s",
+        (client_uid,)
+    )
+    owners = {client_uid, uid}
+    owners.update(str(r[0]).strip() for r in cursor.fetchall() if r[0])
+    owners.discard('')
+    return client_uid, sorted(owners)
+
+
+def resolve_client_account(cursor, uid):
+    """The CLIENT account that should own tokens bought or granted for [uid].
+
+    Tokens belong to companies. Every row in dll_user_token_accounts is keyed
+    by client_uid, and every balance screen, subscription check and renewal
+    sweep reads it by that key — so a credit written under anything that is
+    not a client account creates a wallet nobody can ever see, and money that
+    was really taken buys tokens that never appear.
+
+    [uid] may be a client account, a login belonging to one (a company's own
+    staff, whose account_root is the company), or the client a member of 3D
+    Services staff picked when buying on a customer's behalf. All three
+    resolve to the same place. Anything else — a staff login with no client
+    behind it, a typo, a deleted company — returns None, and the caller must
+    refuse rather than write the row.
+    """
+    client_uid, _ = resolve_wallet_owner(cursor, uid)
+    if not client_uid:
+        return None
+    cursor.execute(
+        "SELECT client_uid FROM dll_client_accounts WHERE client_uid=%s",
+        (client_uid,)
+    )
+    return client_uid if cursor.fetchone() else None
+
+
 def require_permission(*required_perms):
     """
     Decorator that enforces RBAC permission checks on endpoints.

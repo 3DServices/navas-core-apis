@@ -42,6 +42,7 @@ from flask import Blueprint, request, current_app
 
 from . import waswa_answers
 from . import waswa_console
+from . import waswa_fleet
 from . import waswa_knowledge
 from . import waswa_products
 from .globals import reply, _extract_account_uid
@@ -68,12 +69,16 @@ _CONVERSATION_IDLE_MINUTES = 60
 
 # Model -> tools -> model rounds before we stop. Enough for look up a product,
 # check its compatibility, answer; a model looping past that is stuck.
-_MAX_TOOL_ROUNDS = 4
+_MAX_TOOL_ROUNDS = 6
 
 # Apps that send the screen the question came from: surface -> (who, app).
 _SCREEN_SURFACES = {
     'cms': ('staff member', 'CMS'),
     'oliwa_console': ('customer', 'OLIWA tracking console'),
+    # The mobile app sends the screen too. Without this line its module was
+    # parsed, sanitised and then silently dropped, so a short question asked
+    # from the Tokens screen read as if it came from nowhere.
+    'mobile': ('customer', 'OLIWA mobile app'),
 }
 
 # A closing "Source: …" line names an internal document. Staff get it when a
@@ -98,7 +103,8 @@ _RETRY_BACKOFF = (0.6, 1.5)
 # model. Order matters a little: the product tools come first so that a question
 # naming a product is answered from the approved catalogue rather than from a
 # paragraph in a user-story document that happens to mention it.
-_TOOL_SPECS = waswa_products.TOOL_SPECS + waswa_knowledge.TOOL_SPECS
+_TOOL_SPECS = (waswa_products.TOOL_SPECS + waswa_knowledge.TOOL_SPECS
+               + waswa_fleet.TOOL_SPECS)
 
 # Used only if dll_waswa_prompts is unreachable — migration 030 seeds v1 there.
 _FALLBACK_PROMPT = (
@@ -631,6 +637,12 @@ def AssistantChat():
         who = waswa_answers.caller(account_uid)
         audience = waswa_answers.audience_for(who)
 
+        # What the fleet tools may read. Staff may name a client; a customer
+        # is pinned to their own whatever the model asks for. Built here, from
+        # the signed-in account, so nothing in the conversation can widen it.
+        fleet_scope = waswa_fleet.build_scope(
+            account_uid, scope.get('client_uid'), is_staff=(audience == 'staff'))
+
         # Corrections first. Matched here, before the model, rather than
         # offered as a tool: a correction exists because the model got this
         # wrong once, so it is not left to the model to remember to look.
@@ -657,6 +669,21 @@ def AssistantChat():
                 "system. Answer in plain words from what you were given; if "
                 "nothing you were given covers it, say so and offer who can "
                 "help.")})
+        # Why "why is a vehicle offline?" used to get a textbook answer: there
+        # was no tool to look the vehicle up, so the model had nothing to be
+        # specific about. Now there is, and being specific is the instruction.
+        messages.append({"role": "system", "content": (
+            "You can look up this account's own vehicles. When someone asks "
+            "about a vehicle, a unit or a trip, call unit_find first and work "
+            "from what it returns; never answer such a question from general "
+            "knowledge while a tool could answer it from their actual data. "
+            "If unit_find returns more than one match, or the person named no "
+            "vehicle at all, ASK WHICH ONE and stop there — do not guess, and "
+            "do not answer generically instead of asking. State the figures "
+            "the tools return, including when a unit last reported and how "
+            "long ago; if a tool says it could not read something, say that "
+            "rather than filling the gap.")})
+
         if module and surface in _SCREEN_SURFACES:
             who, app = _SCREEN_SURFACES[surface]
             messages.append({"role": "system", "content": (
@@ -700,17 +727,28 @@ def AssistantChat():
                 except ValueError:
                     arguments = {}
 
-                # Knowledge tools first: dispatch returns None for a name it
+                # Fleet tools first. Their scope is built here from the
+                # signed-in account, never from the conversation: the model
+                # may name a unit, but only the server decides whose fleet it
+                # is allowed to look in.
+                result = waswa_fleet.dispatch(tool_name, arguments,
+                                              scope=fleet_scope)
+                if result is not None:
+                    # The account's own telemetry — the most authoritative
+                    # thing Waswa can cite, and measured rather than written.
+                    authority = 1
+                    kind = 'fleet'
+                # Knowledge tools next: dispatch returns None for a name it
                 # does not own, so an unknown tool still reaches the product
                 # dispatcher and gets its readable "no such tool" answer rather
                 # than being swallowed here.
-                result = waswa_knowledge.dispatch(tool_name, arguments,
-                                                  audience=audience)
-                if result is None:
+                elif (knowledge := waswa_knowledge.dispatch(
+                        tool_name, arguments, audience=audience)) is None:
                     result = waswa_products.dispatch(tool_name, arguments)
                     authority = 1          # PPMM tables are level 1 by definition
                     kind = 'tool'
                 else:
+                    result = knowledge
                     # A document answer is only as authoritative as the weakest
                     # chunk it was built from, and that varies per search.
                     authority = waswa_knowledge.authority_of(result)
