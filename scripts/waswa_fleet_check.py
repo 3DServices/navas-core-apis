@@ -126,11 +126,12 @@ def main():
         show('unit_trips', trips)
         print(verdict(trips, 'unit_trips'))
         if isinstance(trips, dict) and not trips.get('found'):
-            print('   If this unit HAS moved recently, suspect the query, not the data:')
-            print('     * dll_location_registry.local_system_datestamp must be DD-MM-YYYY')
-            print('     * data_device_imei must match this IMEI exactly (no spaces)')
-            print(f"     * try:  SELECT COUNT(*) FROM dll_location_registry"
-                  f" WHERE data_device_imei = '{imei}';")
+            print('   Trips now come from Postgres dll_trips_auditor, the same')
+            print('   table the console Trips report reads. If the console shows')
+            print('   trips for this unit and Waswa does not, the fault is here;')
+            print('   if neither does, the unit genuinely has none recorded.')
+            print(f"     * try:  SELECT COUNT(*), MAX(trip_date) FROM"
+                  f" dll_trips_auditor WHERE device_imei = '{imei}';")
 
         # 5. Scoping — the check that matters most. A customer must not be able
         #    to read this fleet by naming it.

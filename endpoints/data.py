@@ -27,6 +27,7 @@ import logging
 import time
 import os
 from .globals import CheckHardware2
+from . import location_store
 from math import radians, sin, cos, sqrt, atan2
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib.pagesizes import landscape
@@ -1120,11 +1121,24 @@ def trips_history():
 
                         with dbconnect:
                             with dbconnect.cursor() as cursor:
-                                cursor.execute("SELECT data_longitude, data_latitude, speed_log, data_hdop, local_system_datestamp, record_io_events_uid, geocoded_location, local_system_timestamp, data_connected_satelites, batch_uid, data_idx, ROW_NUMBER() OVER (ORDER BY data_idx DESC) AS row_index FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY data_longitude, data_latitude ORDER BY data_idx DESC) AS row_num FROM dll_location_registry WHERE data_device_imei = %s AND TO_DATE(local_system_datestamp, 'DD-MM-YYYY') BETWEEN TO_DATE(%s, 'DD-MM-YYYY') AND TO_DATE(%s, 'DD-MM-YYYY')) AS subquery WHERE row_num = 1 ORDER BY data_idx DESC LIMIT %s OFFSET %s;", (DeviceImei, FromDate, ToDate, Record_Count, Offset_Record,))
+                                try:
+                                    _fixes, _truncated = location_store.fixes(
+                                        get_cassandra_session(), DeviceImei,
+                                        FromDate, ToDate,
+                                        limit=Record_Count,
+                                        offset=Offset_Record)
+                                except location_store.PositionsUnavailable as _error:
+                                    # "We could not look" must never render as
+                                    # "this vehicle did not move."
+                                    logging.warning(
+                                        "trips_history: position store unavailable "
+                                        "for %s (%s to %s): %s",
+                                        DeviceImei, FromDate, ToDate, _error)
+                                    return reply('error', 503, 'Position data is temporarily unavailable, please retry', '')
 
-                                if(cursor.rowcount >= 1):
+                                if _fixes:
 
-                                    trips_data_adapter = cursor.fetchall()
+                                    trips_data_adapter = [location_store.as_history_tuple(_row) for _row in _fixes]
                                     PrimaryData = {
                                         "raw_data": [],
                                         "trips_data": []
@@ -1287,8 +1301,19 @@ def trips_history():
                                                 End_Long = trip["end_point"]["data_longitude"]
 
                                                 distance_pool_x = Calculate_DistanceX(Starting_Lat, Starting_Long, End_Lat, End_Long)
-                                                distance_adapter = distance_pool_x.get_json()
-                                                distance = distance_adapter['distance_covered']
+                                                # Calculate_DistanceX returns a JSON STRING, as its own
+                                                # docstring states and as the excel and pdf routes already
+                                                # do. .get_json() is a response-object method, so this
+                                                # raised AttributeError on every trip that had real
+                                                # coordinates — which is why trips_data was always empty.
+                                                distance_adapter = json.loads(distance_pool_x)
+                                                if distance_adapter['distance_covered'] != 'CORDS_ERROR':
+                                                    distance = float(distance_adapter['distance_covered'])
+                                                else:
+                                                    # round(distance) below would raise on the error
+                                                    # string. The other routes report 0 for a leg whose
+                                                    # distance could not be worked out.
+                                                    distance = 0
 
                                                 OneTrip_Object = {
                                                     "trip_number": i,
@@ -1302,10 +1327,11 @@ def trips_history():
                                     
                                     return reply('success', 200, 'Trips Data Found', PrimaryData)
                                     
-                                elif(cursor.rowcount == 0):
-                                    return reply('error', 400, 'No Trips Found', '')
                                 else:
-                                    return reply('error', 400, 'Unable to complete request', '')
+                                    # Not cursor.rowcount: it now belongs to the
+                                    # IO-event queries inside the loop above, so
+                                    # it can no longer answer "were there trips".
+                                    return reply('error', 400, 'No Trips Found', '')
 
                     else:
                         return reply('error', 400, 'Record Count Is Too High', '')
@@ -1325,7 +1351,11 @@ def trips_history():
             return reply('error', 400, 'Something Is Missing', '')
 
     except Exception as error:
-        return reply('error', 500, error, '')
+        # An exception object is not JSON serialisable, so passing it here
+        # turned every 500 into an unhandled TypeError inside jsonify and the
+        # caller received an empty message. Log the traceback, return the text.
+        logging.exception('trips_history failed')
+        return reply('error', 500, str(error), '')
     
 
 

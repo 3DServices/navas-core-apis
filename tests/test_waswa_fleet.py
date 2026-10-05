@@ -25,9 +25,13 @@ _SOURCE = os.path.join(os.path.dirname(__file__), '..', 'endpoints', 'waswa_flee
 _WANT_FUNCS = (
     '_target_client', 'build_scope', '_metres', '_num', '_stamp',
     '_thin', '_segment', '_summarise', 'dispatch',
+    '_as_date', '_days', '_clock', '_trip', '_real',
 )
+_WANT_CLASSES = ('FleetUnavailable',)
 _WANT_CONSTS = (
     '_MAX_PROBES', '_PROBE_SPACING_M', '_TRIP_GAP_MINUTES', '_MOVING_SPEED',
+    # _stamp reads these at call time, so they must come across with it.
+    '_DATE_FORMATS', '_TIME_FORMATS', '_MAX_DAYS', '_PLACEHOLDERS',
 )
 
 
@@ -37,6 +41,8 @@ def _load():
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in _WANT_FUNCS:
             body.append(node)
+        elif isinstance(node, ast.ClassDef) and node.name in _WANT_CLASSES:
+            body.append(node)
         elif isinstance(node, ast.Assign):
             names = [t.id for t in node.targets if isinstance(t, ast.Name)]
             if any(n in _WANT_CONSTS for n in names):
@@ -45,12 +51,13 @@ def _load():
     missing = set(_WANT_FUNCS) - names
     assert not missing, f'waswa_fleet no longer defines {missing}'
 
-    namespace = {'math': math, 'datetime': datetime, 're': __import__('re')}
+    namespace = {'math': math, 'datetime': datetime, 'timedelta': timedelta, 're': __import__('re')}
     exec(compile(ast.Module(body=body, type_ignores=[]), _SOURCE, 'exec'), namespace)
     return namespace
 
 
 NS = _load()
+NS.setdefault('_warn', lambda *a, **k: None)
 _target_client = NS['_target_client']
 build_scope = NS['build_scope']
 _metres = NS['_metres']
@@ -58,6 +65,13 @@ _thin = NS['_thin']
 _segment = NS['_segment']
 _summarise = NS['_summarise']
 dispatch = NS['dispatch']
+_real = NS['_real']
+_trip = NS['_trip']
+_clock = NS['_clock']
+_days = NS['_days']
+_as_date = NS['_as_date']
+FleetUnavailable = NS['FleetUnavailable']
+_stamp = NS['_stamp']
 
 CUSTOMER = build_scope('USER-2', 'CLIENT-1', is_staff=False)
 STAFF = build_scope('STAFF-7', 'THREED', is_staff=True)
@@ -230,6 +244,185 @@ def test_distance_is_measured_not_guessed():
     # Kampala to Entebbe is roughly 35 km as the crow flies.
     km = _metres(0.3476, 32.5825, 0.0512, 32.4637) / 1000
     assert 30 < km < 40
+
+
+# ── Reading the clocks the devices actually write ───────────────────────────
+
+def test_a_twelve_hour_heartbeat_keeps_its_time():
+    # The exact shape dll_pulse_status_registry was observed holding. Getting
+    # this wrong does not error — it silently returns midnight, and Waswa then
+    # calls a unit that reported seconds ago "8 hours silent".
+    got = _stamp('02-10-2026', '08:25:50AM')
+    assert got == datetime(2026, 10, 2, 8, 25, 50), got
+
+
+def test_pm_is_not_read_as_am():
+    assert _stamp('02-10-2026', '08:25:50PM') == datetime(2026, 10, 2, 20, 25, 50)
+
+
+def test_noon_and_midnight_do_not_swap():
+    assert _stamp('02-10-2026', '12:00:00AM') == datetime(2026, 10, 2, 0, 0, 0)
+    assert _stamp('02-10-2026', '12:00:00PM') == datetime(2026, 10, 2, 12, 0, 0)
+
+
+def test_a_twenty_four_hour_clock_still_works():
+    assert _stamp('02-10-2026', '14:30:00') == datetime(2026, 10, 2, 14, 30, 0)
+
+
+def test_the_location_table_date_order_is_day_first():
+    # 10-03-2026 is 10 March, not 3 October. Reading it the other way would
+    # move a unit's last fix by seven months.
+    assert _stamp('10-03-2026', '11:49:10AM') == datetime(2026, 3, 10, 11, 49, 10)
+
+
+def test_an_unreadable_time_keeps_the_date_rather_than_losing_both():
+    assert _stamp('02-10-2026', 'nonsense') == datetime(2026, 10, 2, 0, 0, 0)
+
+
+def test_an_unreadable_date_is_unknown_not_epoch():
+    # None means "we do not know". A zero date would become a unit that last
+    # reported in 1970 and a trip 56 years long.
+    assert _stamp('nonsense', '08:25:50AM') is None
+    assert _stamp(None, '08:25:50AM') is None
+
+
+# ── An outage is not an empty fleet ─────────────────────────────────────────
+
+def test_an_unreachable_register_is_not_reported_as_no_vehicles():
+    def tool(**kwargs):
+        raise FleetUnavailable('OperationTimedOut')
+    NS['_DISPATCH'] = {'unit_find': tool}
+
+    out = dispatch('unit_find', {'query': 'UBK 415K'}, scope=CUSTOMER)
+    assert out['unavailable'] is True
+    assert out['found'] is False
+    # The whole point: nothing in the reason may read as "you own nothing".
+    lowered = out['reason'].lower()
+    for forbidden in ('no units are registered', 'no vehicles on this account',
+                      '0 units', 'zero units'):
+        assert forbidden not in lowered, forbidden
+    assert 'could not be reached' in lowered
+
+
+def test_an_outage_is_distinguishable_from_a_genuinely_empty_account():
+    def empty(**kwargs):
+        return {'found': False, 'reason': 'no units are registered to this account'}
+    NS['_DISPATCH'] = {'unit_find': empty}
+    out = dispatch('unit_find', {}, scope=CUSTOMER)
+    assert not out.get('unavailable'), 'an empty account is not an outage'
+
+
+def test_an_ordinary_failure_is_still_an_error_not_an_outage():
+    def broken(**kwargs):
+        raise ValueError('something else entirely')
+    NS['_DISPATCH'] = {'unit_find': broken}
+    out = dispatch('unit_find', {}, scope=CUSTOMER)
+    assert 'error' in out
+    assert not out.get('unavailable')
+
+
+# ── Walking a day-partitioned, text-dated store ─────────────────────────────
+
+def test_a_range_is_expanded_into_one_entry_per_day():
+    days = _days('28-09-2026', '02-10-2026')
+    assert days == ['28-09-2026', '29-09-2026', '30-09-2026',
+                    '01-10-2026', '02-10-2026'], days
+
+
+def test_the_days_are_chronological_even_though_the_text_is_not():
+    # The whole reason this helper exists. As strings these sort
+    # '01-10-2026' < '28-09-2026' < '30-09-2026', so anything that trusted
+    # lexicographic order over this column would hand back the wrong days and
+    # report no error at all.
+    days = _days('28-09-2026', '02-10-2026')
+    assert days != sorted(days), 'if these ever sort as text, the trap is gone'
+    assert days[0] == '28-09-2026' and days[-1] == '02-10-2026'
+
+
+def test_one_day_is_one_query():
+    assert _days('02-10-2026', '02-10-2026') == ['02-10-2026']
+
+
+def test_a_backwards_range_is_read_the_way_it_was_meant():
+    assert _days('02-10-2026', '30-09-2026') == ['30-09-2026', '01-10-2026',
+                                                 '02-10-2026']
+
+
+def test_an_enormous_range_is_capped_rather_than_attempted():
+    # Each day is a separate Cassandra round trip; "this year" must not become
+    # 365 of them inside one chat turn.
+    assert len(_days('01-01-2026', '31-12-2026')) == NS['_MAX_DAYS']
+
+
+def test_an_unreadable_range_asks_for_nothing():
+    assert _days(None, '02-10-2026') == []
+    assert _days('rubbish', '02-10-2026') == []
+
+
+# ── A trip that has not finished yet ────────────────────────────────────────
+
+def _row(status='ended', t1='05:42:11PM', m0='1000', m1='1042.5',
+         f0=None, f1=None, driver=None,
+         loc0='Kabale Road, Kishwahili', loc1='Namilyango, Mukono'):
+    return ('350317173603857', 'trip-1', __import__('datetime').date(2026, 10, 2),
+            '08:56:16AM', t1, m0, m1, f0, f1, driver, loc0, loc1, status)
+
+
+def test_a_finished_trip_reports_its_end_and_its_distance():
+    trip = _trip(_row())
+    assert trip['in_progress'] is False
+    assert trip['ended'] == '05:42:11PM'
+    assert trip['distance_km'] == 42.5
+    assert trip['to'] == 'Namilyango, Mukono'
+
+
+def test_a_running_trip_never_reports_incoming_as_a_time():
+    # dll_trips_auditor writes 'Incoming' into end_time while a trip is open.
+    # Handing that to a customer as the time their trip ended would be absurd,
+    # and handing it to the model is how absurd answers get written.
+    trip = _trip(_row(status='started', t1='Incoming'))
+    assert trip['in_progress'] is True
+    assert trip['ended'] is None
+    assert trip['to'] is None, 'a trip still running has no destination yet'
+
+
+def test_an_unmeasured_trip_has_no_distance_rather_than_zero():
+    # A trip of unknown length is not a trip of no length. Zero would be added
+    # into a fleet total and quietly understate it.
+    assert _trip(_row(m0=None, m1=None))['distance_km'] is None
+    assert _trip(_row(m0='1000', m1=None))['distance_km'] is None
+
+
+def test_an_odometer_that_went_backwards_is_not_a_negative_journey():
+    assert _trip(_row(m0='1042.5', m1='1000'))['distance_km'] is None
+
+
+# ── Placeholders are not data ───────────────────────────────────────────────
+
+def test_the_literal_string_nodata_is_not_a_driver():
+    # The first live run returned driver_id 'NoData'. Passed through, Waswa
+    # tells a customer their driver was NoData.
+    assert 'driver_id' not in _trip(_row(driver='NoData'))
+    assert 'driver_id' not in _trip(_row(driver='  none  '))
+    assert 'driver_id' not in _trip(_row(driver='N/A'))
+    assert _trip(_row(driver='D-77'))['driver_id'] == 'D-77'
+
+
+def test_a_placeholder_location_is_absent_not_quoted():
+    assert _trip(_row(loc0='NoData'))['from'] is None
+
+
+def test_no_fuel_sensor_is_not_zero_fuel_used():
+    # Both readings at zero means nothing was measured. Reporting 0.0 would
+    # tell a customer the vehicle burned no fuel, which is a different claim.
+    assert 'fuel_used' not in _trip(_row(f0='0', f1='0'))
+    assert 'fuel_used' not in _trip(_row(f0=0, f1=0))
+
+
+def test_real_fuel_figures_still_come_through():
+    assert _trip(_row(f0='80', f1='62.5'))['fuel_used'] == 17.5
+    # A full tank run down to empty is a real measurement, not a placeholder.
+    assert _trip(_row(f0='40', f1='0'))['fuel_used'] == 40.0
 
 
 if __name__ == '__main__':

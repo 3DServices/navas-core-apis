@@ -83,6 +83,24 @@ def _target_client(scope, requested):
 
 # ── Database ────────────────────────────────────────────────────────────────
 
+class FleetUnavailable(Exception):
+    """The vehicle register could not be read.
+
+    Raised rather than returned, so that no caller can mistake it for an empty
+    fleet by forgetting to check a flag. "I could not look" and "there is
+    nothing there" are different answers to a customer, and only one of them is
+    safe to guess at.
+    """
+
+
+def _warn(message, *args):
+    """Fleet faults belong in the Flask log, not only in the chat window."""
+    try:
+        current_app.logger.warning('[waswa.fleet] ' + message, *args)
+    except Exception:       # noqa: BLE001 - logging must never break a turn
+        pass
+
+
 def _pg():
     return psycopg2.connect(current_app.config['db_link'])
 
@@ -93,18 +111,29 @@ def _cassandra():
 
 
 def _units_of(client_uid):
-    """Every unit registered to a client. [] when Cassandra is unreachable."""
-    session = _cassandra()
-    if session is None or not client_uid:
+    """Every unit registered to a client.
+
+    Raises FleetUnavailable when the register cannot be read. It must not
+    return [] for that: an empty list is indistinguishable from "this customer
+    owns nothing", and Cassandra timing out is not evidence about what anybody
+    owns.
+    """
+    if not client_uid:
         return []
+    try:
+        session = _cassandra()
+    except Exception as error:      # noqa: BLE001
+        raise FleetUnavailable(str(error)) from error
+    if session is None:
+        raise FleetUnavailable('no Cassandra session')
     try:
         stmt = session.prepare(
             "SELECT device_imei, device_name, device_car_make, device_car_model, "
             "device_vin_number, device_billing_status "
             "FROM dll_device_basic_data WHERE device_client = ? ALLOW FILTERING")
         rows = session.execute(stmt, (str(client_uid),))
-    except Exception:
-        return []
+    except Exception as error:      # noqa: BLE001
+        raise FleetUnavailable(str(error)) from error
     out = []
     for r in rows:
         out.append({
@@ -150,42 +179,241 @@ def _num(value):
         return None
 
 
+# Dates arrive as text and not always in the same shape: dll_location_registry
+# writes DD-MM-YYYY, dll_pulse_status_registry has been seen holding at least
+# two others, and statistics.py has tried four formats against it for as long
+# as it has existed. A parse failure here is silent and total — it empties the
+# heartbeat, every trip and all of fleet activity at once — so try what the
+# rest of the codebase already tries.
+_DATE_FORMATS = ('%d-%m-%Y', '%Y-%m-%d', '%d/%m/%Y', '%Y/%m/%d')
+# 12-hour first: dll_pulse_status_registry writes '08:25:50AM', with no
+# space before the meridiem. %H would read '08' correctly and then choke
+# on the 'AM', so the 24-hour patterns must not get first refusal on a
+# string that ends in one.
+_TIME_FORMATS = (
+    '%I:%M:%S%p', '%I:%M:%S %p', '%I:%M%p', '%I:%M %p',
+    '%H:%M:%S', '%H:%M:%S.%f', '%H:%M',
+)
+
+
 def _stamp(datestamp, timestamp):
-    """dll_location_registry stores DD-MM-YYYY and HH:MM:SS as text."""
-    try:
-        return datetime.strptime(f'{datestamp} {timestamp}', '%d-%m-%Y %H:%M:%S')
-    except (TypeError, ValueError):
+    """A datetime from the text pair, or None if nothing reads it.
+
+    None means "unknown", never "epoch": a zero date would quietly become a
+    unit that last reported in 1970 and a trip 56 years long.
+    """
+    if datestamp is None:
         return None
+    date_text = str(datestamp).strip()
+    time_text = str(timestamp or '').strip() or '00:00:00'
+    if not date_text:
+        return None
+
+    day = None
+    for fmt in _DATE_FORMATS:
+        try:
+            day = datetime.strptime(date_text, fmt).date()
+            break
+        except ValueError:
+            continue
+    if day is None:
+        return None
+
+    for fmt in _TIME_FORMATS:
+        try:
+            clock = datetime.strptime(time_text, fmt).time()
+            return datetime.combine(day, clock)
+        except ValueError:
+            continue
+    # A readable date with an unreadable time is still worth more than nothing:
+    # "last reported on the 28th" beats "never reported".
+    return datetime.combine(day, datetime.min.time())
+
+
+# Cassandra partitions positions by day, so a long range is many queries. A
+# month is plenty for any question a person asks in a chat, and the cap is what
+# stops "show me this year" from becoming 365 round trips.
+_MAX_DAYS = 31
+
+
+def _as_date(text):
+    """A date from DD-MM-YYYY (or the other shapes _stamp knows), or None."""
+    if hasattr(text, 'year') and hasattr(text, 'month'):
+        return text.date() if hasattr(text, 'hour') else text
+    stamped = _stamp(text, '00:00:00')
+    return stamped.date() if stamped else None
+
+
+def _days(from_date, to_date):
+    """Every day in the range, oldest first, as DD-MM-YYYY text.
+
+    Walked one day at a time, not expressed as a range, and that is deliberate.
+    local_system_datestamp is part of the partition key AND it is text in
+    DD-MM-YYYY, so '01-09-2026' < '31-08-2026' lexicographically. A CQL range
+    over it would quietly return the wrong rows. Equality on one day is the
+    only form that cannot be silently wrong.
+    """
+    start, end = _as_date(from_date), _as_date(to_date)
+    if not start or not end:
+        return []
+    if end < start:
+        start, end = end, start
+    out, day = [], start
+    while day <= end and len(out) < _MAX_DAYS:
+        out.append(day.strftime('%d-%m-%Y'))
+        day += timedelta(days=1)
+    return out
+
+
+def _clock(text):
+    """A time string only if it really is one. end_time holds 'Incoming' while
+    a trip is still running, and reporting that as a time would be nonsense."""
+    value = str(text or '').strip()
+    return value if ':' in value else None
+
+
+# dll_trips_auditor writes placeholder text where a NULL belongs — "NoData" in
+# driver_id is the one that showed up first. Passing those through verbatim is
+# how a customer gets told their driver was NoData, so they are read as absent.
+_PLACEHOLDERS = frozenset((
+    '', '-', '--', 'nodata', 'no data', 'none', 'null', 'nil',
+    'n/a', 'na', 'unknown', 'undefined', 'not set', 'notset',
+))
+
+
+def _real(value):
+    """The text, or None if it is a placeholder standing in for nothing."""
+    text = str(value if value is not None else '').strip()
+    return None if text.lower() in _PLACEHOLDERS else (text or None)
+
+
+def _trip_rows(cur, imeis, start, end):
+    """Recorded trips for these units, newest first.
+
+    dll_trips_auditor is where trips live now, and where the console's Trips
+    report reads them. trip_date is a real date column, so this range is an
+    ordinary BETWEEN with no text-sorting to worry about.
+    """
+    cur.execute("""
+        SELECT device_imei, trip_uid, trip_date, start_time, end_time,
+               start_mileage, end_mileage, start_fuel_level, end_fuel_level,
+               driver_id, starting_location_point, end_location_point,
+               trip_status
+          FROM dll_trips_auditor
+         WHERE device_imei = ANY(%s) AND trip_date BETWEEN %s AND %s
+         ORDER BY trip_date DESC, id DESC""", (list(imeis), start, end))
+    return cur.fetchall() if cur.rowcount > 0 else []
+
+
+def _trip(row):
+    """One recorded trip, in the shape Waswa should say out loud.
+
+    Distance comes from the odometer readings, not from adding up straight lines
+    between fixes: the odometer is what the vehicle itself measured, and it is
+    what the Trips report quotes. When either reading is missing the distance is
+    None, never 0 — a trip of unknown length is not a trip of no length.
+    """
+    (_imei, uid, date, t0, t1, m0, m1, f0, f1, driver,
+     loc0, loc1, status) = row
+
+    state = str(status or '').strip()
+    ended = state.lower() == 'ended' and _clock(t1) is not None
+
+    km = None
+    a, b = _num(m0), _num(m1)
+    if a is not None and b is not None and b >= a:
+        km = round(b - a, 2)
+
+    out = {
+        'trip_uid': str(uid) if uid else None,
+        'date': date.isoformat() if hasattr(date, 'isoformat') else str(date),
+        'started': _clock(t0),
+        'ended': _clock(t1) if ended else None,
+        'in_progress': not ended,
+        'distance_km': km,
+        'from': _real(loc0),
+        'to': _real(loc1) if ended else None,
+        'status': _real(state),
+    }
+
+    # Fuel only when something was actually measured. Both readings sitting at
+    # zero means there is no fuel sensor, not that the trip burned nothing, and
+    # "fuel_used: 0.0" is a claim about a measurement that never happened.
+    fuel0, fuel1 = _num(f0), _num(f1)
+    if (fuel0 is not None and fuel1 is not None
+            and fuel0 >= fuel1 and (fuel0 or fuel1)):
+        out['fuel_used'] = round(fuel0 - fuel1, 2)
+
+    driver_id = _real(driver)
+    if driver_id:
+        out['driver_id'] = driver_id
+    return out
 
 
 def _points(imei, from_date, to_date, limit=_MAX_POINTS):
-    """Position fixes, oldest first. Unreadable rows are skipped, not guessed."""
-    sql = ("SELECT data_latitude, data_longitude, speed_log, "
-           "       local_system_datestamp, local_system_timestamp, geocoded_location "
-           "FROM dll_location_registry "
-           "WHERE data_device_imei = %s "
-           "  AND TO_DATE(local_system_datestamp, 'DD-MM-YYYY') "
-           "      BETWEEN TO_DATE(%s, 'DD-MM-YYYY') AND TO_DATE(%s, 'DD-MM-YYYY') "
-           "ORDER BY data_idx ASC LIMIT %s")
-    conn = _pg()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql, (str(imei), str(from_date), str(to_date), int(limit)))
-            rows = cur.fetchall() if cur.rowcount > 0 else []
-    finally:
-        conn.close()
+    """Position fixes from the LIVE store, oldest first.
 
+    Cassandra navas_iot_dbx.dll_location_registry_by_record_ts — NOT the
+    Postgres table of the same name, which holds two million rows and stopped
+    taking new ones on 06-08-2025 while the device listener carried on writing
+    here. Unit 350317173603857 has 194 recorded trips and not one Postgres
+    position row, which is how that was finally noticed.
+
+    One query per day, because the partition key is
+    (data_device_imei, local_system_datestamp) and both parts must be named.
+    See _days for why a range over that text date would be silently wrong.
+
+    'at' is the LOCAL time. record_timestamp is UTC and three hours behind it;
+    a customer checking "when did it pass there" against their own afternoon
+    needs the clock they live in. When the local time cannot be read, 'at' is
+    None rather than the UTC value, because a time that is quietly three hours
+    out is worse than a missing one.
+    """
+    days = _days(from_date, to_date)
+    if not days:
+        return []
+
+    try:
+        session = _cassandra()
+    except Exception as error:      # noqa: BLE001
+        raise FleetUnavailable(str(error)) from error
+    if session is None:
+        raise FleetUnavailable('no Cassandra session')
+
+    try:
+        stmt = session.prepare(
+            "SELECT data_latitude, data_longitude, speed_log, geocoded_location, "
+            "       record_timestamp, local_system_datestamp, "
+            "       local_system_timestamp "
+            "FROM dll_location_registry_by_record_ts "
+            "WHERE data_device_imei = ? AND local_system_datestamp = ?")
+    except Exception as error:      # noqa: BLE001
+        raise FleetUnavailable(str(error)) from error
+
+    wanted = re.sub(r'\s+', '', str(imei or ''))
     out = []
-    for lat, lon, speed, datestamp, timestamp, place in rows:
-        la, lo = _num(lat), _num(lon)
-        if la is None or lo is None or (la == 0 and lo == 0):
-            continue
-        out.append({
-            'lat': la, 'lon': lo,
-            'speed': _num(speed) or 0.0,
-            'at': _stamp(datestamp, timestamp),
-            'place': str(place or '').strip(),
-        })
+    for day in days:
+        if len(out) >= limit:
+            break
+        try:
+            rows = session.execute(stmt, (wanted, day))
+        except Exception as error:      # noqa: BLE001
+            raise FleetUnavailable(f'positions for {day}: {error}') from error
+        for r in rows:
+            la = _num(getattr(r, 'data_latitude', None))
+            lo = _num(getattr(r, 'data_longitude', None))
+            if la is None or lo is None or (la == 0 and lo == 0):
+                continue
+            out.append({
+                'lat': la,
+                'lon': lo,
+                'speed': _num(getattr(r, 'speed_log', None)) or 0.0,
+                'at': _stamp(getattr(r, 'local_system_datestamp', None),
+                             getattr(r, 'local_system_timestamp', None)),
+                'place': str(getattr(r, 'geocoded_location', '') or '').strip(),
+            })
+            if len(out) >= limit:
+                break
     return out
 
 
@@ -270,7 +498,14 @@ def unit_find(query=None, client_uid=None, scope=None):
 
 
 def unit_status(imei=None, client_uid=None, scope=None):
-    """Why a unit is or is not reporting — facts only, no diagnosis."""
+    """Why a unit is or is not reporting, and where it was last — facts only.
+
+    "Where is my vehicle" was the question Waswa could never answer, so the
+    last known position is part of the answer now, read from the live Cassandra
+    store. The position is fetched from the heartbeat's own day, which is both
+    the right partition to ask for and the only day that can hold the latest
+    fix.
+    """
     unit = _owned(imei, scope, client_uid)
     if not unit:
         return {'found': False, 'reason': 'no such unit on this account'}
@@ -279,36 +514,92 @@ def unit_status(imei=None, client_uid=None, scope=None):
               'vehicle': ' '.join(x for x in (unit['make'], unit['model']) if x),
               'billing_status': unit['billing_status'] or 'unrecorded'}
 
-    session = _cassandra()
+    session = None
+    try:
+        session = _cassandra()
+    except Exception:       # noqa: BLE001
+        session = None
     if session is None:
         status['heartbeat'] = 'the unit registry could not be reached'
     else:
+        seen = None
+        day_text = None
         try:
             stmt = session.prepare(
                 "SELECT last_heartbeat_date, last_heartbeat_time "
-                "FROM dll_pulse_status_registry WHERE device_data_imei = ? LIMIT 1")
+                "FROM dll_pulse_status_registry WHERE device_data_imei = ? "
+                "LIMIT 1")
             row = session.execute(stmt, (unit['imei'],)).one()
-        except Exception:
+        except Exception:       # noqa: BLE001
             row = None
+            status['heartbeat'] = 'the heartbeat record could not be read'
         if row is None:
+            status.setdefault('heartbeat', 'this unit has never reported')
             status['last_reported_at'] = None
-            status['heartbeat'] = 'this unit has never reported'
         else:
-            seen = _stamp(getattr(row, 'last_heartbeat_date', None),
-                          getattr(row, 'last_heartbeat_time', None))
+            day_text = getattr(row, 'last_heartbeat_date', None)
+            seen = _stamp(day_text, getattr(row, 'last_heartbeat_time', None))
             status['last_reported_at'] = seen.isoformat(sep=' ') if seen else None
             if seen:
                 hours = (datetime.now() - seen).total_seconds() / 3600.0
                 status['hours_since_last_report'] = round(hours, 1)
                 status['reporting_today'] = seen.date() == datetime.now().date()
+            else:
+                status['heartbeat'] = (
+                    f'a heartbeat is recorded but its timestamp could not be '
+                    f'read ({day_text!r})')
+
+        # The last fix, from the heartbeat's own day. Ordered DESC on the
+        # clustering column, which is allowed because both parts of the
+        # partition key are named.
+        if day_text:
+            try:
+                last = session.prepare(
+                    "SELECT data_latitude, data_longitude, speed_log, "
+                    "       geocoded_location, local_system_datestamp, "
+                    "       local_system_timestamp "
+                    "FROM dll_location_registry_by_record_ts "
+                    "WHERE data_device_imei = ? AND local_system_datestamp = ? "
+                    "ORDER BY record_timestamp DESC LIMIT 1")
+                fix = session.execute(last, (unit['imei'], str(day_text))).one()
+            except Exception:       # noqa: BLE001
+                fix = None
+                status['last_position'] = 'the position store could not be read'
+            if fix is not None:
+                la = _num(getattr(fix, 'data_latitude', None))
+                lo = _num(getattr(fix, 'data_longitude', None))
+                at = _stamp(getattr(fix, 'local_system_datestamp', None),
+                            getattr(fix, 'local_system_timestamp', None))
+                if la is not None and lo is not None:
+                    status['last_position'] = {
+                        'lat': round(la, 6), 'lon': round(lo, 6),
+                        'at': at.isoformat(sep=' ') if at else None,
+                        'speed_kph': _num(getattr(fix, 'speed_log', None)) or 0,
+                        'near': str(getattr(fix, 'geocoded_location', '')
+                                    or '').strip() or None,
+                    }
 
     conn = _pg()
     try:
         with conn.cursor() as cur:
+            # target_uid, not target: pause.py owns this table and that is
+            # what it calls the column. Scope is not filtered here on purpose —
+            # a rule on the unit, its group or the account all leave the
+            # vehicle dark, and the customer only wants to know that it is.
             cur.execute("SELECT mode, active FROM dll_pause_rules "
-                        "WHERE target = %s AND active = TRUE", (unit['imei'],))
+                        "WHERE target_uid = %s AND active = TRUE",
+                        (unit['imei'],))
             rules = cur.fetchall() if cur.rowcount > 0 else []
             status['paused_by_rule'] = [r[0] for r in rules] or None
+
+            # On a trip right now? end_time reads 'Incoming' while one runs.
+            today = datetime.now().date()
+            open_trips = [t for t in (_trip(r) for r in _trip_rows(
+                cur, [unit['imei']], today - timedelta(days=1), today))
+                if t['in_progress']]
+            status['on_a_trip_now'] = bool(open_trips)
+            if open_trips:
+                status['current_trip'] = open_trips[0]
     except psycopg2.Error:
         status['paused_by_rule'] = 'pause rules could not be read'
     finally:
@@ -317,31 +608,54 @@ def unit_status(imei=None, client_uid=None, scope=None):
     return status
 
 
-def unit_trips(imei=None, from_date=None, to_date=None, client_uid=None, scope=None):
-    """Trip summaries for a unit. Summaries — never the raw fixes."""
+def unit_trips(imei=None, from_date=None, to_date=None, client_uid=None,
+               scope=None):
+    """Trips for a unit, as the platform recorded them.
+
+    Reads dll_trips_auditor, which is what the console's Trips report reads.
+    This used to recompute trips from raw fixes using waswa_fleet's own private
+    notion of where one trip ends (_TRIP_GAP_MINUTES, _MOVING_SPEED) — so Waswa
+    and the Trips report could hand the same customer different trip counts for
+    the same day. A customer who finds that contradiction believes neither
+    number again, which is a worse outcome than a missing answer, so both now
+    come from one place.
+    """
     unit = _owned(imei, scope, client_uid)
     if not unit:
         return {'found': False, 'reason': 'no such unit on this account'}
-    if not from_date or not to_date:
+    start, end = _as_date(from_date), _as_date(to_date)
+    if not start or not end:
         return {'found': False,
                 'reason': 'a date range is required, as DD-MM-YYYY'}
+    if end < start:
+        start, end = end, start
 
-    points = _points(unit['imei'], from_date, to_date)
-    if not points:
-        return {'found': False, 'imei': unit['imei'], 'name': unit['name'],
-                'reason': 'this unit logged no positions in that range'}
+    conn = _pg()
+    try:
+        with conn.cursor() as cur:
+            rows = _trip_rows(cur, [unit['imei']], start, end)
+    except psycopg2.Error as error:
+        raise FleetUnavailable(f'trip records could not be read: {error}')
+    finally:
+        conn.close()
 
-    trips = [_summarise(t) for t in _segment(points)]
+    trips = [_trip(r) for r in rows]
+    measured = [t['distance_km'] for t in trips if t['distance_km'] is not None]
+    running = [t for t in trips if t['in_progress']]
     return {
-        'found': True,
+        'found': bool(trips),
         'imei': unit['imei'],
         'name': unit['name'],
-        'from': from_date, 'to': to_date,
+        'from': start.isoformat(), 'to': end.isoformat(),
         'trip_count': len(trips),
-        'total_distance_km': round(sum(t['distance_km'] for t in trips), 2),
-        'fixes_read': len(points),
-        'truncated': len(points) >= _MAX_POINTS,
+        'on_a_trip_now': bool(running),
+        'total_distance_km': round(sum(measured), 2) if measured else None,
+        'distance_source': ('odometer readings' if measured
+                            else 'no odometer readings on these trips'),
         'trips': trips[:40],
+        'truncated': len(trips) > 40,
+        'reason': None if trips else 'no trips are recorded for this unit in '
+                                    'that range',
     }
 
 
@@ -448,45 +762,79 @@ def unit_route_probe(imei=None, from_date=None, to_date=None, place_type=None,
     }
 
 
-def fleet_activity(days=7, client_uid=None, scope=None):
-    """How much the fleet moved over the last N days."""
+def fleet_activity(days=None, client_uid=None, scope=None):
+    """What the account's fleet did lately, from the recorded trips.
+
+    Same source as unit_trips and the Trips report. A unit with trips but no
+    odometer readings is counted as having moved and contributes no distance,
+    which is reported rather than smoothed over: a fleet total that silently
+    omits some units is the kind of number someone makes a decision on.
+    """
     target = _target_client(scope, client_uid)
     if not target:
-        return {'found': False, 'reason': 'no client named'}
+        return {'found': False,
+                'reason': 'no client named — ask which client this is about'}
     units = _units_of(target)
     if not units:
-        return {'found': False, 'reason': 'no units are registered to this account'}
+        return {'found': False,
+                'reason': 'no units are registered to this account'}
 
+    span = max(1, min(int(_num(days) or 2), _MAX_DAYS))
+    end = datetime.now().date()
+    start = end - timedelta(days=span - 1)
+
+    known = {u['imei']: u for u in units if u['imei']}
+    conn = _pg()
     try:
-        window = max(1, min(31, int(days)))
-    except (TypeError, ValueError):
-        window = 7
-    to_date = datetime.now()
-    from_date = to_date - timedelta(days=window)
-    fmt = '%d-%m-%Y'
+        with conn.cursor() as cur:
+            rows = _trip_rows(cur, list(known), start, end)
+    except psycopg2.Error as error:
+        raise FleetUnavailable(f'trip records could not be read: {error}')
+    finally:
+        conn.close()
 
-    rows = []
-    for unit in units[:25]:
-        points = _points(unit['imei'], from_date.strftime(fmt), to_date.strftime(fmt))
-        trips = [_summarise(t) for t in _segment(points)] if points else []
-        rows.append({
-            'imei': unit['imei'], 'name': unit['name'],
-            'trips': len(trips),
-            'distance_km': round(sum(t['distance_km'] for t in trips), 1),
-            'last_fix': (points[-1]['at'].isoformat(sep=' ')
-                         if points and points[-1]['at'] else None),
-        })
+    tally = {imei: {'trips': 0, 'km': 0.0, 'measured': 0,
+                    'last': None, 'running': False} for imei in known}
+    for row in rows:
+        slot = tally.get(str(row[0] or ''))
+        if slot is None:
+            continue
+        trip = _trip(row)
+        slot['trips'] += 1
+        if trip['distance_km'] is not None:
+            slot['km'] += trip['distance_km']
+            slot['measured'] += 1
+        slot['running'] = slot['running'] or trip['in_progress']
+        if slot['last'] is None or trip['date'] > slot['last']:
+            slot['last'] = trip['date']
 
-    active = [r for r in rows if r['trips'] > 0]
+    listed = [{
+        'imei': imei,
+        'name': known[imei]['name'],
+        'trips': slot['trips'],
+        'distance_km': round(slot['km'], 2) if slot['measured'] else None,
+        'last_trip': slot['last'],
+        'on_a_trip_now': True if slot['running'] else None,
+    } for imei, slot in tally.items()]
+    listed.sort(key=lambda s: (-s['trips'], s['name'] or ''))
+
+    moved = [s for s in listed if s['trips']]
+    unmeasured = [s for s in moved if s['distance_km'] is None]
+    total = sum(s['distance_km'] or 0.0 for s in listed)
+    note = None
+    if unmeasured:
+        note = (f'{len(unmeasured)} unit(s) made trips with no odometer '
+                f'readings, so the distance total does not include them')
     return {
         'found': True,
-        'days': window,
-        'units_considered': len(rows),
-        'units_that_moved': len(active),
-        'total_distance_km': round(sum(r['distance_km'] for r in rows), 1),
-        'units': sorted(rows, key=lambda r: -r['distance_km'])[:25],
-        'note': ('only the first 25 units were measured'
-                 if len(units) > 25 else None),
+        'days': span,
+        'from': start.isoformat(), 'to': end.isoformat(),
+        'units_considered': len(listed),
+        'units_that_moved': len(moved),
+        'units_on_a_trip_now': sum(1 for s in listed if s['on_a_trip_now']),
+        'total_distance_km': round(total, 2) if total else None,
+        'units': listed[:40],
+        'note': note,
     }
 
 
@@ -638,6 +986,20 @@ def dispatch(tool_name, arguments, scope=None):
         arguments.pop('client_uid', None)
     try:
         return func(**arguments, scope=scope)
+    except FleetUnavailable as error:
+        # Said in the tool result, because that is what the model reads. The
+        # instruction is part of the finding: a number here would be a guess.
+        _warn('vehicle register unreachable (%s): %s', tool_name, error)
+        return {
+            'found': False,
+            'unavailable': True,
+            'reason': ('The vehicle register could not be reached just now. '
+                       'This is a fault on our side and says NOTHING about '
+                       'what this account owns. Tell the person you cannot '
+                       'check their vehicles at the moment and that it should '
+                       'be working again shortly. Do NOT say they have no '
+                       'vehicles, do not give a count, and do not guess.'),
+        }
     except TypeError as error:
         return {'error': f'bad arguments for {tool_name}: {error}'}
     except Exception as error:      # noqa: BLE001 - never break the turn
