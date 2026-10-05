@@ -7,6 +7,8 @@ from flask import jsonify
 import datetime
 import random
 from flask import current_app
+from flask import has_request_context
+from flask import g
 import base64
 from decimal import Decimal
 from .globals import reply
@@ -28,6 +30,7 @@ import time
 import os
 from .globals import CheckHardware2
 from . import location_store
+from . import io_events_store
 from math import radians, sin, cos, sqrt, atan2
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib.pagesizes import landscape
@@ -148,7 +151,26 @@ def create_pdf(data, from_date, to_date, device_imei, file_name_x):
     # Add the table to the PDF document
     doc.build([table_headings, table])
     
-def Config_Sources(GetThis, target_device_imei, target_io_records, target_actual_speed_x):
+def _device_config_cache():
+    """Per-request store for the device-config lookups.
+
+    Request-scoped on purpose. Config_Sources is called from three routes and
+    its answer depends on the device, so a module-level dict would hand one
+    customer's ignition configuration to another. Outside a request context —
+    a script importing this module — caching is skipped rather than made
+    global.
+    """
+    if not has_request_context():
+        return None
+    cache = getattr(g, '_navas_device_config_cache', None)
+    if cache is None:
+        cache = {}
+        g._navas_device_config_cache = cache
+    return cache
+
+
+def Config_Sources(GetThis, target_device_imei, target_io_records, target_actual_speed_x,
+                   prefetched_events=None):
     # Use Cassandra session instead of psycopg2 connection
     try:
         target_actual_speed = int(target_actual_speed_x)
@@ -159,6 +181,62 @@ def Config_Sources(GetThis, target_device_imei, target_io_records, target_actual
             target_actual_speed = 0
 
     session = get_cassandra_session()
+
+    def config_source_uid(parameter):
+        """The device's configured channel for `parameter`, cached per request.
+
+        The lookup depends only on (parameter, device) — four answers per
+        request, where this was asking four times per FIX. Returns the row
+        list, because the callers below branch on len(rows) == 1 and both 0
+        and 2-or-more must keep falling back.
+
+        A query that raised is NOT cached: cassandra_query cannot tell "no
+        rows" from "the query broke", and caching the second would turn one
+        dropped packet into a whole-request fallback.
+        """
+        cache = _device_config_cache()
+        key = (parameter, str(target_device_imei))
+        if cache is not None and key in cache:
+            return cache[key]
+        if not session:
+            return []
+        try:
+            rows = list(session.execute(
+                "SELECT config_param_data_source_uid FROM "
+                "dll_device_local_configs WHERE config_parameter=%s AND "
+                "local_device_imei=%s ALLOW FILTERING;",
+                (parameter, str(target_device_imei))))
+        except Exception:                                   # noqa: BLE001
+            return []
+        if cache is not None:
+            cache[key] = rows
+        return rows
+
+    def event_value_for(source_uid):
+        """This fix's value for one IO channel.
+
+        When prefetched_events is given — the rows io_events_store already
+        fetched for this fix — this is a dict lookup costing no query. At
+        0.30s a round trip, four of these per fix was 1.2s a row.
+
+        Returns a one-row list so that the len(rows2) == 1 branches and the
+        rows2[0][0] reads below are unchanged.
+        """
+        wanted = str(source_uid or '').strip()
+        if prefetched_events is not None:
+            for event in prefetched_events:
+                if str(event.get('event_uid') or '').strip() == wanted:
+                    return [(event.get('value'),)]
+            return []
+        if not session:
+            return []
+        try:
+            return list(session.execute(
+                "SELECT event_value_executed FROM dll_io_events_executed_logs "
+                "WHERE event_uid_executed=%s AND io_parent_io_event_uid=%s "
+                "ALLOW FILTERING;", (wanted, str(target_io_records))))
+        except Exception:                                   # noqa: BLE001
+            return []
 
     # Helper to run a simple select and return list of rows
     def cassandra_query(q, params):
@@ -180,17 +258,11 @@ def Config_Sources(GetThis, target_device_imei, target_io_records, target_actual
             return 'OFF'
 
     if GetThis == 'ignition':
-        rows = cassandra_query(
-            "SELECT config_param_data_source_uid FROM dll_device_local_configs WHERE config_parameter=%s AND local_device_imei=%s ALLOW FILTERING;",
-            ('ignition_detection', str(target_device_imei))
-        )
+        rows = config_source_uid('ignition_detection')
 
         if len(rows) == 1:
             IgnitionSource = rows[0][0]
-            rows2 = cassandra_query(
-                "SELECT event_value_executed FROM dll_io_events_executed_logs WHERE event_uid_executed=%s AND io_parent_io_event_uid=%s ALLOW FILTERING;",
-                (str(IgnitionSource), str(target_io_records))
-            )
+            rows2 = event_value_for(IgnitionSource)
 
             if len(rows2) == 1:
                 try:
@@ -210,17 +282,11 @@ def Config_Sources(GetThis, target_device_imei, target_io_records, target_actual
             return ignition_fallback()
 
     elif GetThis == 'driver_id':
-        rows = cassandra_query(
-            "SELECT config_param_data_source_uid FROM dll_device_local_configs WHERE config_parameter=%s AND local_device_imei=%s ALLOW FILTERING;",
-            ('driver_detection', str(target_device_imei))
-        )
+        rows = config_source_uid('driver_detection')
 
         if len(rows) == 1:
             DriverIDSource = rows[0][0]
-            rows2 = cassandra_query(
-                "SELECT event_value_executed FROM dll_io_events_executed_logs WHERE event_uid_executed=%s AND io_parent_io_event_uid=%s ALLOW FILTERING;",
-                (str(DriverIDSource), str(target_io_records))
-            )
+            rows2 = event_value_for(DriverIDSource)
 
             if len(rows2) == 1:
                 try:
@@ -243,17 +309,11 @@ def Config_Sources(GetThis, target_device_imei, target_io_records, target_actual
             return 'No_Configuration'
 
     elif GetThis == 'fuel':
-        rows = cassandra_query(
-            "SELECT config_param_data_source_uid FROM dll_device_local_configs WHERE config_parameter=%s AND local_device_imei=%s ALLOW FILTERING;",
-            ('fuel_level', str(target_device_imei))
-        )
+        rows = config_source_uid('fuel_level')
 
         if len(rows) == 1:
             FuelLevelSource = rows[0][0]
-            rows2 = cassandra_query(
-                "SELECT event_value_executed FROM dll_io_events_executed_logs WHERE event_uid_executed=%s AND io_parent_io_event_uid=%s ALLOW FILTERING;",
-                (str(FuelLevelSource), str(target_io_records))
-            )
+            rows2 = event_value_for(FuelLevelSource)
 
             if len(rows2) == 1:
                 ConfigParameter_Value = str(rows2[0][0])
@@ -264,17 +324,11 @@ def Config_Sources(GetThis, target_device_imei, target_io_records, target_actual
             return 'No_Configuration'
 
     elif GetThis == 'mileage':
-        rows = cassandra_query(
-            "SELECT config_param_data_source_uid FROM dll_device_local_configs WHERE config_parameter=%s AND local_device_imei=%s ALLOW FILTERING;",
-            ('mileage_reading', str(target_device_imei))
-        )
+        rows = config_source_uid('mileage_reading')
 
         if len(rows) == 1:
             MileageSource = rows[0][0]
-            rows2 = cassandra_query(
-                "SELECT event_value_executed FROM dll_io_events_executed_logs WHERE event_uid_executed=%s AND io_parent_io_event_uid=%s ALLOW FILTERING;",
-                (str(MileageSource), str(target_io_records))
-            )
+            rows2 = event_value_for(MileageSource)
 
             if len(rows2) == 1:
                 try:
@@ -1146,42 +1200,76 @@ def trips_history():
                                     TripsData = []
                                     Trips_Records = []
 
+                                    # Every fix's IO events in one go. The old
+                                    # per-fix Postgres lookup scanned 11 GB to
+                                    # return nothing — that table holds none of
+                                    # these uids — so the gate below was always
+                                    # false and the Config_Sources calls after
+                                    # it never ran.
+                                    try:
+                                        _io_by_uid = io_events_store.events_for(
+                                            get_cassandra_session(),
+                                            [_t[5] for _t in trips_data_adapter])
+                                    except io_events_store.IoEventsUnavailable as _io_error:
+                                        # "We could not look" must not render as
+                                        # "this vehicle reported nothing".
+                                        logging.warning(
+                                            "trips_history: IO events unavailable "
+                                            "for %s: %s", DeviceImei, _io_error)
+                                        return reply('error', 503, 'Telemetry detail is temporarily unavailable, please retry', '')
+
+                                    # One query for every distinct channel id,
+                                    # not one per IO event. Returns {} when the
+                                    # reference table is empty, which it is.
+                                    _io_names = io_events_store.names_for(
+                                        cursor, TableName, ValueColunmName,
+                                        ConditionColunmName,
+                                        [io_events_store.vendor_io_id(
+                                            TheDeviceVendor, _event['event_uid'])
+                                         for _list in _io_by_uid.values()
+                                         for _event in _list])
+
                                     for trip in trips_data_adapter:
 
                                         RecordIO_UID = trip[5]
                                         SPEED = trip[2]
 
-                                        cursor.execute("SELECT event_uid_executed,event_value_executed,data_idx FROM dll_io_events_executed_logs WHERE io_parent_io_event_uid=%s ORDER BY data_idx DESC;", (str(RecordIO_UID),))
+                                        _events = _io_by_uid.get(
+                                            str(RecordIO_UID or '').strip(), [])
 
-                                        if(cursor.rowcount >= 1):
+                                        if _events:
 
-                                            io_events_dataAdapter = cursor.fetchall()
                                             io_events_Found = []
                                             enduser_data = []
 
-                                            for io_event in io_events_dataAdapter:
-                                                
-                                                if(TheDeviceVendor == 'ruptela'):
-                                                    IO_ID_Found = str(io_event[0])+".0"
-                                                elif(TheDeviceVendor == 'teltonika'):
-                                                    IO_ID_Found = str(io_event[0])
+                                            for io_event in _events:
 
-                                                IO_IDQuery = f"SELECT { ValueColunmName } FROM { TableName } WHERE { ConditionColunmName }=%s"
-                                                cursor.execute(IO_IDQuery, (str(IO_ID_Found),))
-                                                IO_NameValue_adapter = cursor.fetchone()
-                                                IO_NameValue_Extracted = IO_NameValue_adapter[0]
+                                                # Every vendor, not two of them.
+                                                # This unit is xirgo_global, and
+                                                # the old code assigned nothing
+                                                # here -> NameError.
+                                                IO_ID_Found = io_events_store.vendor_io_id(
+                                                    TheDeviceVendor, io_event['event_uid'])
+
+                                                # dll_io_events_config has no
+                                                # rows, so this misses and the
+                                                # raw channel id is the label.
+                                                # The old code did fetchone()[0]
+                                                # on None.
+                                                IO_NameValue_Extracted = _io_names.get(
+                                                    IO_ID_Found, IO_ID_Found)
 
                                                 SingleIO_Event = {
-                                                    IO_NameValue_Extracted:io_event[1] 
+                                                    IO_NameValue_Extracted: io_event['value']
                                                 }
 
                                                 io_events_Found.append(SingleIO_Event)
                                                 
 
-                                            FocusIgnition_Status = Config_Sources('ignition', DeviceImei, RecordIO_UID, int(SPEED))
-                                            FocusMileage = Config_Sources('mileage', DeviceImei, RecordIO_UID, SPEED)
-                                            FocusFuelLevel = Config_Sources('fuel', DeviceImei, RecordIO_UID, SPEED)
-                                            FocusDriverID = Config_Sources('driver_id', DeviceImei, RecordIO_UID, SPEED)
+                                            FocusIgnition_Status = Config_Sources('ignition', DeviceImei, RecordIO_UID, int(SPEED), prefetched_events=_events)
+                                            FocusMileage = Config_Sources('mileage', DeviceImei, RecordIO_UID, SPEED, prefetched_events=_events)
+                                            FocusFuelLevel = Config_Sources('fuel', DeviceImei, RecordIO_UID, SPEED, prefetched_events=_events)
+                                            FocusDriverID = Config_Sources('driver_id', DeviceImei, RecordIO_UID, SPEED, prefetched_events=_events)
 
                                             if(FocusMileage == 'No-Data') and (PreviousMileage != ''):
                                                 SelectedMileage = PreviousMileage

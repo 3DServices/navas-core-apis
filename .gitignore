@@ -8,3 +8,6 @@ database/knowledge/uploads/
 # secrets and stale backups must never be committed
 *.bak
 *.bak.*
+
+# B5 measurement baseline (local only)
+.b5_capture.json
