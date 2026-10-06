@@ -1138,7 +1138,16 @@ def trips_history():
         SelectedFuel_Level = ''
         SelectedDriverID = ''
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        try:
+            dbconnect = psycopg2.connect(current_app.config['db_link'])
+        except Exception:
+            # Transient on this host -- 10/10 sequential connects succeeded in
+            # scripts/audit_db_host_health.py -- so tell the client to retry
+            # rather than letting the catch-all answer 500 with psycopg2's
+            # text, which quotes the DSN.  Full error goes to the log.
+            logging.exception('trips_history: database connection failed')
+            return reply('error', 503,
+                         'Trip history is temporarily unavailable, please retry', '')
         payload_data = request.get_json()
 
         if(len(str(payload_data['data']['device_imei'])) > 4) and (len(str(payload_data['data']['from_date'])) > 4) and (len(str(payload_data['data']['to_date'])) > 4) and (len(str(payload_data['data']['offset_log'])) > 0) and (len(str(payload_data['data']['record_count'])) > 0):

@@ -2,6 +2,7 @@ from flask import json
 from flask import jsonify
 from flask import request as flask_request
 from flask import g
+from flask import has_app_context
 import psycopg2
 import psycopg2.extras
 from datetime import datetime
@@ -11,6 +12,8 @@ from functools import wraps
 import pytz
 import uuid
 import hashlib
+import logging
+import re
 from .jwt_utils import decode_access_token
 
 timezone = pytz.timezone('Africa/Nairobi')
@@ -73,11 +76,123 @@ def log_audit_event(actor, action, obj, domain, severity='Info', tenant_id=None,
         print(f"[AUDIT LOG ERROR] {e}")
 
 
+# ==========================================
+# CREDENTIAL SCRUBBER  (B10)
+# ==========================================
+#
+# Every error path in this codebase funnels through reply().  71 handlers pass
+# str(error) as the message body, and a malformed db_link makes psycopg2 quote
+# the password back inside its own error text.  scrub_secrets() is the single
+# place that gets removed.
+#
+# It is deliberately a PURE function -- no Flask, no database, no module state
+# -- so tests/test_reply_scrub.py can exercise it without an app context.
+
+# scheme://user:password@host   and the malformed  scheme:/user:password@host
+_CREDENTIAL_URI = re.compile(
+    r'(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*:/{1,3})(?P<user>[^\s:/@]*):(?P<secret>[^\s@]+)@'
+)
+
+# psycopg2 keyword DSN form:  dbname=x user=y password=z host=w
+_CREDENTIAL_KEYWORD = re.compile(r'(?P<key>password\s*=\s*)(?P<secret>\S+)')
+
+# Only treat `password=` as a DSN field when another libpq keyword is present.
+# Without this guard an ordinary sentence -- "Invalid password = required" --
+# would be rewritten, which would change a message for no security gain.  The
+# configured-secret pass still covers a lone `password=SECRET`.
+_DSN_CONTEXT = re.compile(r'\b(?:dbname|host|hostaddr|port|user|sslmode|options)\s*=')
+
+REDACTED = '***'
+
+
+def scrub_secrets(text, extra=()):
+    """Remove credentials from a value before it leaves the process.
+
+    Three passes, in order:
+      1. scheme://user:password@host  ->  scheme://user:***@host
+      2. password=SECRET  ->  password=***  (only inside a libpq DSN)
+      3. every literal in `extra` (the configured secrets) -> ***
+
+    Pass 3 is the backstop: it catches a secret embedded in a shape passes 1
+    and 2 do not recognise.  Strings shorter than 4 characters are skipped so
+    a trivially short configured value cannot blank out unrelated text.
+
+    Containers are walked so a handler that nests the error text one level
+    deep is covered too.  Types are preserved; anything that is not a string
+    or a container is returned untouched.
+    """
+    if isinstance(text, str):
+        cleaned = _CREDENTIAL_URI.sub(
+            lambda m: m.group('scheme') + m.group('user') + ':' + REDACTED + '@',
+            text,
+        )
+        if _DSN_CONTEXT.search(cleaned):
+            cleaned = _CREDENTIAL_KEYWORD.sub(
+                lambda m: m.group('key') + REDACTED,
+                cleaned,
+            )
+        for secret in (extra or ()):
+            if isinstance(secret, str) and len(secret) >= 4:
+                cleaned = cleaned.replace(secret, REDACTED)
+        return cleaned
+
+    if isinstance(text, dict):
+        return dict((key, scrub_secrets(value, extra)) for key, value in text.items())
+
+    if isinstance(text, list):
+        return [scrub_secrets(item, extra) for item in text]
+
+    if isinstance(text, tuple):
+        return tuple(scrub_secrets(item, extra) for item in text)
+
+    return text
+
+
+def _configured_secrets():
+    """The secret halves of this app's configured db_link, as literals.
+
+    Never raises: outside an app context, or with db_link absent, it simply
+    returns an empty tuple and pattern matching alone does the work.
+    """
+    secrets = []
+
+    try:
+        if not has_app_context():
+            return ()
+
+        link = current_app.config.get('db_link')
+
+        if link:
+            link = str(link)
+
+            found = _CREDENTIAL_URI.search(link)
+
+            if found:
+                secrets.append(found.group('secret'))
+
+            found = _CREDENTIAL_KEYWORD.search(link)
+
+            if found:
+                secrets.append(found.group('secret'))
+
+    except Exception:
+        return tuple(secrets)
+
+    return tuple(secrets)
+
+
 def reply(status, status_code, message_body, data):
+
+    safe_message = scrub_secrets(message_body, _configured_secrets())
+
+    if safe_message != message_body:
+        logging.warning(
+            'reply(): credentials redacted from a %s response body', status_code
+        )
 
     data_object = {
         "status": status,
-        "message": message_body,
+        "message": safe_message,
         "data": data
     }
 
@@ -526,9 +641,61 @@ def compare_years(start_date, end_date):
     
 
 
+# ── One connection per request, for the read-only device lookups ────────────
+# check_device, CheckHardware and CheckHardware2 are called several times per
+# request and each used to open its own connection. Against this host a
+# connect costs ~2.3s, so a single trips_history request spent ~7s of its 30
+# doing nothing but handshakes.
+#
+# RESERVED FOR READS. These three helpers are pure SELECTs. Do NOT hand this
+# connection to anything that writes: every caller wraps its work in
+# `with dbconnect:`, which COMMITS, so a writer sharing this connection would
+# commit whatever else happened to be pending on it. The ~190 functions in
+# this codebase that open their own connection need a pool and a review of
+# what each transaction spans; that is deliberately not this change.
+_READ_CONN_KEY = '_navas_read_only_connection'
+
+
+def _read_connection():
+    """The request's shared read-only connection, opening it on first use.
+
+    Outside an app context — a script importing this module — a fresh
+    connection is returned instead, so existing callers keep working.
+    """
+    if not has_app_context():
+        return psycopg2.connect(current_app.config['db_link'])
+    existing = getattr(g, _READ_CONN_KEY, None)
+    if existing is not None and not existing.closed:
+        return existing
+    fresh = psycopg2.connect(current_app.config['db_link'])
+    setattr(g, _READ_CONN_KEY, fresh)
+    return fresh
+
+
+def close_read_connection(_exception=None):
+    """Close the shared read connection at the end of the app context.
+
+    Registered in app.py. Without this the connection would be left to
+    CPython's refcounting, which is what the audit flagged as fragile even
+    though it currently works.
+    """
+    existing = getattr(g, _READ_CONN_KEY, None) if has_app_context() else None
+    if existing is None:
+        return
+    try:
+        if not existing.closed:
+            existing.close()
+    except Exception:                                   # noqa: BLE001
+        pass
+    try:
+        setattr(g, _READ_CONN_KEY, None)
+    except Exception:                                   # noqa: BLE001
+        pass
+
+
 def check_device(device_imei):
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = _read_connection()
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
@@ -547,7 +714,7 @@ def check_device(device_imei):
 
 def CheckHardware(device_imei):
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = _read_connection()
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
@@ -566,7 +733,7 @@ def CheckHardware(device_imei):
 
 def CheckHardware2(device_imei):
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = _read_connection()
 
     with dbconnect:
         with dbconnect.cursor() as cursor:

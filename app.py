@@ -90,6 +90,12 @@ def _method_not_allowed(error):
     }), 405
 
 app.config['db_link'] = DB_LINK
+
+
+# Close the shared read-only connection (endpoints/globals.py) when the app
+# context ends, instead of leaving it to refcounting.
+from endpoints.globals import close_read_connection as _close_read_connection
+app.teardown_appcontext(_close_read_connection)
 app.config['base_url'] = BASE_URL
 
 
