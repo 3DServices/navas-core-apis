@@ -14,7 +14,8 @@ without Flask, psycopg2 or the Cassandra driver.
 import importlib.util
 import os
 import unittest
-from datetime import date, datetime, timedelta
+from types import SimpleNamespace
+from datetime import date, datetime, timedelta, time
 
 _PATH = os.path.join(os.path.dirname(__file__), '..', 'endpoints',
                      'location_store.py')
@@ -373,6 +374,144 @@ class TupleContract(unittest.TestCase):
         self.assertEqual(row['at'], datetime(2025, 7, 15, 8, 25, 50))
         self.assertEqual(row['at_utc'], datetime(2025, 7, 15, 5, 25, 50))
 
+
+
+class DatetimeSpan(unittest.TestCase):
+    """B3c: the continuous span, which is NOT the daily clock window.
+
+    The replay route wants one range from an instant to an instant. The
+    pre-existing time_from/time_to pair filters at.time() on every day, a
+    different thing, and these tests pin the difference so a later change
+    cannot quietly merge them.
+    """
+
+    def test_local_datetime_parses_date_and_time(self):
+        got = ls.local_datetime('25-09-2026', '14:30:00')
+        self.assertEqual(got, datetime(2026, 9, 25, 14, 30, 0))
+
+    def test_local_datetime_accepts_12_hour(self):
+        # _TIME_FORMATS lists '%I:%M:%S%p' first, so the stored values are
+        # very likely 12-hour. The span must understand them.
+        got = ls.local_datetime('25-09-2026', '02:30:15PM')
+        self.assertEqual(got, datetime(2026, 9, 25, 14, 30, 15))
+
+    def test_local_datetime_missing_time_is_midnight(self):
+        self.assertEqual(ls.local_datetime('25-09-2026'),
+                         datetime(2026, 9, 25, 0, 0, 0))
+
+    def test_local_datetime_end_of_day(self):
+        got = ls.local_datetime('25-09-2026', None, end_of_day=True)
+        self.assertEqual(got.date(), date(2026, 9, 25))
+        self.assertEqual(got.hour, 23)
+        self.assertEqual(got.minute, 59)
+
+    def test_local_datetime_rejects_a_bad_date(self):
+        self.assertIsNone(ls.local_datetime('not-a-date', '10:00:00'))
+
+    def test_local_datetime_unparseable_time_falls_back(self):
+        # a bad time must not throw away the date
+        got = ls.local_datetime('25-09-2026', 'NoData')
+        self.assertEqual(got, datetime(2026, 9, 25, 0, 0, 0))
+
+    # ---- the filter itself, through _row
+
+    def _raw(self, datestamp, timestamp):
+        return SimpleNamespace(
+            data_device_imei='862846042622426',
+            data_longitude='32.58', data_latitude='0.31',
+            speed_log='0', data_hdop='1',
+            local_system_datestamp=datestamp,
+            local_system_timestamp=timestamp,
+            record_io_events_uid='NA', geocoded_location='x',
+            data_connected_satelites='7', batch_uid='b', data_idx='1',
+            record_timestamp=datetime(2026, 9, 25, 11, 30))
+
+    def test_span_keeps_a_fix_inside(self):
+        row = ls._row(self._raw('25-09-2026', '14:30:00'), None, None,
+                      datetime(2026, 9, 25, 14, 0),
+                      datetime(2026, 9, 25, 15, 0))
+        self.assertIsNotNone(row)
+
+    def test_span_drops_a_fix_before_it(self):
+        row = ls._row(self._raw('25-09-2026', '13:59:59'), None, None,
+                      datetime(2026, 9, 25, 14, 0),
+                      datetime(2026, 9, 25, 15, 0))
+        self.assertIsNone(row)
+
+    def test_span_drops_a_fix_after_it(self):
+        row = ls._row(self._raw('25-09-2026', '15:00:01'), None, None,
+                      datetime(2026, 9, 25, 14, 0),
+                      datetime(2026, 9, 25, 15, 0))
+        self.assertIsNone(row)
+
+    def test_span_boundaries_are_inclusive(self):
+        low = datetime(2026, 9, 25, 14, 0)
+        high = datetime(2026, 9, 25, 15, 0)
+        self.assertIsNotNone(ls._row(self._raw('25-09-2026', '14:00:00'),
+                                     None, None, low, high))
+        self.assertIsNotNone(ls._row(self._raw('25-09-2026', '15:00:00'),
+                                     None, None, low, high))
+
+    def test_span_keeps_the_middle_of_the_night_on_an_inner_day(self):
+        # THE case that separates a span from a clock window. 01-05 Oct,
+        # 08:00 to 17:00: a 03:00 fix on the 3rd is INSIDE the span and
+        # OUTSIDE the clock window.
+        raw = self._raw('03-10-2026', '03:00:00')
+        span = ls._row(raw, None, None,
+                       datetime(2026, 10, 1, 8, 0),
+                       datetime(2026, 10, 5, 17, 0))
+        self.assertIsNotNone(span, 'a span must keep inner-day night fixes')
+
+        clock = ls._row(raw, time(8, 0), time(17, 0))
+        self.assertIsNone(clock, 'a clock window must drop them')
+
+    def test_span_and_clock_agree_on_a_single_day(self):
+        raw = self._raw('25-09-2026', '10:00:00')
+        self.assertIsNotNone(ls._row(raw, None, None,
+                                     datetime(2026, 9, 25, 8, 0),
+                                     datetime(2026, 9, 25, 17, 0)))
+        self.assertIsNotNone(ls._row(raw, time(8, 0), time(17, 0)))
+
+    # ---- the deliberate asymmetry on an unplaceable fix
+
+    def test_clock_window_keeps_an_unplaceable_fix(self):
+        # pre-existing behaviour, pinned so the span change does not alter it
+        raw = self._raw('bad-date', '10:00:00')
+        self.assertIsNotNone(ls._row(raw, time(8, 0), time(17, 0)))
+
+    def test_span_drops_an_unplaceable_fix(self):
+        # a point that cannot be shown to fall inside the span must not be
+        # drawn on a replay line
+        raw = self._raw('bad-date', '10:00:00')
+        self.assertIsNone(ls._row(raw, None, None,
+                                  datetime(2026, 9, 25, 8, 0),
+                                  datetime(2026, 9, 25, 17, 0)))
+
+    def test_no_span_means_no_filtering(self):
+        raw = self._raw('25-09-2026', '03:00:00')
+        self.assertIsNotNone(ls._row(raw, None, None, None, None))
+
+    def test_open_ended_span_from_only(self):
+        raw = self._raw('25-09-2026', '10:00:00')
+        self.assertIsNotNone(ls._row(raw, None, None,
+                                     datetime(2026, 9, 25, 9, 0), None))
+        self.assertIsNone(ls._row(raw, None, None,
+                                  datetime(2026, 9, 25, 11, 0), None))
+
+    def test_open_ended_span_to_only(self):
+        raw = self._raw('25-09-2026', '10:00:00')
+        self.assertIsNotNone(ls._row(raw, None, None, None,
+                                     datetime(2026, 9, 25, 11, 0)))
+        self.assertIsNone(ls._row(raw, None, None, None,
+                                  datetime(2026, 9, 25, 9, 0)))
+
+    def test_fixes_accepts_the_new_keywords(self):
+        import inspect
+        params = inspect.signature(ls.fixes).parameters
+        self.assertIn('datetime_from', params)
+        self.assertIn('datetime_to', params)
+        self.assertIsNone(params['datetime_from'].default)
+        self.assertIsNone(params['datetime_to'].default)
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

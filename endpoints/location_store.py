@@ -146,9 +146,30 @@ def _order_key(row):
     return (row['at_utc'] or row['at'] or datetime.min)
 
 
-def _row(r, low, high):
+def local_datetime(datestamp, timestamp=None, end_of_day=False):
+    """A naive LOCAL datetime from a date and an optional time, or None.
+
+    Public because the replay route needs to build the ends of a span from the
+    same strings fixes() accepts, and must not reach into _as_date/_as_time to
+    do it. Accepts every format _DATE_FORMATS and _TIME_FORMATS allow, so a
+    caller cannot drift from what the reader understands.
+
+    end_of_day fills a missing time with 23:59:59.999999 rather than midnight,
+    so local_datetime(to_date, None, end_of_day=True) is the inclusive end of
+    that day instead of its first instant.
+    """
+    day = _as_date(datestamp)
+    if day is None:
+        return None
+    clock = _as_time(timestamp)
+    if clock is None:
+        clock = (datetime.max.time() if end_of_day else datetime.min.time())
+    return datetime.combine(day, clock)
+
+
+def _row(r, low, high, span_from=None, span_to=None):
     """One Cassandra row as a fix, or None when it is unusable or falls outside
-    the clock window."""
+    the clock window or the datetime span."""
     lon = _num(getattr(r, 'data_longitude', None))
     lat = _num(getattr(r, 'data_latitude', None))
     if lon is None or lat is None or (lon == 0 and lat == 0):
@@ -160,6 +181,21 @@ def _row(r, low, high):
         if low and clock < low:
             return None
         if high and clock > high:
+            return None
+
+    # The datetime SPAN, which is not the clock window above.
+    #
+    # Note the asymmetry on `at is None`: the clock window lets an unplaceable
+    # row through, this does not. "Only these hours" can reasonably keep a row
+    # whose time is unreadable; "between these two moments" cannot, because a
+    # point that cannot be shown to fall inside the span must not be drawn on
+    # a replay line.
+    if span_from is not None or span_to is not None:
+        if at is None:
+            return None
+        if span_from is not None and at < span_from:
+            return None
+        if span_to is not None and at > span_to:
             return None
     return {
         'imei': str(getattr(r, 'data_device_imei', '') or ''),
@@ -181,12 +217,20 @@ def _row(r, low, high):
 
 def fixes(session, imei, from_date, to_date,
           limit=None, offset=0, time_from=None, time_to=None,
+          datetime_from=None, datetime_to=None,
           dedupe_coordinates=True, newest_first=True):
     """Position fixes for one unit, as a list of dicts.
 
     session               a Cassandra session (devices.get_cassandra_session())
     limit / offset        applied AFTER dedupe and ordering, as the SQL did
-    time_from / time_to   optional clock window, as the replay route passes
+    time_from / time_to   optional clock window: these hours on EVERY day in
+                          the range. NOT what the replay route wants --
+                          see datetime_from below.
+    datetime_from /       optional continuous span: one range from an instant
+    datetime_to           to an instant, which is what a replay is. Naive
+                          local datetimes; build them with local_datetime().
+                          A fix whose local timestamp will not parse is
+                          excluded from a span (but not from a clock window)
     dedupe_coordinates    keep one fix per distinct (lon, lat), the latest —
                           what PARTITION BY ... row_num = 1 did
     newest_first          the SQL ordered DESC; callers paginate on that
@@ -241,7 +285,8 @@ def fixes(session, imei, from_date, to_date,
         except Exception as error:  # noqa: BLE001
             raise PositionsUnavailable(f'{day}: {error}') from error
 
-        day_rows = [row for row in (_row(r, low, high) for r in found)
+        day_rows = [row for row in (_row(r, low, high, datetime_from,
+                                          datetime_to) for r in found)
                     if row is not None]
 
         if page is None:

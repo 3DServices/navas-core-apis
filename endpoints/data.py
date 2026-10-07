@@ -1488,6 +1488,15 @@ def trips_history():
             
             elif(device_billing_check == 'not-found'):
                 return reply('error', 400, 'Routing Failed, Device Cant be found', '')
+
+            # B3d: the final else that was missing here.
+            #
+            # check_device() returns None when its rowcount is neither 1
+            # nor 0, and None matched none of the arms above, so control
+            # fell out of the chain entirely -- in this route that meant
+            # returning None and Flask answering an opaque 500.
+            else:
+                return reply('error', 400, 'Unable to complete request', '')
             
         else:
             return reply('error', 400, 'Something Is Missing', '')
@@ -1554,20 +1563,55 @@ def trips_history_replay():
                 if(compare_years(FromDate, ToDate) == True):
                     if(Record_Count < 15000) or (Record_Count == 15000):
 
+                        # B3c: positions come from the live store.
+                        #
+                        # The timed branch used to compare
+                        # local_system_timestamp as TEXT against zero-padded
+                        # 24-hour input. The stored values are 12-hour
+                        # ('02:30:15PM'), so every afternoon fix compared
+                        # wrongly. A parsed datetime span fixes that.
+                        #
+                        # local_datetime() is location_store's own parser, so
+                        # the span ends cannot drift from the formats the read
+                        # accepts.
+                        _span_from = None
+                        _span_to = None
+
+                        if TimeFrom:
+                            _span_from = location_store.local_datetime(
+                                FromDate, TimeFrom)
+                            _span_to = location_store.local_datetime(
+                                ToDate, TimeTo)
+
+                            if _span_from is None or _span_to is None:
+                                return reply('error', 400,
+                                             'from_date and to_date did not '
+                                             'parse as dates', '')
+
+                        try:
+                            _replay_fixes, _replay_truncated = \
+                                location_store.fixes(
+                                    get_cassandra_session(), DeviceImei,
+                                    FromDate, ToDate,
+                                    limit=Record_Count, offset=Offset_Record,
+                                    datetime_from=_span_from,
+                                    datetime_to=_span_to)
+                        except location_store.PositionsUnavailable as error:
+                            logging.warning(
+                                'trips_history_replay: position store '
+                                'unavailable: %s', error)
+                            return reply('error', 503,
+                                         'Position data is temporarily '
+                                         'unavailable, please retry', '')
+
+                        trips_data_adapter = [
+                            location_store.as_history_tuple(_fix)
+                            for _fix in _replay_fixes]
                         with dbconnect:
                             with dbconnect.cursor() as cursor:
-                                if TimeFrom:
-                                    # A start and end time as well as dates: points on the
-                                    # first day from TimeFrom, on the last day up to TimeTo,
-                                    # everything on the days between. Times are compared as
-                                    # zero-padded HH:MM:SS text, so no row can fail a cast.
-                                    cursor.execute("SELECT data_longitude, data_latitude, speed_log, data_hdop, local_system_datestamp, record_io_events_uid, geocoded_location, local_system_timestamp, data_connected_satelites, batch_uid, data_idx, ROW_NUMBER() OVER (ORDER BY data_idx DESC) AS row_index FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY data_longitude, data_latitude ORDER BY data_idx DESC) AS row_num FROM dll_location_registry WHERE data_device_imei = %s AND TO_DATE(local_system_datestamp, 'DD-MM-YYYY') BETWEEN TO_DATE(%s, 'DD-MM-YYYY') AND TO_DATE(%s, 'DD-MM-YYYY') AND (TO_DATE(local_system_datestamp, 'DD-MM-YYYY') > TO_DATE(%s, 'DD-MM-YYYY') OR local_system_timestamp >= %s) AND (TO_DATE(local_system_datestamp, 'DD-MM-YYYY') < TO_DATE(%s, 'DD-MM-YYYY') OR local_system_timestamp <= %s)) AS subquery WHERE row_num = 1 ORDER BY data_idx DESC LIMIT %s OFFSET %s;", (DeviceImei, FromDate, ToDate, FromDate, TimeFrom, ToDate, TimeTo, Record_Count, Offset_Record,))
-                                else:
-                                    cursor.execute("SELECT data_longitude, data_latitude, speed_log, data_hdop, local_system_datestamp, record_io_events_uid, geocoded_location, local_system_timestamp, data_connected_satelites, batch_uid, data_idx, ROW_NUMBER() OVER (ORDER BY data_idx DESC) AS row_index FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY data_longitude, data_latitude ORDER BY data_idx DESC) AS row_num FROM dll_location_registry WHERE data_device_imei = %s AND TO_DATE(local_system_datestamp, 'DD-MM-YYYY') BETWEEN TO_DATE(%s, 'DD-MM-YYYY') AND TO_DATE(%s, 'DD-MM-YYYY')) AS subquery WHERE row_num = 1 ORDER BY data_idx DESC LIMIT %s OFFSET %s;", (DeviceImei, FromDate, ToDate, Record_Count, Offset_Record,))
 
-                                if(cursor.rowcount >= 1):
+                                if(len(trips_data_adapter) >= 1):
 
-                                    trips_data_adapter = cursor.fetchall()
                                     TripsData = []
 
                                     for trip in trips_data_adapter:
@@ -1593,7 +1637,7 @@ def trips_history_replay():
 
                                     return reply('success', 200, 'Trips Data Found', TripsData)
                                     
-                                elif(cursor.rowcount == 0):
+                                elif(len(trips_data_adapter) == 0):
                                     return reply('error', 400, 'No Trips Found', '')
                                 else:
                                     return reply('error', 400, 'Unable to complete request', '')
@@ -1611,6 +1655,16 @@ def trips_history_replay():
             
             elif(device_billing_check == 'not-found'):
                 return reply('error', 400, 'Routing Failed, Device Cant be found', '')
+
+            # B3d: the final else that was missing here.
+            #
+            # check_device() returns None when its rowcount is neither 1
+            # nor 0, and None matched none of the arms above, so control
+            # fell through into the mis-merged Excel export in this
+            # function's tail, building an .xlsx for a caller that
+            # asked for replay JSON.
+            else:
+                return reply('error', 400, 'Unable to complete request', '')
             
         else:
             return reply('error', 400, 'Something Is Missing', '')
