@@ -679,15 +679,39 @@ def ComputeTrips_EXCELL():
             SelectedFuel_Level = ''
             SelectedDriverID = ''
 
+            # B3: positions come from the live store.
+            #
+            # The Postgres copy of dll_location_registry ends 01-08-2025 and
+            # the Cassandra store begins 05-08-2025 -- no shared day -- so this
+            # export returned nothing for every recent date.
+            #
+            # Read BEFORE `with dbconnect:` on purpose: that block commits when
+            # it exits, a `return` included, so a 503 raised inside it would
+            # leave an orphan row in dll_reports_downloadable_files.
+            try:
+                _position_fixes, _positions_truncated = location_store.fixes(
+                    get_cassandra_session(), DeviceImei, FromDate, ToDate,
+                    limit=Record_Count, offset=Offset_Record)
+            except location_store.PositionsUnavailable as error:
+                logging.warning('ComputeTrips_EXCELL: position store unavailable: %s',
+                                error)
+                return reply('error', 503,
+                             'Position data is temporarily unavailable, '
+                             'please retry', '')
+
+            raw_data_adapter = [location_store.as_history_tuple(_fix)
+                                for _fix in _position_fixes]
             with dbconnect:
                 with dbconnect.cursor() as cursor:
-                    cursor.execute("INSERT INTO dll_reports_downloadable_files (request_uid, file_path, report_caller, request_status) VALUES(%s, %s, %s, %s)", (str(OriginRequest_UID), 'NO_DIR_PATH', OriginUser_UID, 'in_process',))
+                    # B12: the inline INSERT that stood here is gone. LogReport_Request()
+                    # above already inserted this row -- with request_datestamp, which
+                    # this one omitted -- so every excel export left TWO rows and made
+                    # report_status answer "Unable to complete request" while the file
+                    # sat on the CDN. ComputeTrips_PDF never had this line.
 
-                    cursor.execute("SELECT data_longitude, data_latitude, speed_log, data_hdop, local_system_datestamp, record_io_events_uid, geocoded_location, local_system_timestamp, data_connected_satelites, batch_uid, data_idx, ROW_NUMBER() OVER (ORDER BY data_idx DESC) AS row_index FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY data_longitude, data_latitude ORDER BY data_idx DESC) AS row_num FROM dll_location_registry WHERE data_device_imei = %s AND TO_DATE(local_system_datestamp, 'DD-MM-YYYY') BETWEEN TO_DATE(%s, 'DD-MM-YYYY') AND TO_DATE(%s, 'DD-MM-YYYY')) AS subquery WHERE row_num = 1 ORDER BY data_idx DESC LIMIT %s OFFSET %s;", (str(DeviceImei), FromDate, ToDate, Record_Count, Offset_Record,))
 
-                    if(cursor.rowcount >= 1):
+                    if(len(raw_data_adapter) >= 1):
                         
-                        raw_data_adapter = cursor.fetchall()
                         
                         for Trip in raw_data_adapter:
                             
@@ -875,7 +899,7 @@ def ComputeTrips_EXCELL():
 
                         return reply('success', 200, 'Processing Excell Report, Keep Checking', '')
 
-                    elif(cursor.rowcount == 0):
+                    elif(len(raw_data_adapter) == 0):
                         cursor.execute("UPDATE dll_reports_downloadable_files SET request_status='no-data' WHERE request_uid=%s;", (str(OriginRequest_UID),))
                         return reply('error', 400, 'No Trips Data Found', '')
                     
@@ -920,13 +944,33 @@ def ComputeTrips_PDF():
             SelectedFuel_Level = ''
             SelectedDriverID = ''
 
+            # B3: positions come from the live store.
+            #
+            # The Postgres copy of dll_location_registry ends 01-08-2025 and
+            # the Cassandra store begins 05-08-2025 -- no shared day -- so this
+            # export returned nothing for every recent date.
+            #
+            # Read BEFORE `with dbconnect:` on purpose: that block commits when
+            # it exits, a `return` included, so a 503 raised inside it would
+            # leave an orphan row in dll_reports_downloadable_files.
+            try:
+                _position_fixes, _positions_truncated = location_store.fixes(
+                    get_cassandra_session(), DeviceImei, FromDate, ToDate,
+                    limit=Record_Count, offset=Offset_Record)
+            except location_store.PositionsUnavailable as error:
+                logging.warning('ComputeTrips_PDF: position store unavailable: %s',
+                                error)
+                return reply('error', 503,
+                             'Position data is temporarily unavailable, '
+                             'please retry', '')
+
+            raw_data_adapter = [location_store.as_history_tuple(_fix)
+                                for _fix in _position_fixes]
             with dbconnect:
                 with dbconnect.cursor() as cursor:
-                    cursor.execute("SELECT data_longitude, data_latitude, speed_log, data_hdop, local_system_datestamp, record_io_events_uid, geocoded_location, local_system_timestamp, data_connected_satelites, batch_uid, data_idx, ROW_NUMBER() OVER (ORDER BY data_idx DESC) AS row_index FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY data_longitude, data_latitude ORDER BY data_idx DESC) AS row_num FROM dll_location_registry WHERE data_device_imei = %s AND TO_DATE(local_system_datestamp, 'DD-MM-YYYY') BETWEEN TO_DATE(%s, 'DD-MM-YYYY') AND TO_DATE(%s, 'DD-MM-YYYY')) AS subquery WHERE row_num = 1 ORDER BY data_idx DESC LIMIT %s OFFSET %s;", (str(DeviceImei), FromDate, ToDate, Record_Count, Offset_Record,))
 
-                    if(cursor.rowcount >= 1):
+                    if(len(raw_data_adapter) >= 1):
                         
-                        raw_data_adapter = cursor.fetchall()
                         
                         for Trip in raw_data_adapter:
                             
@@ -1109,7 +1153,7 @@ def ComputeTrips_PDF():
 
                         return reply('success', 200, 'Processing Report, Keep Checking', '')
 
-                    elif(cursor.rowcount == 0):
+                    elif(len(raw_data_adapter) == 0):
                         cursor.execute("UPDATE dll_reports_downloadable_files SET request_status='no-data' WHERE request_uid=%s;", (str(OriginRequest_UID),))
                         return reply('error', 400, 'No Trips Data Found', '')
                     
