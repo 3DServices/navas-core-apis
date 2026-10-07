@@ -31,6 +31,7 @@ import os
 from .globals import CheckHardware2
 from . import location_store
 from . import io_events_store
+from . import stops
 from math import radians, sin, cos, sqrt, atan2
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib.pagesizes import landscape
@@ -2840,4 +2841,128 @@ def geozone_report_data():
                 else:
                     return reply('error', 400, 'No Geozone Events Found', '')
     except Exception as error:
+        return reply('error', 500, str(error), '')
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# B4 — STOPS
+#
+# A stop is an aggregation over CONTIGUOUS fixes, so it cannot be derived from
+# a paginated slice of them: a page boundary cuts a run in half and gives its
+# edges a dwell that differs between pages.  trips/history paginates fixes, so
+# stops live here instead, reading their window unpaginated and paginating the
+# stops themselves.  Detection logic is in endpoints/stops.py (pure, tested).
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Tighter than trips/history's 92-day span, because this path cannot stop
+# reading early.  The busiest unit writes ~13,400 fixes a day, so 31 days is
+# ~415,000 — already at location_store.MAX_ROWS.  Rejecting a longer range with
+# a clear 400 beats letting MAX_ROWS raise and answering 503, which would tell
+# the caller to retry something that can never succeed.
+STOPS_MAX_DAYS = 31
+
+
+#derive stops (arrival, departure, dwell) from the live position store
+@data_stream.route("/data-stream/trips/stops", methods=["POST"])
+def trips_stops():
+
+    try:
+
+        payload_data = request.get_json(silent=True) or {}
+        request_data = payload_data.get('data') or {}
+
+        DeviceImei = str(request_data.get('device_imei') or '').strip()
+        FromDate = str(request_data.get('from_date') or '').strip()
+        ToDate = str(request_data.get('to_date') or '').strip()
+
+        if (len(DeviceImei) < 5) or (len(FromDate) < 5) or (len(ToDate) < 5):
+            return reply('error', 400,
+                         'device_imei, from_date and to_date are required', '')
+
+        # days_in() is location_store's own parser, so the date formats this
+        # route accepts cannot drift from the ones the read accepts.
+        TheDays, RangeTruncated = location_store.days_in(FromDate, ToDate)
+
+        if not TheDays:
+            return reply('error', 400,
+                         'from_date and to_date did not parse as dates', '')
+
+        if len(TheDays) > STOPS_MAX_DAYS:
+            return reply('error', 400,
+                         'Stops can be derived for at most %d days at a time; '
+                         'this request spans %d days'
+                         % (STOPS_MAX_DAYS, len(TheDays)), '')
+
+        DetectionSettings = {}
+
+        for FieldName, Caster in (('stationary_speed', float),
+                                  ('min_dwell_seconds', int),
+                                  ('max_gap_seconds', int)):
+            if request_data.get(FieldName) is not None:
+                try:
+                    DetectionSettings[FieldName] = Caster(request_data[FieldName])
+                except (TypeError, ValueError):
+                    return reply('error', 400,
+                                 '%s must be a number' % FieldName, '')
+
+        device_billing_check = check_device(DeviceImei)
+
+        if(device_billing_check != 'running'):
+            return reply('error', 403,
+                         'This device is not currently running', '')
+
+        # dedupe_coordinates=False is essential, not an option: the dedupe
+        # keeps one fix per (lon, lat) — the latest — which discards the
+        # arrival time, the very quantity being measured.
+        #
+        # limit=None takes the full-read path, guarded by MAX_ROWS.  The day
+        # cap above means that guard should not fire.
+        try:
+            TheFixes, FixesTruncated = location_store.fixes(
+                get_cassandra_session(), DeviceImei, FromDate, ToDate,
+                dedupe_coordinates=False, limit=None, newest_first=False)
+        except location_store.PositionsUnavailable as error:
+            logging.warning('trips_stops: position store unavailable: %s', error)
+            return reply('error', 503,
+                         'Position data is temporarily unavailable, please retry',
+                         '')
+
+        StopsResult = stops.detect(TheFixes, **DetectionSettings)
+
+        StopsFound = StopsResult['stops']
+        StopsTotal = len(StopsFound)
+
+        # Pagination applies to STOPS, not to fixes.
+        try:
+            Offset_Record = max(0, int(request_data.get('offset_log') or 0))
+        except (TypeError, ValueError):
+            Offset_Record = 0
+
+        try:
+            Record_Count = int(request_data.get('record_count') or 0)
+        except (TypeError, ValueError):
+            Record_Count = 0
+
+        if Record_Count > 0:
+            StopsResult['stops'] = StopsFound[
+                Offset_Record:Offset_Record + Record_Count]
+        else:
+            StopsResult['stops'] = StopsFound[Offset_Record:]
+
+        StopsResult['stops_total'] = StopsTotal
+        StopsResult['offset_log'] = Offset_Record
+        StopsResult['record_count'] = Record_Count
+        StopsResult['days_requested'] = len(TheDays)
+        StopsResult['range_truncated'] = bool(RangeTruncated or FixesTruncated)
+
+        if StopsTotal == 0:
+            # 400 with the body kept, matching 'No Trips Found' in this file.
+            # The body still carries fix_count and speed_trustworthy, so a
+            # caller can tell "it never stopped" from "we could not tell".
+            return reply('error', 400, 'No Stops Found', StopsResult)
+
+        return reply('success', 200, 'Stops Found', StopsResult)
+
+    except Exception as error:
+        logging.exception('trips_stops failed')
         return reply('error', 500, str(error), '')
