@@ -1,3 +1,5 @@
+from .globals import STORE_UNAVAILABLE
+import logging
 from flask import Flask
 from flask import Blueprint
 from flask import request
@@ -117,6 +119,9 @@ def TripsLoader():
         _dbconnect = psycopg2.connect(current_app.config['db_link'])
         _payload_data = request.get_json()
         _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            logging.warning('TripsLoader: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         _ReportFormat = str(_payload_data['data']['report_format'])
         _ReportDevices = _payload_data['data']['report_devices']
@@ -233,7 +238,8 @@ def TripsLoader_ByExcel_File():
 
         _cassandra_session: Session = get_cassandra_session()
         if not _cassandra_session:
-            print("Failed to get Cassandra session. Cannot process data.")
+            logging.warning('TripsLoader_ByExcel_File: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         _ReportDevices = _payload_data['data']['report_devices']
         _StartReport_Date = str(_payload_data['data']['start_date'])
@@ -381,7 +387,8 @@ def TripsLoader_ByPDF_File():
 
         _cassandra_session = get_cassandra_session()
         if not _cassandra_session:
-            print("Failed to get Cassandra session. Cannot process data.")
+            logging.warning('TripsLoader_ByPDF_File: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         _ReportDevices = _payload_data['data']['report_devices']
         _StartReport_Date = str(_payload_data['data']['start_date'])
@@ -606,7 +613,8 @@ def FuelLevelReport_ByFile():
         # Cassandra session
         _cassandra_session: Session = get_cassandra_session()
         if not _cassandra_session:
-            print("Failed to get Cassandra session. Cannot process data.")
+            logging.warning('FuelLevelReport_ByFile: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         _ReportDevices = _payload_data['data']['report_devices']
         _StartReport_Date = str(_payload_data['data']['start_date'])
@@ -767,7 +775,8 @@ def FuelLevelReport_ByPDF():
         _dbconnect = psycopg2.connect(current_app.config['db_link'])
         _cassandra_session = get_cassandra_session()
         if not _cassandra_session:
-            print("Failed to get Cassandra session. Cannot process data.")
+            logging.warning('FuelLevelReport_ByPDF: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         _payload_data = request.get_json()
         _ReportDevices = _payload_data['data']['report_devices']
@@ -954,7 +963,8 @@ def NightDrivingReport_ByExcell():
         # Cassandra session
         _cassandra_session: Session = get_cassandra_session()
         if not _cassandra_session:
-            print("Failed to get Cassandra session. Cannot process data.")
+            logging.warning('NightDrivingReport_ByExcell: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         _ReportDevices = _payload_data['data']['report_devices']
         _StartDate = _payload_data['data']['start_date']

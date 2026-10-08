@@ -125,7 +125,7 @@ check('no app context: scrub_secrets() still works',
 
 # the 503 guard is in trips_history, not somewhere else in data.py
 source = io.open(
-    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__, encoding='utf-8'))),
                  'endpoints', 'data.py'),
     'rb').read().decode('utf-8').replace('\r\n', '\n')
 

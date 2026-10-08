@@ -111,7 +111,7 @@ def reply_literals(node):
 def main():
     write = '--write' in sys.argv
 
-    with io.open(TARGET, 'r', newline='') as handle:
+    with io.open(TARGET, 'r', newline='', encoding='utf-8') as handle:
         src = handle.read()
     lines = src.splitlines(keepends=True)
 
@@ -291,7 +291,7 @@ def main():
         print('dry run -- nothing written. Re-run with --write to apply.')
         return 0
 
-    with io.open(TARGET, 'w', newline='') as handle:
+    with io.open(TARGET, 'w', newline='', encoding='utf-8') as handle:
         handle.write(out)
     print('')
     print('written.')

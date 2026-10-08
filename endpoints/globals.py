@@ -181,6 +181,12 @@ def _configured_secrets():
     return tuple(secrets)
 
 
+# The one message for "the data store could not be read". 503, not 500: a
+# cold handshake or a brief outage is retryable, and 500 tells a client not to
+# retry. Twelve routes used to answer 500 with an AttributeError's text
+# instead, because they called .prepare() on a None session.
+STORE_UNAVAILABLE = 'Device data is temporarily unavailable, please retry'
+
 def reply(status, status_code, message_body, data):
 
     safe_message = scrub_secrets(message_body, _configured_secrets())

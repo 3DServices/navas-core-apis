@@ -86,7 +86,7 @@ def fail(message):
 
 
 def read(path):
-    with io.open(path, 'r', newline='') as handle:
+    with io.open(path, 'r', newline='', encoding='utf-8') as handle:
         text = handle.read()
     newline = '\r\n' if '\r\n' in text else '\n'
     if newline == '\r\n' and text.count('\r\n') != text.count('\n'):
@@ -297,7 +297,7 @@ def main():
         return 0
 
     for path, (text, nl) in results.items():
-        with io.open(path, 'w', newline='') as handle:
+        with io.open(path, 'w', newline='', encoding='utf-8') as handle:
             handle.write(text)
     print('')
     print('written: %d files.' % len(results))

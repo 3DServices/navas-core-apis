@@ -96,7 +96,7 @@ def main():
     print('\n' + '=' * 72)
     print('2. DOES reply() SANITISE ANYTHING?')
     print('=' * 72)
-    g = io.open(os.path.join('endpoints', 'globals.py'),
+    g = io.open(os.path.join('endpoints', 'globals.py', encoding='utf-8'),
                 encoding='utf-8', errors='ignore').read()
     m = re.search(r'def reply\(.*?\n(?:.*\n){0,24}', g)
     if m:

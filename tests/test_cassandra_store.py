@@ -35,7 +35,7 @@ WANTED = ('_build', 'get_cassandra_session', 'connect_eagerly',
 
 def load():
     """Compile the module's functions without importing the driver."""
-    src = io.open(MODULE, 'r', newline='').read().replace('\r\n', '\n')
+    src = io.open(MODULE, 'r', newline='', encoding='utf-8').read().replace('\r\n', '\n')
     tree = ast.parse(src)
     kept = [n for n in tree.body
             if isinstance(n, ast.FunctionDef) and n.name in WANTED]

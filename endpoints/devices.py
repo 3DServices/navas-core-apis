@@ -1,3 +1,4 @@
+from .globals import STORE_UNAVAILABLE
 from flask import Flask
 from flask import Blueprint
 from flask import request
@@ -55,7 +56,7 @@ def register_device():
 
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     payload_data = request.get_json()
 
     try:
@@ -106,7 +107,7 @@ def get_devices():
 
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     payload_data = request.get_json()
 
     try:
@@ -215,7 +216,7 @@ def get_devices():
 def get_configured_devices():
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     payload_data = request.get_json()
 
     try:
@@ -421,7 +422,7 @@ def get_configured_devices():
 def get_system32_configured_devices():
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     payload_data = request.get_json()
 
     try:
@@ -631,7 +632,7 @@ def action():
 
             _cassandra_session = get_cassandra_session()
             if not _cassandra_session:
-                return reply('error', 500, 'Failed to connect to Cassandra', '')
+                return reply('error', 503, STORE_UNAVAILABLE, '')
 
             logs = []
 
@@ -724,7 +725,7 @@ def action():
 def ClientConfigured_Devices(client_id):
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     try:
         if(len(str(client_id)) > 5):
             AccountID = str(client_id)
@@ -809,7 +810,7 @@ def FilterRequest(client_uid, group_uid):
     # accessor, so on a cold worker it raised AttributeError on None.
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
 
     try:
         ClientID = str(client_uid)
@@ -986,7 +987,7 @@ def FilterRequest(client_uid, group_uid):
 def single_configured_device(device_imei):
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     try:
         if(len(str(device_imei)) > 4):
             _basic_data_query = _cassandra_session.prepare("SELECT device_name, device_simcard, device_car_make, device_car_model, device_vin_number, device_car_type, events_attached, device_billing_status, device_client FROM dll_device_basic_data WHERE device_imei = ?")
@@ -1507,6 +1508,9 @@ def update_device():
         dbconnect = psycopg2.connect(current_app.config['db_link'])
         update_payload = request.get_json()
         _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            logging.warning('update_device: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         if (
             len(str(update_payload['data']['device_imei'])) > 4
@@ -1738,7 +1742,7 @@ def sync_client_devices():
     """
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
 
     try:
         rows = _cassandra_session.execute(

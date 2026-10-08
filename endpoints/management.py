@@ -1,3 +1,4 @@
+from .globals import STORE_UNAVAILABLE
 from flask import Flask
 from flask import Blueprint
 from flask import request
@@ -81,7 +82,7 @@ def Immobilize():
     try:
         cassandra_session = get_cassandra_session()
         if cassandra_session is None:
-            return reply('error', 500, 'Cassandra connection failed', '')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         payload_data = request.get_json()
 
@@ -297,7 +298,7 @@ def RestoreImmobilize():
     try:
         cassandra_session = get_cassandra_session()
         if cassandra_session is None:
-            return reply('error', 500, 'Cassandra connection failed', '')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         dbconnect = psycopg2.connect(current_app.config['db_link'])
         payload_data = request.get_json()

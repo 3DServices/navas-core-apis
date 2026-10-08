@@ -1,3 +1,5 @@
+from .globals import STORE_UNAVAILABLE
+import threading
 from flask import Flask
 from flask import Blueprint
 from flask import request
@@ -321,6 +323,47 @@ def Config_Sources(GetThis, target_device_imei, target_io_records, target_actual
         else:
             return 'No-Configuration'
 
+# B8: distancematrix.ai plumbing.
+#
+# A Session is not documented as thread-safe, and one built before fork()
+# holds the parent's sockets, so it is kept per thread AND per process -- the
+# same pid guard cassandra_store.py uses for Cassandra.
+_distance_local = threading.local()
+
+# (connect, read). Without this a hung call blocks the worker for ever.
+DISTANCE_TIMEOUT = (5, 15)
+
+# Only SUCCESSFUL lookups land here. Caching a CORDS_ERROR would turn one
+# transient failure into a permanent wrong answer for the life of the process.
+_DISTANCE_CACHE = {}
+_DISTANCE_CACHE_MAX = 2048
+_distance_cache_lock = threading.Lock()
+
+
+def _distance_http():
+    """A requests.Session for this thread in this process."""
+    pid = os.getpid()
+    session = getattr(_distance_local, 'session', None)
+    if session is None or getattr(_distance_local, 'pid', None) != pid:
+        session = requests.Session()
+        _distance_local.session = session
+        _distance_local.pid = pid
+    return session
+
+
+def _distance_cache_get(key):
+    return _DISTANCE_CACHE.get(key)
+
+
+def _distance_cache_put(key, value):
+    with _distance_cache_lock:
+        if len(_DISTANCE_CACHE) >= _DISTANCE_CACHE_MAX:
+            # Cheap bound. Road distances do not change often enough to earn
+            # a full LRU, and an unbounded dict in a long-lived worker does.
+            _DISTANCE_CACHE.clear()
+        _DISTANCE_CACHE[key] = value
+
+
 def Calculate_DistanceX(Origin_Lat, Origin_Long, To_Lat, To_Long):
     """Road distance and duration between two points, as a JSON string.
 
@@ -328,29 +371,60 @@ def Calculate_DistanceX(Origin_Lat, Origin_Long, To_Lat, To_Long):
     must return JSON — returning a bare word breaks trip history with a
     JSONDecodeError rather than degrading. 'CORDS_ERROR' is the marker the
     callers already understand for "no distance available".
+
+    B8: now cached, connection-reusing, and bounded by a timeout. A network
+    failure is reported as CORDS_ERROR like any other failure, and is NOT
+    cached.
     """
     # The distancematrix.ai key used to be written into the URL below.
     from config import DISTANCEMATRIX_API_KEY
     if not DISTANCEMATRIX_API_KEY:
         return json.dumps({"distance_covered": 'CORDS_ERROR',
                            "time_covered": "Nothing"})
-    RequestData = requests.get(f"https://api.distancematrix.ai/maps/api/distancematrix/json?origins={Origin_Lat}, {Origin_Long}&destinations={To_Lat}, {To_Long}&key={DISTANCEMATRIX_API_KEY}")
-    api_data = RequestData.json()
-    
-    if(api_data['rows'][0]['elements'][0]['status'] != 'ZERO_RESULTS') and (api_data['rows'][0]['elements'][0]['status'] == 'OK'):
 
-        KiloMeters_Covered = re.sub(r'[^\d.]', '', str(api_data['rows'][0]['elements'][0]['distance']['text']))
-        TimeCovered = re.sub(r'[^\d.]', '', str(api_data['rows'][0]['elements'][0]['duration']['text']))
+    cache_key = (str(Origin_Lat), str(Origin_Long), str(To_Lat), str(To_Long))
+    cached = _distance_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        RequestData = _distance_http().get(
+            "https://api.distancematrix.ai/maps/api/distancematrix/json",
+            params={"origins": f"{Origin_Lat}, {Origin_Long}",
+                    "destinations": f"{To_Lat}, {To_Long}",
+                    "key": DISTANCEMATRIX_API_KEY},
+            timeout=DISTANCE_TIMEOUT)
+        api_data = RequestData.json()
+    except Exception as error:      # noqa: BLE001 — timeouts, DNS, bad JSON
+        # Logged, not returned: the key is in the request and requests puts
+        # the URL in its exception text.
+        logging.warning('Calculate_DistanceX: %s', type(error).__name__)
+        return json.dumps({"distance_covered": 'CORDS_ERROR',
+                           "time_covered": "Nothing"})
+
+    try:
+        element = api_data['rows'][0]['elements'][0]
+    except (KeyError, IndexError, TypeError):
+        return json.dumps({"distance_covered": 'CORDS_ERROR',
+                           "time_covered": "Nothing"})
+
+    if element.get('status') == 'OK':
+
+        KiloMeters_Covered = re.sub(r'[^\d.]', '', str(element['distance']['text']))
+        TimeCovered = re.sub(r'[^\d.]', '', str(element['duration']['text']))
 
         data_xc = {
             "distance_covered": KiloMeters_Covered,
             "time_covered": TimeCovered
         }
 
-        return json.dumps(data_xc)
-    
-    # Any other status (OVER_QUERY_LIMIT, REQUEST_DENIED, NOT_FOUND) used to
-    # fall off the end and return None, which json.loads() then choked on.
+        answer = json.dumps(data_xc)
+        _distance_cache_put(cache_key, answer)
+        return answer
+
+    # Any other status (ZERO_RESULTS, OVER_QUERY_LIMIT, REQUEST_DENIED,
+    # NOT_FOUND) used to fall off the end and return None, which json.loads()
+    # then choked on. Not cached: OVER_QUERY_LIMIT is transient.
     return json.dumps({"distance_covered": 'CORDS_ERROR',
                        "time_covered": "Nothing"})
 
@@ -430,6 +504,9 @@ def find_trips(data_points):
                 # Check if distance between start and end points exceeds threshold
                 min_trip_distance = 1  # Minimum trip distance in kilometers
                 if distance > min_trip_distance:
+                    # B8: carry the number we just paid for. Every caller used
+                    # to ask distancematrix.ai again for these same two points.
+                    current_trip["distance_km"] = distance
                     trips.append(current_trip)
 
             trip_started = False
@@ -811,9 +888,17 @@ def ComputeTrips_EXCELL():
                                     End_Lat = trip["end_point"]["data_latitude"]
                                     End_Long = trip["end_point"]["data_longitude"]
 
-                                    distance_pool_x = Calculate_DistanceX(Starting_Lat, Starting_Long, End_Lat, End_Long)
-                                    distance_data = json.loads(distance_pool_x)
-                                    distance = float(distance_data["distance_covered"])
+                                    # B8: find_trips() already measured this pair.
+                                    distance = trip.get("distance_km")
+                                    if distance is None:
+                                        distance_data = json.loads(Calculate_DistanceX(
+                                            Starting_Lat, Starting_Long, End_Lat, End_Long))
+                                        raw_distance = distance_data["distance_covered"]
+                                        # float('CORDS_ERROR') raised a ValueError and
+                                        # 500'd the export. trips_history guarded this
+                                        # and these two did not.
+                                        distance = (float(raw_distance)
+                                                    if raw_distance != 'CORDS_ERROR' else 0)
 
                                     OneTrip_Object = {
                                         "trip_number": i,
@@ -1071,9 +1156,17 @@ def ComputeTrips_PDF():
                                     End_Lat = trip["end_point"]["data_latitude"]
                                     End_Long = trip["end_point"]["data_longitude"]
 
-                                    distance_pool_x = Calculate_DistanceX(Starting_Lat, Starting_Long, End_Lat, End_Long)
-                                    distance_data = json.loads(distance_pool_x)
-                                    distance = float(distance_data["distance_covered"])
+                                    # B8: find_trips() already measured this pair.
+                                    distance = trip.get("distance_km")
+                                    if distance is None:
+                                        distance_data = json.loads(Calculate_DistanceX(
+                                            Starting_Lat, Starting_Long, End_Lat, End_Long))
+                                        raw_distance = distance_data["distance_covered"]
+                                        # float('CORDS_ERROR') raised a ValueError and
+                                        # 500'd the export. trips_history guarded this
+                                        # and these two did not.
+                                        distance = (float(raw_distance)
+                                                    if raw_distance != 'CORDS_ERROR' else 0)
 
                                     OneTrip_Object = {
                                         "trip_number": i,
@@ -1420,7 +1513,15 @@ def trips_history():
                                                 End_Lat = trip["end_point"]["data_latitude"]
                                                 End_Long = trip["end_point"]["data_longitude"]
 
-                                                distance_pool_x = Calculate_DistanceX(Starting_Lat, Starting_Long, End_Lat, End_Long)
+                                                # B8: find_trips() already measured this pair;
+                                                # only ask the API if it did not.
+                                                _carried = trip.get("distance_km")
+                                                distance_pool_x = (
+                                                    json.dumps({"distance_covered": str(_carried),
+                                                                "time_covered": "carried"})
+                                                    if _carried is not None else
+                                                    Calculate_DistanceX(Starting_Lat, Starting_Long,
+                                                                        End_Lat, End_Long))
                                                 # Calculate_DistanceX returns a JSON STRING, as its own
                                                 # docstring states and as the excel and pdf routes already
                                                 # do. .get_json() is a response-object method, so this
@@ -2330,6 +2431,9 @@ def trips_report_data():
         dbconnect = psycopg2.connect(current_app.config['db_link'])
         payload_data = request.get_json()
         _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            logging.warning('trips_report_data: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         report_devices = payload_data['data']['report_devices']
         start_date = str(payload_data['data']['start_date'])
@@ -2461,6 +2565,9 @@ def night_driving_report_data():
         dbconnect = psycopg2.connect(current_app.config['db_link'])
         payload_data = request.get_json()
         _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            logging.warning('night_driving_report_data: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         report_devices = payload_data['data']['report_devices']
         start_date = str(payload_data['data']['start_date'])
@@ -2564,6 +2671,9 @@ def state_report_data():
         dbconnect = psycopg2.connect(current_app.config['db_link'])
         payload_data = request.get_json()
         _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            logging.warning('state_report_data: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         report_devices = payload_data['data']['report_devices']
         start_date = str(payload_data['data']['start_date'])
@@ -2677,6 +2787,9 @@ def overspeeding_report_data():
         dbconnect = psycopg2.connect(current_app.config['db_link'])
         payload_data = request.get_json()
         _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            logging.warning('overspeeding_report_data: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         report_devices = payload_data['data']['report_devices']
         start_date = str(payload_data['data']['start_date'])
@@ -2768,6 +2881,9 @@ def geozone_report_data():
         dbconnect = psycopg2.connect(current_app.config['db_link'])
         payload_data = request.get_json()
         _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            logging.warning('geozone_report_data: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
         report_devices = payload_data['data']['report_devices']
         start_date = str(payload_data['data']['start_date'])
         end_date = str(payload_data['data']['end_date'])

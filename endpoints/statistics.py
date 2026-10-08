@@ -1,3 +1,4 @@
+from .globals import STORE_UNAVAILABLE
 from flask import Blueprint, jsonify, current_app
 import psycopg2
 import psycopg2.extras
@@ -853,7 +854,7 @@ def DebugHeartbeat(device_imei):
         cassandra_session = get_cassandra_session()
         
         if not cassandra_session:
-            return response_out("error", "Failed to connect to Cassandra", 500, {})
+            return response_out("error", STORE_UNAVAILABLE, 503, {})
         
         # Get raw heartbeat data
         query = cassandra_session.prepare(
@@ -900,7 +901,7 @@ def DebugMissingDevices():
         cassandra_session = get_cassandra_session()
         
         if not cassandra_session:
-            return response_out("error", "Failed to connect to Cassandra", 500, {})
+            return response_out("error", STORE_UNAVAILABLE, 503, {})
         
         # Today's date
         today = datetime.now().strftime("%d-%m-%Y")
@@ -953,7 +954,7 @@ def GetUnitsOnlineWholeSystem():
         cassandra_session = get_cassandra_session()
         
         if not cassandra_session:
-            return response_out("error", "Failed to connect to Cassandra", 500, {})
+            return response_out("error", STORE_UNAVAILABLE, 503, {})
         
         with dbconnect:
             with dbconnect.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
@@ -1013,7 +1014,7 @@ def GetUnitsOnlineByClient(client_uid):
         cassandra_session = get_cassandra_session()
         
         if not cassandra_session:
-            return response_out("error", "Failed to connect to Cassandra", 500, {})
+            return response_out("error", STORE_UNAVAILABLE, 503, {})
         
         with dbconnect:
             with dbconnect.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
@@ -1078,7 +1079,7 @@ def GetUnitsOfflineWholeSystem():
         cassandra_session = get_cassandra_session()
         
         if not cassandra_session:
-            return response_out("error", "Failed to connect to Cassandra", 500, {})
+            return response_out("error", STORE_UNAVAILABLE, 503, {})
         
         with dbconnect:
             with dbconnect.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
@@ -1138,7 +1139,7 @@ def GetUnitsOfflineByClient(client_uid):
         cassandra_session = get_cassandra_session()
         
         if not cassandra_session:
-            return response_out("error", "Failed to connect to Cassandra", 500, {})
+            return response_out("error", STORE_UNAVAILABLE, 503, {})
         
         with dbconnect:
             with dbconnect.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:

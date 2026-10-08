@@ -1,3 +1,4 @@
+from .globals import STORE_UNAVAILABLE
 from flask import Flask
 from flask import Blueprint
 from flask import request
@@ -57,7 +58,7 @@ from .cassandra_store import get_cassandra_session
 def new_configs():
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     dbconnect = psycopg2.connect(current_app.config["db_link"])
 
     payload_data = request.get_json()
@@ -409,7 +410,7 @@ def SubscriptionInitialize(ImeiNumber, TokenSubscriptionIdg):
 def create_new_device_configuration():
     cassandra = get_cassandra_session()
     if not cassandra:
-        return reply("error", 500, "Failed to connect to Cassandra", "")
+        return reply("error", 503, STORE_UNAVAILABLE, "")
 
     try:
         _ensure_cassandra_keyspace(cassandra)
@@ -587,7 +588,7 @@ def create_new_device_configuration():
 def update_configs():
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     dbconnect = psycopg2.connect(current_app.config["db_link"])
 
     payload_data = request.get_json()
@@ -721,7 +722,7 @@ def update_configs():
 def get_config(device_imei, parameter_load, parameter_type):
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
 
     try:
         select_config_query = _cassandra_session.prepare(
