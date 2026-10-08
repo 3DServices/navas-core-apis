@@ -96,6 +96,16 @@ app.config['db_link'] = DB_LINK
 # context ends, instead of leaving it to refcounting.
 from endpoints.globals import close_read_connection as _close_read_connection
 app.teardown_appcontext(_close_read_connection)
+
+
+# B9: connect to Cassandra on a background thread now, and again in each
+# forked worker, so the first request that needs the store does not pay the
+# 6-7s handshake (or time out and answer 503, which was observed twice).
+# Works whether gunicorn runs with preload_app on or off; see
+# endpoints/cassandra_store.py. Never raises and never blocks startup.
+from endpoints.cassandra_store import start_warmup as _start_cassandra_warmup
+_start_cassandra_warmup()
+
 app.config['base_url'] = BASE_URL
 
 

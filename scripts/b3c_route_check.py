@@ -69,6 +69,7 @@ ROUTE = '/data-stream/trips/history/replay'
 EMPTY_UNIT = '867556044727322'
 
 RESULTS = []
+COLD_STARTS = []
 
 
 def record(label, ok, blocked, detail):
@@ -97,6 +98,28 @@ def call(client, imei, start, end, count=200, t_from=None, t_to=None):
                 payload.get('data'), _time.time() - began)
     except Exception as error:                            # noqa: BLE001
         return 0, 'EXCEPTION %s' % error, None, _time.time() - began
+
+
+def call_retrying_cold_start(client, *a, **kw):
+    """call(), retried once on a 503, returning (result, cold_start).
+
+    503 from this route means "the position store could not be read, retry" —
+    a documented-retryable answer. A checker that will not retry it goes red
+    every time the Cassandra handshake times out at cold start, which is B9,
+    not a fault in the route under test.
+
+    So retry ONCE and report the cold start loudly. Nothing is hidden: a
+    second 503 is still a hard failure, because that is no longer a cold
+    start, it is a store that cannot be read.
+    """
+    result = call(client, *a, **kw)
+    if result[0] != 503:
+        return result, False
+    print('        .. 503 on the first call (%.1fs). Retrying once: a cold'
+          % result[3])
+    print('           Cassandra handshake is B9, not this route.')
+    _time.sleep(2)
+    return call(client, *a, **kw), True
 
 
 def clock_of(fix):
@@ -149,13 +172,21 @@ def main():
     print('')
 
     # ---- 1. untimed
-    code, message, data, took = call(client, args.imei, args.day, args.day)
+    #
+    # First call of the run, so it pays the Cassandra handshake. See
+    # call_retrying_cold_start().
+    (code, message, data, took), cold = \
+        call_retrying_cold_start(client, args.imei, args.day, args.day)
     fixes = data if isinstance(data, list) else []
     blocked = billing_blocked(message)
     record('untimed, one day', code == 200 and bool(fixes), blocked,
-           'HTTP %s %r  %d fixes  %.1fs' % (code, message[:30], len(fixes), took))
+           'HTTP %s %r  %d fixes  %.1fs%s'
+           % (code, message[:30], len(fixes), took,
+              '  [after a cold-start 503]' if cold else ''))
     if fixes:
         print('        %s' % summarise(fixes))
+    if cold:
+        COLD_STARTS.append('untimed, one day')
 
     # ---- 2. timed, one day: span and clock window agree
     code, message, data, took = call(client, args.imei, args.day, args.day,
@@ -265,6 +296,14 @@ def main():
         print('')
         print('   Those prove nothing: the route checks the device registry')
         print('   and billing before reading a position.')
+
+    if COLD_STARTS:
+        print('')
+        print('   B9 observed live: the first Cassandra connect of the run')
+        print('   timed out and answered 503, and the retry succeeded (%s).'
+              % ', '.join(COLD_STARTS))
+        print('   The route answered correctly — "could not look", not a')
+        print('   wrong answer — but a real client saw a failed request.')
 
     if bad:
         print('')

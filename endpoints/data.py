@@ -61,35 +61,13 @@ from config import (
     CASSANDRA_LOCAL_DC,
 )
 
-_cassandra_cluster = None
-_cassandra_session = None
+# B9: one Cassandra session per PROCESS, not one per module. This module
+# used to define its own get_cassandra_session() over its own globals and
+# its own Cluster(); six identical copies meant a worker could hold six
+# pools to the same database, each paying its own 6-7s handshake. The
+# name is re-exported so this module's callers and importers are unchanged.
+from .cassandra_store import get_cassandra_session
 
-def get_cassandra_session():
-    global _cassandra_cluster, _cassandra_session
-    if _cassandra_session and not _cassandra_session.is_shutdown:
-        return _cassandra_session
-    try:
-        auth_provider = PlainTextAuthProvider(
-            username=CASSANDRA_USERNAME,
-            password=CASSANDRA_PASSWORD
-        )
-        profile = ExecutionProfile(
-            load_balancing_policy=TokenAwarePolicy(DCAwareRoundRobinPolicy(local_dc=CASSANDRA_LOCAL_DC)),
-            consistency_level=ConsistencyLevel.ONE
-        )
-        _cassandra_cluster = Cluster(
-            contact_points=CASSANDRA_CONTACT_POINTS,
-            port=CASSANDRA_PORT,
-            auth_provider=auth_provider,
-            protocol_version=4,
-            execution_profiles={EXEC_PROFILE_DEFAULT: profile}
-        )
-        _cassandra_session = _cassandra_cluster.connect(CASSANDRA_KEYSPACE)
-        print("Successfully connected to Cassandra cluster")
-        return _cassandra_session
-    except Exception as e:
-        print(f"Error connecting to Cassandra: {e}")
-        return None
 
 data_stream = Blueprint("data_stream", __name__)
 
@@ -1539,7 +1517,6 @@ def trips_history_replay():
 
     try:
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
         payload_data = request.get_json()
 
         if(len(str(payload_data['data']['device_imei'])) > 4) and (len(str(payload_data['data']['from_date'])) > 4) and (len(str(payload_data['data']['to_date'])) > 4) and (len(str(payload_data['data']['offset_log'])) > 0) and (len(str(payload_data['data']['record_count'])) > 0):
@@ -1607,40 +1584,37 @@ def trips_history_replay():
                         trips_data_adapter = [
                             location_store.as_history_tuple(_fix)
                             for _fix in _replay_fixes]
-                        with dbconnect:
-                            with dbconnect.cursor() as cursor:
+                        if(len(trips_data_adapter) >= 1):
 
-                                if(len(trips_data_adapter) >= 1):
+                            TripsData = []
 
-                                    TripsData = []
-
-                                    for trip in trips_data_adapter:
+                            for trip in trips_data_adapter:
 
                         
-                                            SingleTripe_Record = {
-                                                "data_longitude": trip[0],
-                                                "data_latitude": trip[1],
-                                                "speed_log": trip[2],
-                                                "data_hdop": trip[3],
-                                                "local_system_datestamp": trip[4],
-                                                "record_io_events_uid": trip[5],
-                                                "geocoded_location": trip[6],
-                                                "local_system_timestamp": trip[7],
-                                                "data_connected_satelites": trip[8],
-                                                "batch_uid": trip[9],
-                                                "data_idx": trip[10],
-                                                "data_index": trip[-1]
-                                            }
+                                    SingleTripe_Record = {
+                                        "data_longitude": trip[0],
+                                        "data_latitude": trip[1],
+                                        "speed_log": trip[2],
+                                        "data_hdop": trip[3],
+                                        "local_system_datestamp": trip[4],
+                                        "record_io_events_uid": trip[5],
+                                        "geocoded_location": trip[6],
+                                        "local_system_timestamp": trip[7],
+                                        "data_connected_satelites": trip[8],
+                                        "batch_uid": trip[9],
+                                        "data_idx": trip[10],
+                                        "data_index": trip[-1]
+                                    }
 
-                                            TripsData.append(SingleTripe_Record)
+                                    TripsData.append(SingleTripe_Record)
 
 
-                                    return reply('success', 200, 'Trips Data Found', TripsData)
+                            return reply('success', 200, 'Trips Data Found', TripsData)
                                     
-                                elif(len(trips_data_adapter) == 0):
-                                    return reply('error', 400, 'No Trips Found', '')
-                                else:
-                                    return reply('error', 400, 'Unable to complete request', '')
+                        elif(len(trips_data_adapter) == 0):
+                            return reply('error', 400, 'No Trips Found', '')
+                        else:
+                            return reply('error', 400, 'Unable to complete request', '')
 
                     else:
                         return reply('error', 400, 'Record Count Is Too High', '')
@@ -1666,83 +1640,6 @@ def trips_history_replay():
             else:
                 return reply('error', 400, 'Unable to complete request', '')
             
-        else:
-            return reply('error', 400, 'Something Is Missing', '')
-
-    except Exception as error:
-        return reply('error', 500, str(error), '')
-
-
-
-    try:
-
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
-        payload_data = request.get_json()
-
-        if(len(str(payload_data['data']['device_imei'])) > 4) and (len(str(payload_data['data']['from_date'])) > 4) and (len(str(payload_data['data']['to_date'])) > 4) and (len(str(payload_data['data']['offset_log'])) > 0) and (len(str(payload_data['data']['record_count'])) > 0) and (len(str(payload_data['data']['request_origin_user_uid'])) > 2):
-
-            DeviceImei = payload_data['data']['device_imei']
-            FromDate = payload_data['data']['from_date']
-            ToDate = payload_data['data']['to_date']
-            Offset_Record = payload_data['data']['offset_log']
-            Record_Count = int(payload_data['data']['record_count'])
-            DataRequest_ID = payload_data['data']['request_uid']
-            RequestOriginator = str(payload_data['data']['request_origin_user_uid'])
-
-            device_billing_status = check_device(DeviceImei)
-
-            if(device_billing_status == 'running'):
-
-
-                if(compare_years(FromDate, ToDate) == True):
-                    if(Record_Count < 15000) or (Record_Count == 15000):
-
-                        with dbconnect:
-                            with dbconnect.cursor() as cursor:
-                                cursor.execute("SELECT data_device_imei, geocoded_location, data_longitude, data_latitude, speed_log, local_system_datestamp, local_system_timestamp, data_connected_satelites FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY data_longitude, data_latitude ORDER BY data_idx DESC) AS row_num FROM dll_location_registry WHERE data_device_imei = %s AND TO_DATE(local_system_datestamp, 'DD-MM-YYYY') BETWEEN TO_DATE(%s, 'DD-MM-YYYY') AND TO_DATE(%s, 'DD-MM-YYYY')) AS subquery WHERE row_num = 1 ORDER BY data_idx DESC LIMIT %s OFFSET %s;", (DeviceImei, FromDate, ToDate, Record_Count, Offset_Record,))
-
-                                if(cursor.rowcount >= 1):
-
-                                    trips_data_adapter = cursor.fetchall()
-                                    
-                                    df = pd.DataFrame(trips_data_adapter, columns=['Device', 'Trip Location', 'Longitude Cordinates', 'Latitude Cordinates', 'Moving Speed ( KM/H )', 'Trip Date', 'Trip Time', 'Satelites Available'])
-
-                                    FN = "sentinel_trips_"+str(random.randint(32, 9233392920293)+random.randint(50, 20002930020222)+random.randint(450, 2000293)+random.randint(857, 901404139))[:29]
-
-                                    FileName = FN + '.xlsx'
-
-                                    df.to_excel(f'reports-cdn/{ FileName }', index=False)
-
-                                    PhysicalPath = current_app.config['base_url'] + "reports-cdn/" + FileName
-
-                                    cursor.execute("INSERT INTO dll_reports_downloadable_files (request_uid, file_path, report_caller) VALUES(%s, %s, %s)", (str(DataRequest_ID), str(PhysicalPath), RequestOriginator,))
-
-                                    data_back ={
-                                        "physical_file": PhysicalPath,
-                                        "request_uid": DataRequest_ID,
-                                        "request_status": "completed"
-                                    }
-
-                                    return reply('success', 200, 'Request Completed', data_back)
-                                    
-                                elif(cursor.rowcount == 0):
-                                    return reply('error', 400, 'No Trips Found', '')
-                                else:
-                                    return reply('error', 400, 'Unable to complete request', '')
-
-                    else:
-                        return reply('error', 400, 'Record Count Is Too High', '')
-
-                elif(compare_years(FromDate, ToDate) == False):
-                    return reply('error', 400, 'From Date and To Date Must Between 2 Years', '')
-                else:
-                    return reply('error', 400, 'Unable to complete request', '')
-                
-            elif(device_billing_status == 'blocked'):
-                return reply('error', 400, 'Device Billing Is Blocked', '')
-            
-            elif(device_billing_status == 'not-found'):
-                return reply('error', 400, 'Routing Failed, Device Cant be found', '')
         else:
             return reply('error', 400, 'Something Is Missing', '')
 

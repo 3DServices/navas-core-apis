@@ -26,6 +26,7 @@ devices_bp = Blueprint('devices', __name__)
 # Cassandra connection settings, including the password, come from the
 # environment via config.py. They used to be written out in full in each
 # of these six files.
+import logging
 from config import (
     CASSANDRA_KEYSPACE,
     CASSANDRA_CONTACT_POINTS,
@@ -35,35 +36,13 @@ from config import (
     CASSANDRA_LOCAL_DC,
 )
 
-_cassandra_cluster = None
-_cassandra_session = None
+# B9: one Cassandra session per PROCESS, not one per module. This module
+# used to define its own get_cassandra_session() over its own globals and
+# its own Cluster(); six identical copies meant a worker could hold six
+# pools to the same database, each paying its own 6-7s handshake. The
+# name is re-exported so this module's callers and importers are unchanged.
+from .cassandra_store import get_cassandra_session
 
-def get_cassandra_session():
-    global _cassandra_cluster, _cassandra_session
-    if _cassandra_session and not _cassandra_session.is_shutdown:
-        return _cassandra_session
-    try:
-        auth_provider = PlainTextAuthProvider(
-            username=CASSANDRA_USERNAME,
-            password=CASSANDRA_PASSWORD
-        )
-        profile = ExecutionProfile(
-            load_balancing_policy=TokenAwarePolicy(DCAwareRoundRobinPolicy(local_dc=CASSANDRA_LOCAL_DC)),
-            consistency_level=ConsistencyLevel.ONE
-        )
-        _cassandra_cluster = Cluster(
-            contact_points=CASSANDRA_CONTACT_POINTS,
-            port=CASSANDRA_PORT,
-            auth_provider=auth_provider,
-            protocol_version=4,
-            execution_profiles={EXEC_PROFILE_DEFAULT: profile}
-        )
-        _cassandra_session = _cassandra_cluster.connect(CASSANDRA_KEYSPACE)
-        print("Successfully connected to Cassandra cluster")
-        return _cassandra_session
-    except Exception as e:
-        print(f"Error connecting to Cassandra: {e}")
-        return None
 
 
 def get_postgres_connection():
@@ -113,7 +92,11 @@ def register_device():
             return reply('error', 400, 'Something Is Missing', '')
 
     except Exception as error:
-        return reply('error', 500, error, '')
+        # B10 class: `error` is an exception OBJECT. scrub_secrets() passes
+        # non-strings through, jsonify then raises TypeError and the caller
+        # gets a 500 with no message at all.
+        logging.exception('devices: unhandled error')
+        return reply('error', 500, str(error), '')
     
 
 #get all devices
@@ -427,7 +410,11 @@ def get_configured_devices():
         else:
             return reply('error', 400, 'Something Is Missing', '')
     except Exception as error:
-        return reply('error', 500, error, '')
+        # B10 class: `error` is an exception OBJECT. scrub_secrets() passes
+        # non-strings through, jsonify then raises TypeError and the caller
+        # gets a 500 with no message at all.
+        logging.exception('devices: unhandled error')
+        return reply('error', 500, str(error), '')
 
 
 @devices_bp.route("/system32/devices/configured/all", methods=["POST"])
@@ -623,7 +610,11 @@ def get_system32_configured_devices():
         else:
             return reply('error', 400, 'Something Is Missing', '')
     except Exception as error:
-        return reply('error', 500, error, '')
+        # B10 class: `error` is an exception OBJECT. scrub_secrets() passes
+        # non-strings through, jsonify then raises TypeError and the caller
+        # gets a 500 with no message at all.
+        logging.exception('devices: unhandled error')
+        return reply('error', 500, str(error), '')
 
 
 @devices_bp.route("/devices/action", methods=["POST"])
@@ -805,11 +796,21 @@ def ClientConfigured_Devices(client_id):
         else:
             return reply('error', 400, 'Something Is Missing', '')
     except Exception as error:
-        return reply('error', 500, error, '')
+        # B10 class: `error` is an exception OBJECT. scrub_secrets() passes
+        # non-strings through, jsonify then raises TypeError and the caller
+        # gets a 500 with no message at all.
+        logging.exception('devices: unhandled error')
+        return reply('error', 500, str(error), '')
 
 
 @devices_bp.route("/devices/filter/clients/<client_uid>/network/group/<group_uid>/filter-out", methods=["GET"])
 def FilterRequest(client_uid, group_uid):
+    # B9: this route read the module global directly and never called the
+    # accessor, so on a cold worker it raised AttributeError on None.
+    _cassandra_session = get_cassandra_session()
+    if not _cassandra_session:
+        return reply('error', 500, 'Failed to connect to Cassandra', '')
+
     try:
         ClientID = str(client_uid)
         GroupID = str(group_uid)
