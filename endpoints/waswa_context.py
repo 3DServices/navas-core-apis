@@ -443,6 +443,12 @@ def _open_incidents(cur, owner_uid):
     }, None
 
 
+# A value ::numeric would accept. total_cost, payment_date, token_quantity
+# and every other column on dll_payment_logs are TEXT, so a figure has to be
+# guarded before it is summed -- see _payment_history.
+_NUMERIC_TEXT = r'^\s*-?[0-9][0-9,]*(\.[0-9]+)?\s*$'
+
+
 def _payment_history(cur, owner_uid):
     """What this customer has actually been charged — not a judgement.
 
@@ -468,12 +474,22 @@ def _payment_history(cur, owner_uid):
 
     try:
         cur.execute(
+            # total_cost is TEXT. Sum only the values that are numbers, and
+            # count them, so a total over zero readable rows is never
+            # reported as an amount of 0. MAX(payment_date) is deliberately
+            # absent: that column is text too, so MAX is lexical rather than
+            # chronological. The last payment is taken from the newest row
+            # by id below, which is correct whatever the date format.
             "SELECT payment_status, payment_currency, COUNT(*), "
-            "       SUM(total_cost), MAX(payment_date) "
-            "FROM dll_payment_logs WHERE payment_account = ANY(%s) "
+            "       COALESCE(SUM(CASE WHEN total_cost ~ %(re)s "
+            "                         THEN REPLACE(TRIM(total_cost), ',', '')"
+            "::numeric "
+            "                         ELSE 0 END), 0), "
+            "       COUNT(*) FILTER (WHERE total_cost ~ %(re)s) "
+            "FROM dll_payment_logs WHERE payment_account = ANY(%(uids)s) "
             "GROUP BY payment_status, payment_currency "
             "ORDER BY COUNT(*) DESC",
-            (owners,),
+            {'re': _NUMERIC_TEXT, 'uids': owners},
         )
         rows = cur.fetchall() if cur.rowcount > 0 else []
     except psycopg2.Error as error:
@@ -488,17 +504,22 @@ def _payment_history(cur, owner_uid):
     # not mine to infer.
     by_status = {}
     charged = {}
-    for status, currency, count, total, _ in rows:
+    unreadable = 0
+    for status, currency, count, total, readable in rows:
         key = status or 'unrecorded'
         by_status[key] = by_status.get(key, 0) + int(count)
+        unreadable += int(count) - int(readable or 0)
+        # No readable amount in this group: the sum is 0 because nothing
+        # could be added, not because nothing was charged. Report the count
+        # and withhold the figure.
+        if not readable:
+            continue
         amount = _money(total)
         if amount is None:
             continue
         cur_key = (currency or '').strip().upper() or 'unknown currency'
         charged.setdefault(cur_key, {})
         charged[cur_key][key] = charged[cur_key].get(key, 0) + amount
-
-    last_date = max((r[4] for r in rows if r[4]), default=None)
 
     recent = []
     try:
@@ -529,7 +550,9 @@ def _payment_history(cur, owner_uid):
         'by_status': by_status,
         'amount_charged_by_currency_and_status': charged,
         'recent_payments': recent,
-        'last_payment_date': str(last_date) if last_date else None,
+        # The newest row by id, not MAX() over a text date.
+        'last_payment_date': recent[0]['date'] if recent else None,
+        'amounts_unreadable': unreadable,
         'note': 'observed payment records only — not a credit assessment, '
                 'and no status here is interpreted as paid or unpaid. These '
                 'are amounts this customer was charged, not a price list: '
@@ -540,8 +563,8 @@ def _payment_history(cur, owner_uid):
 def _money(value):
     """A payment amount as a plain number, or None when it cannot be read.
 
-    total_cost is numeric, but this table has enough history that a Decimal is
-    not guaranteed. None means unreadable and is reported as such, rather than
+    total_cost is TEXT on this table, so this receives whatever the
+    column holds, or a Decimal once SQL has summed the guarded rows. None means unreadable and is reported as such, rather than
     becoming a 0 the customer would read as "you were charged nothing".
     """
     if value is None:

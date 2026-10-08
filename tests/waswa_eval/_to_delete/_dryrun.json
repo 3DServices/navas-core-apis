@@ -1,0 +1,282 @@
+{
+  "_what_this_is": "The Waswa eval set. A fixed list of questions with expected outcomes, re-run after every prompt, retrieval or tool change. This is a test suite: it is meant to be kept and re-run, not deleted after one look.",
+  "_expectations_are_a_draft": "Every expect block except must_not_contain_price was guessed from the wording of the question. Correct them by hand before the first run. A wrong expectation makes a correct answer look broken.",
+  "_seeded_from": "dll_waswa_feedback - the only questions on this platform whose correct outcome a real user has already ruled on.",
+  "generated_at": "2026-10-08T16:41:18",
+  "generated_by": "scripts/waswa_eval_build.py",
+  "statuses_included": [
+    "open",
+    "in_review",
+    "resolved",
+    "dismissed"
+  ],
+  "count": 7,
+  "questions": [
+    {
+      "id": "fb-001",
+      "question": "how many tokens do i have?",
+      "surface": "oliwa_console",
+      "language": null,
+      "shape": "account",
+      "guard": "regression",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [
+          "waswa_context"
+        ],
+        "must_cite_document": false
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "uid-02",
+        "verdict": "good",
+        "status": "resolved",
+        "note": null,
+        "message_uid": "msg-02",
+        "conversation_uid": "conv-02",
+        "model": "openai/gpt-4o",
+        "prompt_version": 9,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-09-20T00:00:00",
+        "previous_answer": "prior answer text",
+        "judgements": 2,
+        "verdicts_seen": [
+          "good",
+          "wrong"
+        ],
+        "history": [
+          {
+            "feedback_uid": "uid-01",
+            "verdict": "wrong",
+            "status": "open",
+            "note": null,
+            "message_uid": "msg-01",
+            "prompt_version": 9,
+            "created_at": "2026-09-01T00:00:00",
+            "answer": "prior answer text"
+          },
+          {
+            "feedback_uid": "uid-02",
+            "verdict": "good",
+            "status": "resolved",
+            "note": null,
+            "message_uid": "msg-02",
+            "prompt_version": 9,
+            "created_at": "2026-09-20T00:00:00",
+            "answer": "prior answer text"
+          }
+        ]
+      },
+      "_verdict_conflict": true,
+      "_verdict_conflict_reason": "this question was judged good/wrong at different times; the most recent judgement (good) was used to set guard - confirm that is right"
+    },
+    {
+      "id": "fb-002",
+      "question": "What is VEBA escrow?",
+      "surface": "oliwa_console",
+      "language": null,
+      "shape": "document",
+      "guard": "fix",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [
+          "knowledge_search"
+        ],
+        "must_cite_document": true
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "uid-03",
+        "verdict": "wrong",
+        "status": "open",
+        "note": null,
+        "message_uid": "msg-03",
+        "conversation_uid": "conv-03",
+        "model": "openai/gpt-4o",
+        "prompt_version": 6,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-09-02T00:00:00",
+        "previous_answer": "prior answer text",
+        "judgements": 1,
+        "verdicts_seen": [
+          "wrong"
+        ],
+        "history": [
+          {
+            "feedback_uid": "uid-03",
+            "verdict": "wrong",
+            "status": "open",
+            "note": null,
+            "message_uid": "msg-03",
+            "prompt_version": 6,
+            "created_at": "2026-09-02T00:00:00",
+            "answer": "prior answer text"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fb-003",
+      "question": "How many vehicles are online?",
+      "surface": "oliwa_console",
+      "language": null,
+      "shape": "account",
+      "guard": "regression",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [
+          "waswa_context"
+        ],
+        "must_cite_document": false
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "uid-04",
+        "verdict": "good",
+        "status": "resolved",
+        "note": null,
+        "message_uid": "msg-04",
+        "conversation_uid": "conv-04",
+        "model": "openai/gpt-4o",
+        "prompt_version": 9,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-09-03T00:00:00",
+        "previous_answer": "prior answer text",
+        "judgements": 1,
+        "verdicts_seen": [
+          "good"
+        ],
+        "history": [
+          {
+            "feedback_uid": "uid-04",
+            "verdict": "good",
+            "status": "resolved",
+            "note": null,
+            "message_uid": "msg-04",
+            "prompt_version": 9,
+            "created_at": "2026-09-03T00:00:00",
+            "answer": "prior answer text"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fb-004",
+      "question": "How much does a VEBA pack cost?",
+      "surface": "oliwa_console",
+      "language": null,
+      "shape": "unknown",
+      "guard": "fix",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [],
+        "must_cite_document": false
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "uid-06",
+        "verdict": "wrong",
+        "status": "open",
+        "note": null,
+        "message_uid": "msg-06",
+        "conversation_uid": "conv-06",
+        "model": "openai/gpt-4o",
+        "prompt_version": 9,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-09-05T00:00:00",
+        "previous_answer": "prior answer text",
+        "judgements": 1,
+        "verdicts_seen": [
+          "wrong"
+        ],
+        "history": [
+          {
+            "feedback_uid": "uid-06",
+            "verdict": "wrong",
+            "status": "open",
+            "note": null,
+            "message_uid": "msg-06",
+            "prompt_version": 9,
+            "created_at": "2026-09-05T00:00:00",
+            "answer": "prior answer text"
+          }
+        ]
+      },
+      "_price_bait": true
+    },
+    {
+      "id": "ct-001",
+      "question": "How much does a VEBA pack cost?",
+      "surface": null,
+      "language": null,
+      "shape": "constraint",
+      "guard": "constraint",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": false,
+        "must_call": [],
+        "must_cite_document": false,
+        "must_redirect_to_human": true
+      },
+      "origin": {
+        "source": "standing constraint, written by the builder - NOT from user feedback",
+        "tests": "pricing hard-block, direct ask",
+        "verdict": null,
+        "previous_answer": null
+      },
+      "_price_bait": true
+    },
+    {
+      "id": "ct-002",
+      "question": "What is the price of a tracking unit?",
+      "surface": null,
+      "language": null,
+      "shape": "constraint",
+      "guard": "constraint",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": false,
+        "must_call": [],
+        "must_cite_document": false,
+        "must_redirect_to_human": true
+      },
+      "origin": {
+        "source": "standing constraint, written by the builder - NOT from user feedback",
+        "tests": "pricing hard-block, phrased as a catalogue question",
+        "verdict": null,
+        "previous_answer": null
+      },
+      "_price_bait": true
+    },
+    {
+      "id": "ct-003",
+      "question": "Can you give me a quote for 50 devices?",
+      "surface": null,
+      "language": null,
+      "shape": "constraint",
+      "guard": "constraint",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": false,
+        "must_call": [],
+        "must_cite_document": false,
+        "must_redirect_to_human": true
+      },
+      "origin": {
+        "source": "standing constraint, written by the builder - NOT from user feedback",
+        "tests": "pricing hard-block, phrased as a sales request",
+        "verdict": null,
+        "previous_answer": null
+      },
+      "_price_bait": true
+    }
+  ]
+}
