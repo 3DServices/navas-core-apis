@@ -42,6 +42,7 @@ from flask import Blueprint, request, current_app
 
 from . import waswa_answers
 from . import waswa_console
+from . import waswa_fleet
 from . import waswa_knowledge
 from . import waswa_products
 from .globals import reply, _extract_account_uid
@@ -68,12 +69,16 @@ _CONVERSATION_IDLE_MINUTES = 60
 
 # Model -> tools -> model rounds before we stop. Enough for look up a product,
 # check its compatibility, answer; a model looping past that is stuck.
-_MAX_TOOL_ROUNDS = 4
+_MAX_TOOL_ROUNDS = 6
 
 # Apps that send the screen the question came from: surface -> (who, app).
 _SCREEN_SURFACES = {
     'cms': ('staff member', 'CMS'),
     'oliwa_console': ('customer', 'OLIWA tracking console'),
+    # The mobile app sends the screen too. Without this line its module was
+    # parsed, sanitised and then silently dropped, so a short question asked
+    # from the Tokens screen read as if it came from nowhere.
+    'mobile': ('customer', 'OLIWA mobile app'),
 }
 
 # A closing "Source: …" line names an internal document. Staff get it when a
@@ -98,7 +103,8 @@ _RETRY_BACKOFF = (0.6, 1.5)
 # model. Order matters a little: the product tools come first so that a question
 # naming a product is answered from the approved catalogue rather than from a
 # paragraph in a user-story document that happens to mention it.
-_TOOL_SPECS = waswa_products.TOOL_SPECS + waswa_knowledge.TOOL_SPECS
+_TOOL_SPECS = (waswa_products.TOOL_SPECS + waswa_knowledge.TOOL_SPECS
+               + waswa_fleet.TOOL_SPECS)
 
 # Used only if dll_waswa_prompts is unreachable — migration 030 seeds v1 there.
 _FALLBACK_PROMPT = (
@@ -348,7 +354,242 @@ def _openrouter_error_detail(resp):
     return (detail or '').strip()[:500]
 
 
-def _call_model(messages, allow_tools=True):
+# Waswa answered 26 of its first 40 real questions with no lookup at all:
+# confident prose about token packs, support contacts and offline vehicles,
+# none of it read from NAVAS. The cause was not the wording of the prompt —
+# the tools were declared, described and ignored. So the question is no longer
+# "does this turn need a lookup?" but "is there any reason NOT to look?".
+#
+# Hence the inversion: everything forces a tool call except social turns,
+# which have nothing to look up. Keep this list short and literal. A missed
+# lookup produces an invented answer a customer cannot tell from a correct
+# one; a needless lookup costs one round trip and returns "found: false".
+# Those are not symmetrical mistakes.
+_NO_LOOKUP = re.compile(
+    r"^\s*(hi|hey|hello|yo|good\s+(morning|afternoon|evening|day)|"
+    r"thanks?|thank\s+you|thx|cheers|ok(ay)?|alright|got\s+it|understood|"
+    r"sure|fine|great|nice|cool|perfect|lovely|"
+    r"yes|yeah|yep|yup|no|nope|"
+    r"bye|goodbye|see\s+you|later|good\s?night)"
+    r"[\s!.,:;)\u2019']*$", re.I)
+
+
+def _needs_lookup(message):
+    """True unless the turn is pure pleasantry.
+
+    Inverted on purpose: see the comment above. When in doubt, look it up.
+    """
+    text = (message or '').strip()
+    if not text:
+        return False
+    return not _NO_LOOKUP.match(text)
+
+# Vehicle-shaped questions. Narrower than _needs_lookup on purpose: that gate
+# also fires for tokens and charges, which waswa_context already carries, and a
+# fleet read for "what is my balance" would be two wasted queries.
+# "Is anything running right now" -- answerable only from heartbeats, never
+# from a subscription status or a trip record.
+_LIVENESS_QUESTION = re.compile(
+    r"\b(online|offline|reporting|live|active now|still (on|going|running)|"
+    r"last seen|disconnected|not showing|connected|transmitting)\b", re.I)
+
+_FLEET_QUESTION = re.compile(
+    r"\b(unit|units|vehicle|vehicles|truck|lorry|car|bike|boda|fleet|"
+    r"trip|trips|route|journey|mileage|odometer|driver|"
+    r"offline|online|reporting|disconnected|not showing|last seen|"
+    r"moving|parked|idle|stopped|speed|speeding|overspeed|"
+    r"where is|where was|location|position|geofence)\b", re.I)
+
+
+def _plate_or_imei(message):
+    """The vehicle the person named, or None.
+
+    Plates here look like UBF 364U or UBJ916W; an IMEI is fifteen digits. Both
+    are passed to unit_find as a query, which matches on name, plate, VIN,
+    make, model and IMEI, so a near miss still finds the unit.
+    """
+    text = str(message or '')
+    imei = re.search(r"\b\d{15}\b", text)
+    if imei:
+        return imei.group(0)
+    plate = re.search(r"\b[A-Z]{2,3}\s?\d{3}\s?[A-Z]?\b", text)
+    return plate.group(0).strip() if plate else None
+
+
+# Slots where nothing held means the person cannot do something, so the
+# answer needs a next step. open_incidents is not here: no open incidents is
+# good news and a complete answer by itself.
+_BLOCKING_WHEN_EMPTY = ('token_balance_and_burn_rate',
+                        'asset_count_and_types',
+                        'active_products')
+
+
+def _holds_nothing(value):
+    """True when a resolved slot says the customer holds none of something."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower().startswith('none')
+    if isinstance(value, (list, tuple)):
+        return len(value) == 0
+    if isinstance(value, dict):
+        numbers = [v for v in value.values()
+                   if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        return bool(numbers) and all(x == 0 for x in numbers)
+    return False
+
+
+def _zero_state_note(context):
+    """A system note for an account that holds nothing.
+
+    Why: a customer with two payments recorded against their account, and no
+    token packs, asked how many tokens they had on three separate days. Each
+    time Waswa answered "your account doesn't have any token packs yet" and
+    stopped. That is correct and it is useless -- the reason they had none
+    was sitting one context slot away, in payments.
+
+    This does NOT interpret a payment status. Whether "pending" means
+    awaiting settlement or stuck is the business's to define, and
+    _payment_history refuses to guess for the same reason. The note states
+    that records exist and what they are labelled, nothing more.
+
+    Returns a note, or None when the account holds something.
+    """
+    known = (context or {}).get('known') or {}
+    empty = [slot for slot in _BLOCKING_WHEN_EMPTY
+             if slot in known and _holds_nothing(known[slot])]
+    if not empty:
+        return None
+
+    lines = [
+        "This account holds nothing in: %s." % ', '.join(empty),
+        "Reporting that is correct and you must not soften it or invent a "
+        "holding. But do not stop there: an answer of 'you have none' with "
+        "nothing after it leaves the person with nowhere to go.",
+    ]
+
+    standing = known.get('payment_standing')
+    recent = (standing or {}).get('recent_payments') if isinstance(
+        standing, dict) else None
+    if recent:
+        listed = '; '.join(
+            '%s recorded as %s' % (r.get('date', 'date unrecorded'),
+                                   r.get('status', 'unrecorded'))
+            for r in recent[:3])
+        lines.append(
+            "Payments ARE on record for this account: %s. Say so, with the "
+            "dates and the status exactly as labelled above. Do NOT say what "
+            "a status means, do not say a payment will or will not complete, "
+            "and do not promise a timeframe -- you do not know. Offer to put "
+            "them in touch with someone who can check it." % listed)
+    else:
+        lines.append(
+            "No payments are on record either. Say that plainly and offer who "
+            "can help them get started. Never quote a price or a cost.")
+
+    return '\n'.join(lines)
+
+
+def _prefetch_fleet(message, fleet_scope):
+    """Read the account's fleet before the model is asked anything.
+
+    Returns (notes, evidence) — notes are system messages to append, evidence
+    are rows for the trail so the audit shows a real lookup rather than "nothing
+    but the standing account context".
+
+    At most two reads: which vehicles exist, and if the person named exactly one,
+    how it is doing. Everything else stays a tool call, because a range of trips
+    or a route probe is too expensive to do speculatively.
+    """
+    notes, evidence = [], []
+    if not _FLEET_QUESTION.search(str(message or '')):
+        return notes, evidence
+
+    named = _plate_or_imei(message)
+    try:
+        found = (waswa_fleet.unit_find(query=named, scope=fleet_scope) if named
+                 else waswa_fleet.unit_find(scope=fleet_scope))
+    except waswa_fleet.FleetUnavailable as error:
+        _log('fleet prefetch: register unreachable (%s)', error)
+        notes.append(
+            "The vehicle register could not be read just now. This is a fault "
+            "on our side and says NOTHING about what this account owns. Tell "
+            "the person you cannot check their vehicles at the moment. Do not "
+            "say they have none and do not give a count.")
+        evidence.append(('fleet', 'unit_find(unavailable)', 1))
+        return notes, evidence
+    except Exception as error:      # noqa: BLE001 - never break the turn
+        _log('fleet prefetch failed: %s: %s', error.__class__.__name__, error)
+        return notes, evidence
+
+    evidence.append(('fleet', f'unit_find({named or "all"}, prefetched)', 1))
+    notes.append(
+        "This account's own vehicles, read from the database just now — not "
+        "from the screen, and not from your training. Answer from these "
+        "figures:\n" + json.dumps(found, default=str))
+
+    # One named vehicle, unambiguous: fetch how it is doing too, since that is
+    # what "why is it offline" and "where is it" both need.
+    units = found.get('units') or []
+    if named and found.get('found') and len(units) == 1:
+        imei = units[0].get('imei')
+        if imei:
+            try:
+                status = waswa_fleet.unit_status(imei=imei, scope=fleet_scope)
+            except waswa_fleet.FleetUnavailable as error:
+                _log('status prefetch: unreachable (%s)', error)
+                status = None
+            except Exception as error:      # noqa: BLE001
+                _log('status prefetch failed: %s', error)
+                status = None
+            if status:
+                evidence.append(('fleet', f'unit_status({imei}, prefetched)', 1))
+                notes.append(
+                    "Its current state, measured just now. last_reported_at and "
+                    "last_position.at are LOCAL times. State these figures; if a "
+                    "field is null say it could not be read rather than filling "
+                    "the gap:\n" + json.dumps(status, default=str))
+    elif named and len(units) > 1:
+        # Only an ambiguity when they actually named a vehicle. Without the
+        # `named` guard this fired on every fleet-wide question too --
+        # telling the model to ask which vehicle they meant when they had
+        # asked about all of them.
+        notes.append(
+            "More than one vehicle matches what they said. Ask which one, "
+            "naming the candidates above, and stop there.")
+
+    # A question about what is running NOW needs every unit's heartbeat, not
+    # one unit's. Reading them here means the model cannot answer from a
+    # sample: the whole fleet's state is already in front of it.
+    if _LIVENESS_QUESTION.search(str(message or '')) and len(units) > 1:
+        try:
+            live = waswa_fleet.fleet_liveness(scope=fleet_scope)
+        except waswa_fleet.FleetUnavailable as error:
+            _log('liveness prefetch: unreachable (%s)', error)
+            notes.append(
+                "The heartbeat registry could not be read just now. Say you "
+                "cannot tell which vehicles are reporting at the moment. Do "
+                "NOT fall back to the subscription status: 'active' there is "
+                "a billing state and says nothing about whether a vehicle is "
+                "transmitting.")
+            evidence.append(('fleet', 'fleet_liveness(unavailable)', 1))
+        except Exception as error:      # noqa: BLE001 - never break the turn
+            _log('liveness prefetch failed: %s: %s',
+                 error.__class__.__name__, error)
+        else:
+            evidence.append(('fleet', 'fleet_liveness(all, prefetched)', 1))
+            notes.append(
+                "Which units are reporting right now, every one of them "
+                "measured just now. Answer the count from these figures and "
+                "no others. A unit under could_not_read was not reached and "
+                "must not be called offline. Never describe a unit as "
+                "reporting or online if its hours_since_last_report says "
+                "otherwise:\n" + json.dumps(live, default=str))
+
+    return notes, evidence
+
+
+def _call_model(messages, allow_tools=True, force_tools=False):
     """One round trip to OpenRouter.
 
     With allow_tools=False the tools stay declared (earlier turns in
@@ -363,11 +604,22 @@ def _call_model(messages, allow_tools=True):
         "model": OPENROUTER_MODEL,
         "messages": messages,
         "tools": _TOOL_SPECS,
-        "max_tokens": 600,
+        "max_tokens": 1200,
         "temperature": 0.3,
     }
     if not allow_tools:
         payload["tool_choice"] = "none"
+    elif force_tools:
+        # "required" = call SOMETHING. Which tool is still the
+        # model's choice; answering without looking is not.
+        payload["tool_choice"] = "required"
+
+    # What actually goes out. Four account-data questions once produced zero
+    # tool calls, and from the outside that is indistinguishable between "the
+    # code is not running", "the gate said no" and "the model ignored us".
+    # One line removes the guessing.
+    _log('-> model: %s tools, tool_choice=%s', len(_TOOL_SPECS),
+         payload.get('tool_choice', 'auto (not forced)'))
 
     # A dropped connection (RemoteDisconnected, SSL EOF, reset) is usually a
     # blip on the network between here and OpenRouter, so it is retried a
@@ -631,6 +883,12 @@ def AssistantChat():
         who = waswa_answers.caller(account_uid)
         audience = waswa_answers.audience_for(who)
 
+        # What the fleet tools may read. Staff may name a client; a customer
+        # is pinned to their own whatever the model asks for. Built here, from
+        # the signed-in account, so nothing in the conversation can widen it.
+        fleet_scope = waswa_fleet.build_scope(
+            account_uid, scope.get('client_uid'), is_staff=(audience == 'staff'))
+
         # Corrections first. Matched here, before the model, rather than
         # offered as a tool: a correction exists because the model got this
         # wrong once, so it is not left to the model to remember to look.
@@ -647,6 +905,9 @@ def AssistantChat():
 
         messages = [{"role": "system", "content": prompt_body}]
         messages.append({"role": "system", "content": render_for_prompt(context)})
+        zero_note = _zero_state_note(context)
+        if zero_note:
+            messages.append({"role": "system", "content": zero_note})
         if verified:
             messages.append({"role": "system",
                              "content": waswa_answers.render_for_prompt(verified)})
@@ -657,13 +918,82 @@ def AssistantChat():
                 "system. Answer in plain words from what you were given; if "
                 "nothing you were given covers it, say so and offer who can "
                 "help.")})
+        # Why "why is a vehicle offline?" used to get a textbook answer: there
+        # was no tool to look the vehicle up, so the model had nothing to be
+        # specific about. Now there is, and being specific is the instruction.
+        messages.append({"role": "system", "content": (
+            "You can look up this account's own vehicles. When someone asks "
+            "about a vehicle, a unit or a trip, call unit_find first and work "
+            "from what it returns; never answer such a question from general "
+            "knowledge while a tool could answer it from their actual data. "
+            "If unit_find returns more than one match, or the person named no "
+            "vehicle at all, ASK WHICH ONE and stop there — do not guess, and "
+            "do not answer generically instead of asking. State the figures "
+            "the tools return, including when a unit last reported and how "
+            "long ago; if a tool says it could not read something, say that "
+            "rather than filling the gap.")})
+
+        # 2,679 knowledge chunks sat unread because nothing told the model
+        # they existed. The vehicle instruction above had a counterpart for
+        # documents only in spirit; now it has one in the prompt.
+        messages.append({"role": "system", "content": (
+            "You also have the approved NAVAS and OLIWA documents, through "
+            "knowledge_search. For anything about how the platform works, what "
+            "a term means, a policy, a procedure, a product, billing, tokens, "
+            "support or who to contact, search them FIRST and answer from what "
+            "comes back. Do not answer such a question from general knowledge "
+            "about telematics: a plausible answer that is not what NAVAS "
+            "actually does is worse for the customer than no answer. If the "
+            "search returns nothing, say you could not find it and offer to "
+            "put them in touch with someone who can help.")})
+
+        # "I have data and training up to October 2023" was a real answer to a
+        # real customer. Waswa is a NAVAS assistant, not a chatbot discussing
+        # its own construction.
+        messages.append({"role": "system", "content": (
+            "You are Waswa, the assistant for the NAVAS platform and the OLIWA "
+            "apps. Never mention your training data, a knowledge cut-off date, "
+            "any model name, or who built you; you have no useful knowledge of "
+            "those and they are not what was asked. When you do not know "
+            "something, say you could not find it in NAVAS, and stop there.")})
+
+        # A tool that reports unavailable: true has told us it could not look.
+        # Waswa used to turn that into "you have no vehicles", which is the one
+        # answer a customer cannot check and must never be guessed.
+        messages.append({"role": "system", "content": (
+            "If a tool result contains \"unavailable\": true, the system could "
+            "not read that data. Say you cannot check it right now. Never "
+            "convert it into a count, a zero, or \"you have none\" — a figure "
+            "you did not read is worse than admitting the outage.")})
+
+        # unit_trips takes a date range; fleet_activity takes a number of
+        # days. Asked about "last week" they can return different counts for
+        # the same vehicle, both correct for their own window. Every tool result
+        # carries from/to, so the only way to contradict yourself here is to
+        # quote a figure without the window it came from.
+        messages.append({"role": "system", "content": (
+            "Trip counts, distances and fleet totals are always FOR A DATE "
+            "RANGE, and every tool result carries the from/to it used. Say the "
+            "range whenever you give such a figure — \"16 trips between 25 Sep "
+            "and 2 Oct\", not \"16 trips last week\". If two results cover "
+            "different ranges, do not reconcile them by picking one: say what "
+            "each covers.")})
+
         if module and surface in _SCREEN_SURFACES:
             who, app = _SCREEN_SURFACES[surface]
+            # The earlier wording of this ("you do not see what is on their
+            # screen ... say so") was being used as a reason to decline
+            # questions about their own vehicles, which is the opposite of the
+            # point. Not seeing the screen says nothing about what can be
+            # looked up.
             messages.append({"role": "system", "content": (
                 f"The {who} is asking from the {app} \"{module}\" screen. "
-                "Read short or ambiguous questions in that context. You do not "
-                "see what is on their screen; if the question depends on live "
-                "figures from it that you have not been given, say so.")})
+                "Read short or ambiguous questions in that context. You cannot "
+                "see their screen, but that is NEVER a reason to decline a "
+                "question about their vehicles, trips, tokens or charges — "
+                "those come from your tools, not from the screen, so call the "
+                "tools. Only say you cannot see something when it exists just "
+                "on their screen and no tool can fetch it.")})
         messages.extend(history)
         messages.append({"role": "user", "content": user_message})
 
@@ -677,14 +1007,36 @@ def AssistantChat():
         finish_reason = None
         answered = False
         docs_found = False          # a document search returned something
-        for _ in range(_MAX_TOOL_ROUNDS):
-            outcome = _call_model(messages)
+        must_look_up = _needs_lookup(user_message)
+
+        # Looked up here rather than left to the model. See _prefetch_fleet:
+        # asking the model to call a tool is a request that can be declined
+        # somewhere between here and the provider; reading the data first is
+        # not. Tools remain available for everything past the first lookup.
+        if must_look_up:
+            fleet_notes, fleet_evidence = _prefetch_fleet(
+                user_message, fleet_scope)
+            for note in fleet_notes:
+                messages.append({"role": "system", "content": note})
+            evidence.extend(fleet_evidence)
+
+        for _round in range(_MAX_TOOL_ROUNDS):
+            outcome = _call_model(
+                messages,
+                force_tools=(_round == 0 and must_look_up))
             if outcome['status'] != 'ok':
                 return reply("error", outcome['code'], outcome['message'], "")
 
             assistant_message = outcome['message']
             finish_reason = outcome.get('finish_reason')
             tool_calls = assistant_message.get('tool_calls') or []
+            _log('<- model: %s tool call(s)%s, finish_reason=%s (round %s, '
+                 'forced=%s)',
+                 len(tool_calls),
+                 ': ' + ', '.join(
+                     (c.get('function') or {}).get('name', '?')
+                     for c in tool_calls) if tool_calls else '',
+                 finish_reason, _round, (_round == 0 and must_look_up))
 
             if not tool_calls:
                 text = (assistant_message.get('content') or '').strip()
@@ -700,17 +1052,28 @@ def AssistantChat():
                 except ValueError:
                     arguments = {}
 
-                # Knowledge tools first: dispatch returns None for a name it
+                # Fleet tools first. Their scope is built here from the
+                # signed-in account, never from the conversation: the model
+                # may name a unit, but only the server decides whose fleet it
+                # is allowed to look in.
+                result = waswa_fleet.dispatch(tool_name, arguments,
+                                              scope=fleet_scope)
+                if result is not None:
+                    # The account's own telemetry — the most authoritative
+                    # thing Waswa can cite, and measured rather than written.
+                    authority = 1
+                    kind = 'fleet'
+                # Knowledge tools next: dispatch returns None for a name it
                 # does not own, so an unknown tool still reaches the product
                 # dispatcher and gets its readable "no such tool" answer rather
                 # than being swallowed here.
-                result = waswa_knowledge.dispatch(tool_name, arguments,
-                                                  audience=audience)
-                if result is None:
+                elif (knowledge := waswa_knowledge.dispatch(
+                        tool_name, arguments, audience=audience)) is None:
                     result = waswa_products.dispatch(tool_name, arguments)
                     authority = 1          # PPMM tables are level 1 by definition
                     kind = 'tool'
                 else:
+                    result = knowledge
                     # A document answer is only as authoritative as the weakest
                     # chunk it was built from, and that varies per search.
                     authority = waswa_knowledge.authority_of(result)

@@ -1,3 +1,5 @@
+from .globals import STORE_UNAVAILABLE
+import threading
 from flask import Flask
 from flask import Blueprint
 from flask import request
@@ -7,6 +9,8 @@ from flask import jsonify
 import datetime
 import random
 from flask import current_app
+from flask import has_request_context
+from flask import g
 import base64
 from decimal import Decimal
 from .globals import reply
@@ -27,6 +31,9 @@ import logging
 import time
 import os
 from .globals import CheckHardware2
+from . import location_store
+from . import io_events_store
+from . import stops
 from math import radians, sin, cos, sqrt, atan2
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib.pagesizes import landscape
@@ -56,35 +63,13 @@ from config import (
     CASSANDRA_LOCAL_DC,
 )
 
-_cassandra_cluster = None
-_cassandra_session = None
+# B9: one Cassandra session per PROCESS, not one per module. This module
+# used to define its own get_cassandra_session() over its own globals and
+# its own Cluster(); six identical copies meant a worker could hold six
+# pools to the same database, each paying its own 6-7s handshake. The
+# name is re-exported so this module's callers and importers are unchanged.
+from .cassandra_store import get_cassandra_session
 
-def get_cassandra_session():
-    global _cassandra_cluster, _cassandra_session
-    if _cassandra_session and not _cassandra_session.is_shutdown:
-        return _cassandra_session
-    try:
-        auth_provider = PlainTextAuthProvider(
-            username=CASSANDRA_USERNAME,
-            password=CASSANDRA_PASSWORD
-        )
-        profile = ExecutionProfile(
-            load_balancing_policy=TokenAwarePolicy(DCAwareRoundRobinPolicy(local_dc=CASSANDRA_LOCAL_DC)),
-            consistency_level=ConsistencyLevel.ONE
-        )
-        _cassandra_cluster = Cluster(
-            contact_points=CASSANDRA_CONTACT_POINTS,
-            port=CASSANDRA_PORT,
-            auth_provider=auth_provider,
-            protocol_version=4,
-            execution_profiles={EXEC_PROFILE_DEFAULT: profile}
-        )
-        _cassandra_session = _cassandra_cluster.connect(CASSANDRA_KEYSPACE)
-        print("Successfully connected to Cassandra cluster")
-        return _cassandra_session
-    except Exception as e:
-        print(f"Error connecting to Cassandra: {e}")
-        return None
 
 data_stream = Blueprint("data_stream", __name__)
 
@@ -147,7 +132,26 @@ def create_pdf(data, from_date, to_date, device_imei, file_name_x):
     # Add the table to the PDF document
     doc.build([table_headings, table])
     
-def Config_Sources(GetThis, target_device_imei, target_io_records, target_actual_speed_x):
+def _device_config_cache():
+    """Per-request store for the device-config lookups.
+
+    Request-scoped on purpose. Config_Sources is called from three routes and
+    its answer depends on the device, so a module-level dict would hand one
+    customer's ignition configuration to another. Outside a request context —
+    a script importing this module — caching is skipped rather than made
+    global.
+    """
+    if not has_request_context():
+        return None
+    cache = getattr(g, '_navas_device_config_cache', None)
+    if cache is None:
+        cache = {}
+        g._navas_device_config_cache = cache
+    return cache
+
+
+def Config_Sources(GetThis, target_device_imei, target_io_records, target_actual_speed_x,
+                   prefetched_events=None):
     # Use Cassandra session instead of psycopg2 connection
     try:
         target_actual_speed = int(target_actual_speed_x)
@@ -158,6 +162,62 @@ def Config_Sources(GetThis, target_device_imei, target_io_records, target_actual
             target_actual_speed = 0
 
     session = get_cassandra_session()
+
+    def config_source_uid(parameter):
+        """The device's configured channel for `parameter`, cached per request.
+
+        The lookup depends only on (parameter, device) — four answers per
+        request, where this was asking four times per FIX. Returns the row
+        list, because the callers below branch on len(rows) == 1 and both 0
+        and 2-or-more must keep falling back.
+
+        A query that raised is NOT cached: cassandra_query cannot tell "no
+        rows" from "the query broke", and caching the second would turn one
+        dropped packet into a whole-request fallback.
+        """
+        cache = _device_config_cache()
+        key = (parameter, str(target_device_imei))
+        if cache is not None and key in cache:
+            return cache[key]
+        if not session:
+            return []
+        try:
+            rows = list(session.execute(
+                "SELECT config_param_data_source_uid FROM "
+                "dll_device_local_configs WHERE config_parameter=%s AND "
+                "local_device_imei=%s ALLOW FILTERING;",
+                (parameter, str(target_device_imei))))
+        except Exception:                                   # noqa: BLE001
+            return []
+        if cache is not None:
+            cache[key] = rows
+        return rows
+
+    def event_value_for(source_uid):
+        """This fix's value for one IO channel.
+
+        When prefetched_events is given — the rows io_events_store already
+        fetched for this fix — this is a dict lookup costing no query. At
+        0.30s a round trip, four of these per fix was 1.2s a row.
+
+        Returns a one-row list so that the len(rows2) == 1 branches and the
+        rows2[0][0] reads below are unchanged.
+        """
+        wanted = str(source_uid or '').strip()
+        if prefetched_events is not None:
+            for event in prefetched_events:
+                if str(event.get('event_uid') or '').strip() == wanted:
+                    return [(event.get('value'),)]
+            return []
+        if not session:
+            return []
+        try:
+            return list(session.execute(
+                "SELECT event_value_executed FROM dll_io_events_executed_logs "
+                "WHERE event_uid_executed=%s AND io_parent_io_event_uid=%s "
+                "ALLOW FILTERING;", (wanted, str(target_io_records))))
+        except Exception:                                   # noqa: BLE001
+            return []
 
     # Helper to run a simple select and return list of rows
     def cassandra_query(q, params):
@@ -179,17 +239,11 @@ def Config_Sources(GetThis, target_device_imei, target_io_records, target_actual
             return 'OFF'
 
     if GetThis == 'ignition':
-        rows = cassandra_query(
-            "SELECT config_param_data_source_uid FROM dll_device_local_configs WHERE config_parameter=%s AND local_device_imei=%s ALLOW FILTERING;",
-            ('ignition_detection', str(target_device_imei))
-        )
+        rows = config_source_uid('ignition_detection')
 
         if len(rows) == 1:
             IgnitionSource = rows[0][0]
-            rows2 = cassandra_query(
-                "SELECT event_value_executed FROM dll_io_events_executed_logs WHERE event_uid_executed=%s AND io_parent_io_event_uid=%s ALLOW FILTERING;",
-                (str(IgnitionSource), str(target_io_records))
-            )
+            rows2 = event_value_for(IgnitionSource)
 
             if len(rows2) == 1:
                 try:
@@ -209,17 +263,11 @@ def Config_Sources(GetThis, target_device_imei, target_io_records, target_actual
             return ignition_fallback()
 
     elif GetThis == 'driver_id':
-        rows = cassandra_query(
-            "SELECT config_param_data_source_uid FROM dll_device_local_configs WHERE config_parameter=%s AND local_device_imei=%s ALLOW FILTERING;",
-            ('driver_detection', str(target_device_imei))
-        )
+        rows = config_source_uid('driver_detection')
 
         if len(rows) == 1:
             DriverIDSource = rows[0][0]
-            rows2 = cassandra_query(
-                "SELECT event_value_executed FROM dll_io_events_executed_logs WHERE event_uid_executed=%s AND io_parent_io_event_uid=%s ALLOW FILTERING;",
-                (str(DriverIDSource), str(target_io_records))
-            )
+            rows2 = event_value_for(DriverIDSource)
 
             if len(rows2) == 1:
                 try:
@@ -242,17 +290,11 @@ def Config_Sources(GetThis, target_device_imei, target_io_records, target_actual
             return 'No_Configuration'
 
     elif GetThis == 'fuel':
-        rows = cassandra_query(
-            "SELECT config_param_data_source_uid FROM dll_device_local_configs WHERE config_parameter=%s AND local_device_imei=%s ALLOW FILTERING;",
-            ('fuel_level', str(target_device_imei))
-        )
+        rows = config_source_uid('fuel_level')
 
         if len(rows) == 1:
             FuelLevelSource = rows[0][0]
-            rows2 = cassandra_query(
-                "SELECT event_value_executed FROM dll_io_events_executed_logs WHERE event_uid_executed=%s AND io_parent_io_event_uid=%s ALLOW FILTERING;",
-                (str(FuelLevelSource), str(target_io_records))
-            )
+            rows2 = event_value_for(FuelLevelSource)
 
             if len(rows2) == 1:
                 ConfigParameter_Value = str(rows2[0][0])
@@ -263,17 +305,11 @@ def Config_Sources(GetThis, target_device_imei, target_io_records, target_actual
             return 'No_Configuration'
 
     elif GetThis == 'mileage':
-        rows = cassandra_query(
-            "SELECT config_param_data_source_uid FROM dll_device_local_configs WHERE config_parameter=%s AND local_device_imei=%s ALLOW FILTERING;",
-            ('mileage_reading', str(target_device_imei))
-        )
+        rows = config_source_uid('mileage_reading')
 
         if len(rows) == 1:
             MileageSource = rows[0][0]
-            rows2 = cassandra_query(
-                "SELECT event_value_executed FROM dll_io_events_executed_logs WHERE event_uid_executed=%s AND io_parent_io_event_uid=%s ALLOW FILTERING;",
-                (str(MileageSource), str(target_io_records))
-            )
+            rows2 = event_value_for(MileageSource)
 
             if len(rows2) == 1:
                 try:
@@ -287,6 +323,47 @@ def Config_Sources(GetThis, target_device_imei, target_io_records, target_actual
         else:
             return 'No-Configuration'
 
+# B8: distancematrix.ai plumbing.
+#
+# A Session is not documented as thread-safe, and one built before fork()
+# holds the parent's sockets, so it is kept per thread AND per process -- the
+# same pid guard cassandra_store.py uses for Cassandra.
+_distance_local = threading.local()
+
+# (connect, read). Without this a hung call blocks the worker for ever.
+DISTANCE_TIMEOUT = (5, 15)
+
+# Only SUCCESSFUL lookups land here. Caching a CORDS_ERROR would turn one
+# transient failure into a permanent wrong answer for the life of the process.
+_DISTANCE_CACHE = {}
+_DISTANCE_CACHE_MAX = 2048
+_distance_cache_lock = threading.Lock()
+
+
+def _distance_http():
+    """A requests.Session for this thread in this process."""
+    pid = os.getpid()
+    session = getattr(_distance_local, 'session', None)
+    if session is None or getattr(_distance_local, 'pid', None) != pid:
+        session = requests.Session()
+        _distance_local.session = session
+        _distance_local.pid = pid
+    return session
+
+
+def _distance_cache_get(key):
+    return _DISTANCE_CACHE.get(key)
+
+
+def _distance_cache_put(key, value):
+    with _distance_cache_lock:
+        if len(_DISTANCE_CACHE) >= _DISTANCE_CACHE_MAX:
+            # Cheap bound. Road distances do not change often enough to earn
+            # a full LRU, and an unbounded dict in a long-lived worker does.
+            _DISTANCE_CACHE.clear()
+        _DISTANCE_CACHE[key] = value
+
+
 def Calculate_DistanceX(Origin_Lat, Origin_Long, To_Lat, To_Long):
     """Road distance and duration between two points, as a JSON string.
 
@@ -294,29 +371,60 @@ def Calculate_DistanceX(Origin_Lat, Origin_Long, To_Lat, To_Long):
     must return JSON — returning a bare word breaks trip history with a
     JSONDecodeError rather than degrading. 'CORDS_ERROR' is the marker the
     callers already understand for "no distance available".
+
+    B8: now cached, connection-reusing, and bounded by a timeout. A network
+    failure is reported as CORDS_ERROR like any other failure, and is NOT
+    cached.
     """
     # The distancematrix.ai key used to be written into the URL below.
     from config import DISTANCEMATRIX_API_KEY
     if not DISTANCEMATRIX_API_KEY:
         return json.dumps({"distance_covered": 'CORDS_ERROR',
                            "time_covered": "Nothing"})
-    RequestData = requests.get(f"https://api.distancematrix.ai/maps/api/distancematrix/json?origins={Origin_Lat}, {Origin_Long}&destinations={To_Lat}, {To_Long}&key={DISTANCEMATRIX_API_KEY}")
-    api_data = RequestData.json()
-    
-    if(api_data['rows'][0]['elements'][0]['status'] != 'ZERO_RESULTS') and (api_data['rows'][0]['elements'][0]['status'] == 'OK'):
 
-        KiloMeters_Covered = re.sub(r'[^\d.]', '', str(api_data['rows'][0]['elements'][0]['distance']['text']))
-        TimeCovered = re.sub(r'[^\d.]', '', str(api_data['rows'][0]['elements'][0]['duration']['text']))
+    cache_key = (str(Origin_Lat), str(Origin_Long), str(To_Lat), str(To_Long))
+    cached = _distance_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        RequestData = _distance_http().get(
+            "https://api.distancematrix.ai/maps/api/distancematrix/json",
+            params={"origins": f"{Origin_Lat}, {Origin_Long}",
+                    "destinations": f"{To_Lat}, {To_Long}",
+                    "key": DISTANCEMATRIX_API_KEY},
+            timeout=DISTANCE_TIMEOUT)
+        api_data = RequestData.json()
+    except Exception as error:      # noqa: BLE001 — timeouts, DNS, bad JSON
+        # Logged, not returned: the key is in the request and requests puts
+        # the URL in its exception text.
+        logging.warning('Calculate_DistanceX: %s', type(error).__name__)
+        return json.dumps({"distance_covered": 'CORDS_ERROR',
+                           "time_covered": "Nothing"})
+
+    try:
+        element = api_data['rows'][0]['elements'][0]
+    except (KeyError, IndexError, TypeError):
+        return json.dumps({"distance_covered": 'CORDS_ERROR',
+                           "time_covered": "Nothing"})
+
+    if element.get('status') == 'OK':
+
+        KiloMeters_Covered = re.sub(r'[^\d.]', '', str(element['distance']['text']))
+        TimeCovered = re.sub(r'[^\d.]', '', str(element['duration']['text']))
 
         data_xc = {
             "distance_covered": KiloMeters_Covered,
             "time_covered": TimeCovered
         }
 
-        return json.dumps(data_xc)
-    
-    # Any other status (OVER_QUERY_LIMIT, REQUEST_DENIED, NOT_FOUND) used to
-    # fall off the end and return None, which json.loads() then choked on.
+        answer = json.dumps(data_xc)
+        _distance_cache_put(cache_key, answer)
+        return answer
+
+    # Any other status (ZERO_RESULTS, OVER_QUERY_LIMIT, REQUEST_DENIED,
+    # NOT_FOUND) used to fall off the end and return None, which json.loads()
+    # then choked on. Not cached: OVER_QUERY_LIMIT is transient.
     return json.dumps({"distance_covered": 'CORDS_ERROR',
                        "time_covered": "Nothing"})
 
@@ -396,6 +504,9 @@ def find_trips(data_points):
                 # Check if distance between start and end points exceeds threshold
                 min_trip_distance = 1  # Minimum trip distance in kilometers
                 if distance > min_trip_distance:
+                    # B8: carry the number we just paid for. Every caller used
+                    # to ask distancematrix.ai again for these same two points.
+                    current_trip["distance_km"] = distance
                     trips.append(current_trip)
 
             trip_started = False
@@ -623,15 +734,39 @@ def ComputeTrips_EXCELL():
             SelectedFuel_Level = ''
             SelectedDriverID = ''
 
+            # B3: positions come from the live store.
+            #
+            # The Postgres copy of dll_location_registry ends 01-08-2025 and
+            # the Cassandra store begins 05-08-2025 -- no shared day -- so this
+            # export returned nothing for every recent date.
+            #
+            # Read BEFORE `with dbconnect:` on purpose: that block commits when
+            # it exits, a `return` included, so a 503 raised inside it would
+            # leave an orphan row in dll_reports_downloadable_files.
+            try:
+                _position_fixes, _positions_truncated = location_store.fixes(
+                    get_cassandra_session(), DeviceImei, FromDate, ToDate,
+                    limit=Record_Count, offset=Offset_Record)
+            except location_store.PositionsUnavailable as error:
+                logging.warning('ComputeTrips_EXCELL: position store unavailable: %s',
+                                error)
+                return reply('error', 503,
+                             'Position data is temporarily unavailable, '
+                             'please retry', '')
+
+            raw_data_adapter = [location_store.as_history_tuple(_fix)
+                                for _fix in _position_fixes]
             with dbconnect:
                 with dbconnect.cursor() as cursor:
-                    cursor.execute("INSERT INTO dll_reports_downloadable_files (request_uid, file_path, report_caller, request_status) VALUES(%s, %s, %s, %s)", (str(OriginRequest_UID), 'NO_DIR_PATH', OriginUser_UID, 'in_process',))
+                    # B12: the inline INSERT that stood here is gone. LogReport_Request()
+                    # above already inserted this row -- with request_datestamp, which
+                    # this one omitted -- so every excel export left TWO rows and made
+                    # report_status answer "Unable to complete request" while the file
+                    # sat on the CDN. ComputeTrips_PDF never had this line.
 
-                    cursor.execute("SELECT data_longitude, data_latitude, speed_log, data_hdop, local_system_datestamp, record_io_events_uid, geocoded_location, local_system_timestamp, data_connected_satelites, batch_uid, data_idx, ROW_NUMBER() OVER (ORDER BY data_idx DESC) AS row_index FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY data_longitude, data_latitude ORDER BY data_idx DESC) AS row_num FROM dll_location_registry WHERE data_device_imei = %s AND TO_DATE(local_system_datestamp, 'DD-MM-YYYY') BETWEEN TO_DATE(%s, 'DD-MM-YYYY') AND TO_DATE(%s, 'DD-MM-YYYY')) AS subquery WHERE row_num = 1 ORDER BY data_idx DESC LIMIT %s OFFSET %s;", (str(DeviceImei), FromDate, ToDate, Record_Count, Offset_Record,))
 
-                    if(cursor.rowcount >= 1):
+                    if(len(raw_data_adapter) >= 1):
                         
-                        raw_data_adapter = cursor.fetchall()
                         
                         for Trip in raw_data_adapter:
                             
@@ -753,9 +888,17 @@ def ComputeTrips_EXCELL():
                                     End_Lat = trip["end_point"]["data_latitude"]
                                     End_Long = trip["end_point"]["data_longitude"]
 
-                                    distance_pool_x = Calculate_DistanceX(Starting_Lat, Starting_Long, End_Lat, End_Long)
-                                    distance_data = json.loads(distance_pool_x)
-                                    distance = float(distance_data["distance_covered"])
+                                    # B8: find_trips() already measured this pair.
+                                    distance = trip.get("distance_km")
+                                    if distance is None:
+                                        distance_data = json.loads(Calculate_DistanceX(
+                                            Starting_Lat, Starting_Long, End_Lat, End_Long))
+                                        raw_distance = distance_data["distance_covered"]
+                                        # float('CORDS_ERROR') raised a ValueError and
+                                        # 500'd the export. trips_history guarded this
+                                        # and these two did not.
+                                        distance = (float(raw_distance)
+                                                    if raw_distance != 'CORDS_ERROR' else 0)
 
                                     OneTrip_Object = {
                                         "trip_number": i,
@@ -819,7 +962,7 @@ def ComputeTrips_EXCELL():
 
                         return reply('success', 200, 'Processing Excell Report, Keep Checking', '')
 
-                    elif(cursor.rowcount == 0):
+                    elif(len(raw_data_adapter) == 0):
                         cursor.execute("UPDATE dll_reports_downloadable_files SET request_status='no-data' WHERE request_uid=%s;", (str(OriginRequest_UID),))
                         return reply('error', 400, 'No Trips Data Found', '')
                     
@@ -864,13 +1007,33 @@ def ComputeTrips_PDF():
             SelectedFuel_Level = ''
             SelectedDriverID = ''
 
+            # B3: positions come from the live store.
+            #
+            # The Postgres copy of dll_location_registry ends 01-08-2025 and
+            # the Cassandra store begins 05-08-2025 -- no shared day -- so this
+            # export returned nothing for every recent date.
+            #
+            # Read BEFORE `with dbconnect:` on purpose: that block commits when
+            # it exits, a `return` included, so a 503 raised inside it would
+            # leave an orphan row in dll_reports_downloadable_files.
+            try:
+                _position_fixes, _positions_truncated = location_store.fixes(
+                    get_cassandra_session(), DeviceImei, FromDate, ToDate,
+                    limit=Record_Count, offset=Offset_Record)
+            except location_store.PositionsUnavailable as error:
+                logging.warning('ComputeTrips_PDF: position store unavailable: %s',
+                                error)
+                return reply('error', 503,
+                             'Position data is temporarily unavailable, '
+                             'please retry', '')
+
+            raw_data_adapter = [location_store.as_history_tuple(_fix)
+                                for _fix in _position_fixes]
             with dbconnect:
                 with dbconnect.cursor() as cursor:
-                    cursor.execute("SELECT data_longitude, data_latitude, speed_log, data_hdop, local_system_datestamp, record_io_events_uid, geocoded_location, local_system_timestamp, data_connected_satelites, batch_uid, data_idx, ROW_NUMBER() OVER (ORDER BY data_idx DESC) AS row_index FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY data_longitude, data_latitude ORDER BY data_idx DESC) AS row_num FROM dll_location_registry WHERE data_device_imei = %s AND TO_DATE(local_system_datestamp, 'DD-MM-YYYY') BETWEEN TO_DATE(%s, 'DD-MM-YYYY') AND TO_DATE(%s, 'DD-MM-YYYY')) AS subquery WHERE row_num = 1 ORDER BY data_idx DESC LIMIT %s OFFSET %s;", (str(DeviceImei), FromDate, ToDate, Record_Count, Offset_Record,))
 
-                    if(cursor.rowcount >= 1):
+                    if(len(raw_data_adapter) >= 1):
                         
-                        raw_data_adapter = cursor.fetchall()
                         
                         for Trip in raw_data_adapter:
                             
@@ -993,9 +1156,17 @@ def ComputeTrips_PDF():
                                     End_Lat = trip["end_point"]["data_latitude"]
                                     End_Long = trip["end_point"]["data_longitude"]
 
-                                    distance_pool_x = Calculate_DistanceX(Starting_Lat, Starting_Long, End_Lat, End_Long)
-                                    distance_data = json.loads(distance_pool_x)
-                                    distance = float(distance_data["distance_covered"])
+                                    # B8: find_trips() already measured this pair.
+                                    distance = trip.get("distance_km")
+                                    if distance is None:
+                                        distance_data = json.loads(Calculate_DistanceX(
+                                            Starting_Lat, Starting_Long, End_Lat, End_Long))
+                                        raw_distance = distance_data["distance_covered"]
+                                        # float('CORDS_ERROR') raised a ValueError and
+                                        # 500'd the export. trips_history guarded this
+                                        # and these two did not.
+                                        distance = (float(raw_distance)
+                                                    if raw_distance != 'CORDS_ERROR' else 0)
 
                                     OneTrip_Object = {
                                         "trip_number": i,
@@ -1053,7 +1224,7 @@ def ComputeTrips_PDF():
 
                         return reply('success', 200, 'Processing Report, Keep Checking', '')
 
-                    elif(cursor.rowcount == 0):
+                    elif(len(raw_data_adapter) == 0):
                         cursor.execute("UPDATE dll_reports_downloadable_files SET request_status='no-data' WHERE request_uid=%s;", (str(OriginRequest_UID),))
                         return reply('error', 400, 'No Trips Data Found', '')
                     
@@ -1083,7 +1254,16 @@ def trips_history():
         SelectedFuel_Level = ''
         SelectedDriverID = ''
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        try:
+            dbconnect = psycopg2.connect(current_app.config['db_link'])
+        except Exception:
+            # Transient on this host -- 10/10 sequential connects succeeded in
+            # scripts/audit_db_host_health.py -- so tell the client to retry
+            # rather than letting the catch-all answer 500 with psycopg2's
+            # text, which quotes the DSN.  Full error goes to the log.
+            logging.exception('trips_history: database connection failed')
+            return reply('error', 503,
+                         'Trip history is temporarily unavailable, please retry', '')
         payload_data = request.get_json()
 
         if(len(str(payload_data['data']['device_imei'])) > 4) and (len(str(payload_data['data']['from_date'])) > 4) and (len(str(payload_data['data']['to_date'])) > 4) and (len(str(payload_data['data']['offset_log'])) > 0) and (len(str(payload_data['data']['record_count'])) > 0):
@@ -1120,11 +1300,24 @@ def trips_history():
 
                         with dbconnect:
                             with dbconnect.cursor() as cursor:
-                                cursor.execute("SELECT data_longitude, data_latitude, speed_log, data_hdop, local_system_datestamp, record_io_events_uid, geocoded_location, local_system_timestamp, data_connected_satelites, batch_uid, data_idx, ROW_NUMBER() OVER (ORDER BY data_idx DESC) AS row_index FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY data_longitude, data_latitude ORDER BY data_idx DESC) AS row_num FROM dll_location_registry WHERE data_device_imei = %s AND TO_DATE(local_system_datestamp, 'DD-MM-YYYY') BETWEEN TO_DATE(%s, 'DD-MM-YYYY') AND TO_DATE(%s, 'DD-MM-YYYY')) AS subquery WHERE row_num = 1 ORDER BY data_idx DESC LIMIT %s OFFSET %s;", (DeviceImei, FromDate, ToDate, Record_Count, Offset_Record,))
+                                try:
+                                    _fixes, _truncated = location_store.fixes(
+                                        get_cassandra_session(), DeviceImei,
+                                        FromDate, ToDate,
+                                        limit=Record_Count,
+                                        offset=Offset_Record)
+                                except location_store.PositionsUnavailable as _error:
+                                    # "We could not look" must never render as
+                                    # "this vehicle did not move."
+                                    logging.warning(
+                                        "trips_history: position store unavailable "
+                                        "for %s (%s to %s): %s",
+                                        DeviceImei, FromDate, ToDate, _error)
+                                    return reply('error', 503, 'Position data is temporarily unavailable, please retry', '')
 
-                                if(cursor.rowcount >= 1):
+                                if _fixes:
 
-                                    trips_data_adapter = cursor.fetchall()
+                                    trips_data_adapter = [location_store.as_history_tuple(_row) for _row in _fixes]
                                     PrimaryData = {
                                         "raw_data": [],
                                         "trips_data": []
@@ -1132,42 +1325,76 @@ def trips_history():
                                     TripsData = []
                                     Trips_Records = []
 
+                                    # Every fix's IO events in one go. The old
+                                    # per-fix Postgres lookup scanned 11 GB to
+                                    # return nothing — that table holds none of
+                                    # these uids — so the gate below was always
+                                    # false and the Config_Sources calls after
+                                    # it never ran.
+                                    try:
+                                        _io_by_uid = io_events_store.events_for(
+                                            get_cassandra_session(),
+                                            [_t[5] for _t in trips_data_adapter])
+                                    except io_events_store.IoEventsUnavailable as _io_error:
+                                        # "We could not look" must not render as
+                                        # "this vehicle reported nothing".
+                                        logging.warning(
+                                            "trips_history: IO events unavailable "
+                                            "for %s: %s", DeviceImei, _io_error)
+                                        return reply('error', 503, 'Telemetry detail is temporarily unavailable, please retry', '')
+
+                                    # One query for every distinct channel id,
+                                    # not one per IO event. Returns {} when the
+                                    # reference table is empty, which it is.
+                                    _io_names = io_events_store.names_for(
+                                        cursor, TableName, ValueColunmName,
+                                        ConditionColunmName,
+                                        [io_events_store.vendor_io_id(
+                                            TheDeviceVendor, _event['event_uid'])
+                                         for _list in _io_by_uid.values()
+                                         for _event in _list])
+
                                     for trip in trips_data_adapter:
 
                                         RecordIO_UID = trip[5]
                                         SPEED = trip[2]
 
-                                        cursor.execute("SELECT event_uid_executed,event_value_executed,data_idx FROM dll_io_events_executed_logs WHERE io_parent_io_event_uid=%s ORDER BY data_idx DESC;", (str(RecordIO_UID),))
+                                        _events = _io_by_uid.get(
+                                            str(RecordIO_UID or '').strip(), [])
 
-                                        if(cursor.rowcount >= 1):
+                                        if _events:
 
-                                            io_events_dataAdapter = cursor.fetchall()
                                             io_events_Found = []
                                             enduser_data = []
 
-                                            for io_event in io_events_dataAdapter:
-                                                
-                                                if(TheDeviceVendor == 'ruptela'):
-                                                    IO_ID_Found = str(io_event[0])+".0"
-                                                elif(TheDeviceVendor == 'teltonika'):
-                                                    IO_ID_Found = str(io_event[0])
+                                            for io_event in _events:
 
-                                                IO_IDQuery = f"SELECT { ValueColunmName } FROM { TableName } WHERE { ConditionColunmName }=%s"
-                                                cursor.execute(IO_IDQuery, (str(IO_ID_Found),))
-                                                IO_NameValue_adapter = cursor.fetchone()
-                                                IO_NameValue_Extracted = IO_NameValue_adapter[0]
+                                                # Every vendor, not two of them.
+                                                # This unit is xirgo_global, and
+                                                # the old code assigned nothing
+                                                # here -> NameError.
+                                                IO_ID_Found = io_events_store.vendor_io_id(
+                                                    TheDeviceVendor, io_event['event_uid'])
+
+                                                # dll_io_events_config has no
+                                                # rows, so this misses and the
+                                                # raw channel id is the label.
+                                                # The old code did fetchone()[0]
+                                                # on None.
+                                                IO_NameValue_Extracted = _io_names.get(
+                                                    IO_ID_Found, IO_ID_Found)
 
                                                 SingleIO_Event = {
-                                                    IO_NameValue_Extracted:io_event[1] 
+                                                    IO_NameValue_Extracted: io_event['value']
                                                 }
 
                                                 io_events_Found.append(SingleIO_Event)
                                                 
 
-                                            FocusIgnition_Status = Config_Sources('ignition', DeviceImei, RecordIO_UID, int(SPEED))
-                                            FocusMileage = Config_Sources('mileage', DeviceImei, RecordIO_UID, SPEED)
-                                            FocusFuelLevel = Config_Sources('fuel', DeviceImei, RecordIO_UID, SPEED)
-                                            FocusDriverID = Config_Sources('driver_id', DeviceImei, RecordIO_UID, SPEED)
+                                            FocusIgnition_Status = Config_Sources('ignition', DeviceImei, RecordIO_UID, int(SPEED), prefetched_events=_events)
+                                            FocusMileage = Config_Sources('mileage', DeviceImei, RecordIO_UID, SPEED, prefetched_events=_events)
+                                            FocusFuelLevel = Config_Sources('fuel', DeviceImei, RecordIO_UID, SPEED, prefetched_events=_events)
+                                            FocusDriverID = Config_Sources('driver_id', DeviceImei, RecordIO_UID, SPEED, prefetched_events=_events)
 
                                             if(FocusMileage == 'No-Data') and (PreviousMileage != ''):
                                                 SelectedMileage = PreviousMileage
@@ -1286,9 +1513,28 @@ def trips_history():
                                                 End_Lat = trip["end_point"]["data_latitude"]
                                                 End_Long = trip["end_point"]["data_longitude"]
 
-                                                distance_pool_x = Calculate_DistanceX(Starting_Lat, Starting_Long, End_Lat, End_Long)
-                                                distance_adapter = distance_pool_x.get_json()
-                                                distance = distance_adapter['distance_covered']
+                                                # B8: find_trips() already measured this pair;
+                                                # only ask the API if it did not.
+                                                _carried = trip.get("distance_km")
+                                                distance_pool_x = (
+                                                    json.dumps({"distance_covered": str(_carried),
+                                                                "time_covered": "carried"})
+                                                    if _carried is not None else
+                                                    Calculate_DistanceX(Starting_Lat, Starting_Long,
+                                                                        End_Lat, End_Long))
+                                                # Calculate_DistanceX returns a JSON STRING, as its own
+                                                # docstring states and as the excel and pdf routes already
+                                                # do. .get_json() is a response-object method, so this
+                                                # raised AttributeError on every trip that had real
+                                                # coordinates — which is why trips_data was always empty.
+                                                distance_adapter = json.loads(distance_pool_x)
+                                                if distance_adapter['distance_covered'] != 'CORDS_ERROR':
+                                                    distance = float(distance_adapter['distance_covered'])
+                                                else:
+                                                    # round(distance) below would raise on the error
+                                                    # string. The other routes report 0 for a leg whose
+                                                    # distance could not be worked out.
+                                                    distance = 0
 
                                                 OneTrip_Object = {
                                                     "trip_number": i,
@@ -1302,10 +1548,11 @@ def trips_history():
                                     
                                     return reply('success', 200, 'Trips Data Found', PrimaryData)
                                     
-                                elif(cursor.rowcount == 0):
-                                    return reply('error', 400, 'No Trips Found', '')
                                 else:
-                                    return reply('error', 400, 'Unable to complete request', '')
+                                    # Not cursor.rowcount: it now belongs to the
+                                    # IO-event queries inside the loop above, so
+                                    # it can no longer answer "were there trips".
+                                    return reply('error', 400, 'No Trips Found', '')
 
                     else:
                         return reply('error', 400, 'Record Count Is Too High', '')
@@ -1320,12 +1567,25 @@ def trips_history():
             
             elif(device_billing_check == 'not-found'):
                 return reply('error', 400, 'Routing Failed, Device Cant be found', '')
+
+            # B3d: the final else that was missing here.
+            #
+            # check_device() returns None when its rowcount is neither 1
+            # nor 0, and None matched none of the arms above, so control
+            # fell out of the chain entirely -- in this route that meant
+            # returning None and Flask answering an opaque 500.
+            else:
+                return reply('error', 400, 'Unable to complete request', '')
             
         else:
             return reply('error', 400, 'Something Is Missing', '')
 
     except Exception as error:
-        return reply('error', 500, error, '')
+        # An exception object is not JSON serialisable, so passing it here
+        # turned every 500 into an unhandled TypeError inside jsonify and the
+        # caller received an empty message. Log the traceback, return the text.
+        logging.exception('trips_history failed')
+        return reply('error', 500, str(error), '')
     
 
 
@@ -1358,7 +1618,6 @@ def trips_history_replay():
 
     try:
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
         payload_data = request.get_json()
 
         if(len(str(payload_data['data']['device_imei'])) > 4) and (len(str(payload_data['data']['from_date'])) > 4) and (len(str(payload_data['data']['to_date'])) > 4) and (len(str(payload_data['data']['offset_log'])) > 0) and (len(str(payload_data['data']['record_count'])) > 0):
@@ -1382,49 +1641,81 @@ def trips_history_replay():
                 if(compare_years(FromDate, ToDate) == True):
                     if(Record_Count < 15000) or (Record_Count == 15000):
 
-                        with dbconnect:
-                            with dbconnect.cursor() as cursor:
-                                if TimeFrom:
-                                    # A start and end time as well as dates: points on the
-                                    # first day from TimeFrom, on the last day up to TimeTo,
-                                    # everything on the days between. Times are compared as
-                                    # zero-padded HH:MM:SS text, so no row can fail a cast.
-                                    cursor.execute("SELECT data_longitude, data_latitude, speed_log, data_hdop, local_system_datestamp, record_io_events_uid, geocoded_location, local_system_timestamp, data_connected_satelites, batch_uid, data_idx, ROW_NUMBER() OVER (ORDER BY data_idx DESC) AS row_index FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY data_longitude, data_latitude ORDER BY data_idx DESC) AS row_num FROM dll_location_registry WHERE data_device_imei = %s AND TO_DATE(local_system_datestamp, 'DD-MM-YYYY') BETWEEN TO_DATE(%s, 'DD-MM-YYYY') AND TO_DATE(%s, 'DD-MM-YYYY') AND (TO_DATE(local_system_datestamp, 'DD-MM-YYYY') > TO_DATE(%s, 'DD-MM-YYYY') OR local_system_timestamp >= %s) AND (TO_DATE(local_system_datestamp, 'DD-MM-YYYY') < TO_DATE(%s, 'DD-MM-YYYY') OR local_system_timestamp <= %s)) AS subquery WHERE row_num = 1 ORDER BY data_idx DESC LIMIT %s OFFSET %s;", (DeviceImei, FromDate, ToDate, FromDate, TimeFrom, ToDate, TimeTo, Record_Count, Offset_Record,))
-                                else:
-                                    cursor.execute("SELECT data_longitude, data_latitude, speed_log, data_hdop, local_system_datestamp, record_io_events_uid, geocoded_location, local_system_timestamp, data_connected_satelites, batch_uid, data_idx, ROW_NUMBER() OVER (ORDER BY data_idx DESC) AS row_index FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY data_longitude, data_latitude ORDER BY data_idx DESC) AS row_num FROM dll_location_registry WHERE data_device_imei = %s AND TO_DATE(local_system_datestamp, 'DD-MM-YYYY') BETWEEN TO_DATE(%s, 'DD-MM-YYYY') AND TO_DATE(%s, 'DD-MM-YYYY')) AS subquery WHERE row_num = 1 ORDER BY data_idx DESC LIMIT %s OFFSET %s;", (DeviceImei, FromDate, ToDate, Record_Count, Offset_Record,))
+                        # B3c: positions come from the live store.
+                        #
+                        # The timed branch used to compare
+                        # local_system_timestamp as TEXT against zero-padded
+                        # 24-hour input. The stored values are 12-hour
+                        # ('02:30:15PM'), so every afternoon fix compared
+                        # wrongly. A parsed datetime span fixes that.
+                        #
+                        # local_datetime() is location_store's own parser, so
+                        # the span ends cannot drift from the formats the read
+                        # accepts.
+                        _span_from = None
+                        _span_to = None
 
-                                if(cursor.rowcount >= 1):
+                        if TimeFrom:
+                            _span_from = location_store.local_datetime(
+                                FromDate, TimeFrom)
+                            _span_to = location_store.local_datetime(
+                                ToDate, TimeTo)
 
-                                    trips_data_adapter = cursor.fetchall()
-                                    TripsData = []
+                            if _span_from is None or _span_to is None:
+                                return reply('error', 400,
+                                             'from_date and to_date did not '
+                                             'parse as dates', '')
 
-                                    for trip in trips_data_adapter:
+                        try:
+                            _replay_fixes, _replay_truncated = \
+                                location_store.fixes(
+                                    get_cassandra_session(), DeviceImei,
+                                    FromDate, ToDate,
+                                    limit=Record_Count, offset=Offset_Record,
+                                    datetime_from=_span_from,
+                                    datetime_to=_span_to)
+                        except location_store.PositionsUnavailable as error:
+                            logging.warning(
+                                'trips_history_replay: position store '
+                                'unavailable: %s', error)
+                            return reply('error', 503,
+                                         'Position data is temporarily '
+                                         'unavailable, please retry', '')
+
+                        trips_data_adapter = [
+                            location_store.as_history_tuple(_fix)
+                            for _fix in _replay_fixes]
+                        if(len(trips_data_adapter) >= 1):
+
+                            TripsData = []
+
+                            for trip in trips_data_adapter:
 
                         
-                                            SingleTripe_Record = {
-                                                "data_longitude": trip[0],
-                                                "data_latitude": trip[1],
-                                                "speed_log": trip[2],
-                                                "data_hdop": trip[3],
-                                                "local_system_datestamp": trip[4],
-                                                "record_io_events_uid": trip[5],
-                                                "geocoded_location": trip[6],
-                                                "local_system_timestamp": trip[7],
-                                                "data_connected_satelites": trip[8],
-                                                "batch_uid": trip[9],
-                                                "data_idx": trip[10],
-                                                "data_index": trip[-1]
-                                            }
+                                    SingleTripe_Record = {
+                                        "data_longitude": trip[0],
+                                        "data_latitude": trip[1],
+                                        "speed_log": trip[2],
+                                        "data_hdop": trip[3],
+                                        "local_system_datestamp": trip[4],
+                                        "record_io_events_uid": trip[5],
+                                        "geocoded_location": trip[6],
+                                        "local_system_timestamp": trip[7],
+                                        "data_connected_satelites": trip[8],
+                                        "batch_uid": trip[9],
+                                        "data_idx": trip[10],
+                                        "data_index": trip[-1]
+                                    }
 
-                                            TripsData.append(SingleTripe_Record)
+                                    TripsData.append(SingleTripe_Record)
 
 
-                                    return reply('success', 200, 'Trips Data Found', TripsData)
+                            return reply('success', 200, 'Trips Data Found', TripsData)
                                     
-                                elif(cursor.rowcount == 0):
-                                    return reply('error', 400, 'No Trips Found', '')
-                                else:
-                                    return reply('error', 400, 'Unable to complete request', '')
+                        elif(len(trips_data_adapter) == 0):
+                            return reply('error', 400, 'No Trips Found', '')
+                        else:
+                            return reply('error', 400, 'Unable to complete request', '')
 
                     else:
                         return reply('error', 400, 'Record Count Is Too High', '')
@@ -1439,84 +1730,17 @@ def trips_history_replay():
             
             elif(device_billing_check == 'not-found'):
                 return reply('error', 400, 'Routing Failed, Device Cant be found', '')
+
+            # B3d: the final else that was missing here.
+            #
+            # check_device() returns None when its rowcount is neither 1
+            # nor 0, and None matched none of the arms above, so control
+            # fell through into the mis-merged Excel export in this
+            # function's tail, building an .xlsx for a caller that
+            # asked for replay JSON.
+            else:
+                return reply('error', 400, 'Unable to complete request', '')
             
-        else:
-            return reply('error', 400, 'Something Is Missing', '')
-
-    except Exception as error:
-        return reply('error', 500, str(error), '')
-
-
-
-    try:
-
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
-        payload_data = request.get_json()
-
-        if(len(str(payload_data['data']['device_imei'])) > 4) and (len(str(payload_data['data']['from_date'])) > 4) and (len(str(payload_data['data']['to_date'])) > 4) and (len(str(payload_data['data']['offset_log'])) > 0) and (len(str(payload_data['data']['record_count'])) > 0) and (len(str(payload_data['data']['request_origin_user_uid'])) > 2):
-
-            DeviceImei = payload_data['data']['device_imei']
-            FromDate = payload_data['data']['from_date']
-            ToDate = payload_data['data']['to_date']
-            Offset_Record = payload_data['data']['offset_log']
-            Record_Count = int(payload_data['data']['record_count'])
-            DataRequest_ID = payload_data['data']['request_uid']
-            RequestOriginator = str(payload_data['data']['request_origin_user_uid'])
-
-            device_billing_status = check_device(DeviceImei)
-
-            if(device_billing_status == 'running'):
-
-
-                if(compare_years(FromDate, ToDate) == True):
-                    if(Record_Count < 15000) or (Record_Count == 15000):
-
-                        with dbconnect:
-                            with dbconnect.cursor() as cursor:
-                                cursor.execute("SELECT data_device_imei, geocoded_location, data_longitude, data_latitude, speed_log, local_system_datestamp, local_system_timestamp, data_connected_satelites FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY data_longitude, data_latitude ORDER BY data_idx DESC) AS row_num FROM dll_location_registry WHERE data_device_imei = %s AND TO_DATE(local_system_datestamp, 'DD-MM-YYYY') BETWEEN TO_DATE(%s, 'DD-MM-YYYY') AND TO_DATE(%s, 'DD-MM-YYYY')) AS subquery WHERE row_num = 1 ORDER BY data_idx DESC LIMIT %s OFFSET %s;", (DeviceImei, FromDate, ToDate, Record_Count, Offset_Record,))
-
-                                if(cursor.rowcount >= 1):
-
-                                    trips_data_adapter = cursor.fetchall()
-                                    
-                                    df = pd.DataFrame(trips_data_adapter, columns=['Device', 'Trip Location', 'Longitude Cordinates', 'Latitude Cordinates', 'Moving Speed ( KM/H )', 'Trip Date', 'Trip Time', 'Satelites Available'])
-
-                                    FN = "sentinel_trips_"+str(random.randint(32, 9233392920293)+random.randint(50, 20002930020222)+random.randint(450, 2000293)+random.randint(857, 901404139))[:29]
-
-                                    FileName = FN + '.xlsx'
-
-                                    df.to_excel(f'reports-cdn/{ FileName }', index=False)
-
-                                    PhysicalPath = current_app.config['base_url'] + "reports-cdn/" + FileName
-
-                                    cursor.execute("INSERT INTO dll_reports_downloadable_files (request_uid, file_path, report_caller) VALUES(%s, %s, %s)", (str(DataRequest_ID), str(PhysicalPath), RequestOriginator,))
-
-                                    data_back ={
-                                        "physical_file": PhysicalPath,
-                                        "request_uid": DataRequest_ID,
-                                        "request_status": "completed"
-                                    }
-
-                                    return reply('success', 200, 'Request Completed', data_back)
-                                    
-                                elif(cursor.rowcount == 0):
-                                    return reply('error', 400, 'No Trips Found', '')
-                                else:
-                                    return reply('error', 400, 'Unable to complete request', '')
-
-                    else:
-                        return reply('error', 400, 'Record Count Is Too High', '')
-
-                elif(compare_years(FromDate, ToDate) == False):
-                    return reply('error', 400, 'From Date and To Date Must Between 2 Years', '')
-                else:
-                    return reply('error', 400, 'Unable to complete request', '')
-                
-            elif(device_billing_status == 'blocked'):
-                return reply('error', 400, 'Device Billing Is Blocked', '')
-            
-            elif(device_billing_status == 'not-found'):
-                return reply('error', 400, 'Routing Failed, Device Cant be found', '')
         else:
             return reply('error', 400, 'Something Is Missing', '')
 
@@ -2207,6 +2431,9 @@ def trips_report_data():
         dbconnect = psycopg2.connect(current_app.config['db_link'])
         payload_data = request.get_json()
         _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            logging.warning('trips_report_data: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         report_devices = payload_data['data']['report_devices']
         start_date = str(payload_data['data']['start_date'])
@@ -2338,6 +2565,9 @@ def night_driving_report_data():
         dbconnect = psycopg2.connect(current_app.config['db_link'])
         payload_data = request.get_json()
         _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            logging.warning('night_driving_report_data: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         report_devices = payload_data['data']['report_devices']
         start_date = str(payload_data['data']['start_date'])
@@ -2441,6 +2671,9 @@ def state_report_data():
         dbconnect = psycopg2.connect(current_app.config['db_link'])
         payload_data = request.get_json()
         _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            logging.warning('state_report_data: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         report_devices = payload_data['data']['report_devices']
         start_date = str(payload_data['data']['start_date'])
@@ -2554,6 +2787,9 @@ def overspeeding_report_data():
         dbconnect = psycopg2.connect(current_app.config['db_link'])
         payload_data = request.get_json()
         _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            logging.warning('overspeeding_report_data: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         report_devices = payload_data['data']['report_devices']
         start_date = str(payload_data['data']['start_date'])
@@ -2645,6 +2881,9 @@ def geozone_report_data():
         dbconnect = psycopg2.connect(current_app.config['db_link'])
         payload_data = request.get_json()
         _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            logging.warning('geozone_report_data: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
         report_devices = payload_data['data']['report_devices']
         start_date = str(payload_data['data']['start_date'])
         end_date = str(payload_data['data']['end_date'])
@@ -2713,4 +2952,128 @@ def geozone_report_data():
                 else:
                     return reply('error', 400, 'No Geozone Events Found', '')
     except Exception as error:
+        return reply('error', 500, str(error), '')
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# B4 — STOPS
+#
+# A stop is an aggregation over CONTIGUOUS fixes, so it cannot be derived from
+# a paginated slice of them: a page boundary cuts a run in half and gives its
+# edges a dwell that differs between pages.  trips/history paginates fixes, so
+# stops live here instead, reading their window unpaginated and paginating the
+# stops themselves.  Detection logic is in endpoints/stops.py (pure, tested).
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Tighter than trips/history's 92-day span, because this path cannot stop
+# reading early.  The busiest unit writes ~13,400 fixes a day, so 31 days is
+# ~415,000 — already at location_store.MAX_ROWS.  Rejecting a longer range with
+# a clear 400 beats letting MAX_ROWS raise and answering 503, which would tell
+# the caller to retry something that can never succeed.
+STOPS_MAX_DAYS = 31
+
+
+#derive stops (arrival, departure, dwell) from the live position store
+@data_stream.route("/data-stream/trips/stops", methods=["POST"])
+def trips_stops():
+
+    try:
+
+        payload_data = request.get_json(silent=True) or {}
+        request_data = payload_data.get('data') or {}
+
+        DeviceImei = str(request_data.get('device_imei') or '').strip()
+        FromDate = str(request_data.get('from_date') or '').strip()
+        ToDate = str(request_data.get('to_date') or '').strip()
+
+        if (len(DeviceImei) < 5) or (len(FromDate) < 5) or (len(ToDate) < 5):
+            return reply('error', 400,
+                         'device_imei, from_date and to_date are required', '')
+
+        # days_in() is location_store's own parser, so the date formats this
+        # route accepts cannot drift from the ones the read accepts.
+        TheDays, RangeTruncated = location_store.days_in(FromDate, ToDate)
+
+        if not TheDays:
+            return reply('error', 400,
+                         'from_date and to_date did not parse as dates', '')
+
+        if len(TheDays) > STOPS_MAX_DAYS:
+            return reply('error', 400,
+                         'Stops can be derived for at most %d days at a time; '
+                         'this request spans %d days'
+                         % (STOPS_MAX_DAYS, len(TheDays)), '')
+
+        DetectionSettings = {}
+
+        for FieldName, Caster in (('stationary_speed', float),
+                                  ('min_dwell_seconds', int),
+                                  ('max_gap_seconds', int)):
+            if request_data.get(FieldName) is not None:
+                try:
+                    DetectionSettings[FieldName] = Caster(request_data[FieldName])
+                except (TypeError, ValueError):
+                    return reply('error', 400,
+                                 '%s must be a number' % FieldName, '')
+
+        device_billing_check = check_device(DeviceImei)
+
+        if(device_billing_check != 'running'):
+            return reply('error', 403,
+                         'This device is not currently running', '')
+
+        # dedupe_coordinates=False is essential, not an option: the dedupe
+        # keeps one fix per (lon, lat) — the latest — which discards the
+        # arrival time, the very quantity being measured.
+        #
+        # limit=None takes the full-read path, guarded by MAX_ROWS.  The day
+        # cap above means that guard should not fire.
+        try:
+            TheFixes, FixesTruncated = location_store.fixes(
+                get_cassandra_session(), DeviceImei, FromDate, ToDate,
+                dedupe_coordinates=False, limit=None, newest_first=False)
+        except location_store.PositionsUnavailable as error:
+            logging.warning('trips_stops: position store unavailable: %s', error)
+            return reply('error', 503,
+                         'Position data is temporarily unavailable, please retry',
+                         '')
+
+        StopsResult = stops.detect(TheFixes, **DetectionSettings)
+
+        StopsFound = StopsResult['stops']
+        StopsTotal = len(StopsFound)
+
+        # Pagination applies to STOPS, not to fixes.
+        try:
+            Offset_Record = max(0, int(request_data.get('offset_log') or 0))
+        except (TypeError, ValueError):
+            Offset_Record = 0
+
+        try:
+            Record_Count = int(request_data.get('record_count') or 0)
+        except (TypeError, ValueError):
+            Record_Count = 0
+
+        if Record_Count > 0:
+            StopsResult['stops'] = StopsFound[
+                Offset_Record:Offset_Record + Record_Count]
+        else:
+            StopsResult['stops'] = StopsFound[Offset_Record:]
+
+        StopsResult['stops_total'] = StopsTotal
+        StopsResult['offset_log'] = Offset_Record
+        StopsResult['record_count'] = Record_Count
+        StopsResult['days_requested'] = len(TheDays)
+        StopsResult['range_truncated'] = bool(RangeTruncated or FixesTruncated)
+
+        if StopsTotal == 0:
+            # 400 with the body kept, matching 'No Trips Found' in this file.
+            # The body still carries fix_count and speed_trustworthy, so a
+            # caller can tell "it never stopped" from "we could not tell".
+            return reply('error', 400, 'No Stops Found', StopsResult)
+
+        return reply('success', 200, 'Stops Found', StopsResult)
+
+    except Exception as error:
+        logging.exception('trips_stops failed')
         return reply('error', 500, str(error), '')

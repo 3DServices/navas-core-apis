@@ -2,6 +2,7 @@ from flask import Flask
 from flask import Blueprint
 from flask import request
 import psycopg2
+from . import db_pool
 from flask import json
 from flask import jsonify
 import datetime
@@ -179,7 +180,8 @@ def mark_all_notifications_read(owner_uid):
 def get_unread_count(owner_uid):
     """Get the count of unread notifications for an owner."""
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        # Read-only: one SELECT COUNT(*).
+        dbconnect = db_pool.connect(readonly=True)
         cur = dbconnect.cursor()
 
         cur.execute("""

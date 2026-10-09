@@ -2,7 +2,9 @@ from flask import json
 from flask import jsonify
 from flask import request as flask_request
 from flask import g
+from flask import has_app_context
 import psycopg2
+from . import db_pool
 import psycopg2.extras
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
@@ -11,6 +13,8 @@ from functools import wraps
 import pytz
 import uuid
 import hashlib
+import logging
+import re
 from .jwt_utils import decode_access_token
 
 timezone = pytz.timezone('Africa/Nairobi')
@@ -36,7 +40,7 @@ def log_audit_event(actor, action, obj, domain, severity='Info', tenant_id=None,
         meta:       Optional dict of extra context (stored as JSONB)
     """
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         try:
             event_id = 'evt-' + str(uuid.uuid4())[:8]
             now = datetime.utcnow()
@@ -73,11 +77,129 @@ def log_audit_event(actor, action, obj, domain, severity='Info', tenant_id=None,
         print(f"[AUDIT LOG ERROR] {e}")
 
 
+# ==========================================
+# CREDENTIAL SCRUBBER  (B10)
+# ==========================================
+#
+# Every error path in this codebase funnels through reply().  71 handlers pass
+# str(error) as the message body, and a malformed db_link makes psycopg2 quote
+# the password back inside its own error text.  scrub_secrets() is the single
+# place that gets removed.
+#
+# It is deliberately a PURE function -- no Flask, no database, no module state
+# -- so tests/test_reply_scrub.py can exercise it without an app context.
+
+# scheme://user:password@host   and the malformed  scheme:/user:password@host
+_CREDENTIAL_URI = re.compile(
+    r'(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*:/{1,3})(?P<user>[^\s:/@]*):(?P<secret>[^\s@]+)@'
+)
+
+# psycopg2 keyword DSN form:  dbname=x user=y password=z host=w
+_CREDENTIAL_KEYWORD = re.compile(r'(?P<key>password\s*=\s*)(?P<secret>\S+)')
+
+# Only treat `password=` as a DSN field when another libpq keyword is present.
+# Without this guard an ordinary sentence -- "Invalid password = required" --
+# would be rewritten, which would change a message for no security gain.  The
+# configured-secret pass still covers a lone `password=SECRET`.
+_DSN_CONTEXT = re.compile(r'\b(?:dbname|host|hostaddr|port|user|sslmode|options)\s*=')
+
+REDACTED = '***'
+
+
+def scrub_secrets(text, extra=()):
+    """Remove credentials from a value before it leaves the process.
+
+    Three passes, in order:
+      1. scheme://user:password@host  ->  scheme://user:***@host
+      2. password=SECRET  ->  password=***  (only inside a libpq DSN)
+      3. every literal in `extra` (the configured secrets) -> ***
+
+    Pass 3 is the backstop: it catches a secret embedded in a shape passes 1
+    and 2 do not recognise.  Strings shorter than 4 characters are skipped so
+    a trivially short configured value cannot blank out unrelated text.
+
+    Containers are walked so a handler that nests the error text one level
+    deep is covered too.  Types are preserved; anything that is not a string
+    or a container is returned untouched.
+    """
+    if isinstance(text, str):
+        cleaned = _CREDENTIAL_URI.sub(
+            lambda m: m.group('scheme') + m.group('user') + ':' + REDACTED + '@',
+            text,
+        )
+        if _DSN_CONTEXT.search(cleaned):
+            cleaned = _CREDENTIAL_KEYWORD.sub(
+                lambda m: m.group('key') + REDACTED,
+                cleaned,
+            )
+        for secret in (extra or ()):
+            if isinstance(secret, str) and len(secret) >= 4:
+                cleaned = cleaned.replace(secret, REDACTED)
+        return cleaned
+
+    if isinstance(text, dict):
+        return dict((key, scrub_secrets(value, extra)) for key, value in text.items())
+
+    if isinstance(text, list):
+        return [scrub_secrets(item, extra) for item in text]
+
+    if isinstance(text, tuple):
+        return tuple(scrub_secrets(item, extra) for item in text)
+
+    return text
+
+
+def _configured_secrets():
+    """The secret halves of this app's configured db_link, as literals.
+
+    Never raises: outside an app context, or with db_link absent, it simply
+    returns an empty tuple and pattern matching alone does the work.
+    """
+    secrets = []
+
+    try:
+        if not has_app_context():
+            return ()
+
+        link = current_app.config.get('db_link')
+
+        if link:
+            link = str(link)
+
+            found = _CREDENTIAL_URI.search(link)
+
+            if found:
+                secrets.append(found.group('secret'))
+
+            found = _CREDENTIAL_KEYWORD.search(link)
+
+            if found:
+                secrets.append(found.group('secret'))
+
+    except Exception:
+        return tuple(secrets)
+
+    return tuple(secrets)
+
+
+# The one message for "the data store could not be read". 503, not 500: a
+# cold handshake or a brief outage is retryable, and 500 tells a client not to
+# retry. Twelve routes used to answer 500 with an AttributeError's text
+# instead, because they called .prepare() on a None session.
+STORE_UNAVAILABLE = 'Device data is temporarily unavailable, please retry'
+
 def reply(status, status_code, message_body, data):
+
+    safe_message = scrub_secrets(message_body, _configured_secrets())
+
+    if safe_message != message_body:
+        logging.warning(
+            'reply(): credentials redacted from a %s response body', status_code
+        )
 
     data_object = {
         "status": status,
-        "message": message_body,
+        "message": safe_message,
         "data": data
     }
 
@@ -135,49 +257,78 @@ def _get_user_permissions(account_uid):
     return result
 
 
+_PERMISSIONS_SQL = """
+WITH acct AS (
+    SELECT account_clearance, account_type, account_root
+    FROM dll_access_relay
+    WHERE account_uid = %(uid)s AND access_status = 'active'
+),
+chosen_role AS (
+    -- The old code looked the role up BY NAME first and only fell back to
+    -- treating the stored value as a UID if that missed. That precedence is
+    -- load-bearing: if one role is named X and a different role's uid is X,
+    -- the name match is the one that wins. A plain OR would union both roles'
+    -- permissions, which in an authorisation path means granting more than
+    -- before. Hence the explicit ordering.
+    --
+    -- COALESCE, not a bare boolean: in Postgres "ORDER BY <bool> DESC" is
+    -- NULLS FIRST, so a NULL comparison would outrank a true one and pick
+    -- the wrong role.
+    SELECT r.role_uid
+    FROM dll_roles r, acct a
+    WHERE (r.is_deleted = FALSE OR r.is_deleted IS NULL)
+      AND (r.role_name = a.account_clearance
+           OR r.role_uid = a.account_clearance)
+    ORDER BY COALESCE(r.role_name = a.account_clearance, FALSE) DESC
+    LIMIT 1
+)
+SELECT a.account_clearance, a.account_type, a.account_root, p.permission_name
+FROM acct a
+LEFT JOIN chosen_role ON TRUE
+LEFT JOIN dll_role_permissions rp ON rp.role_uid = chosen_role.role_uid
+LEFT JOIN dll_permissions p
+       ON p.permission_uid = rp.permission_uid
+      AND (p.is_deleted = FALSE OR p.is_deleted IS NULL)
+"""
+
+
 def _load_user_permissions(account_uid):
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    """Role, account_type, account_root and permissions, in ONE round trip.
+
+    This used to be three sequential queries -- account row, then role_uid,
+    then permissions -- each waiting on the one before. Against a database
+    282 ms away that is three round trips, measured at 1.2-1.4 s, and the
+    access guard calls this on every authenticated request in the
+    application. One statement does the same work.
+
+    The three original outcomes are preserved exactly:
+
+        no active account row   -> (None, None, None, [])
+        role not found          -> (clearance, type, root, [])
+        role found              -> (clearance, type, root, [names...])
+
+    ONE KNOWN DIVERGENCE, and it is a bug fix rather than a change of
+    behaviour: the old code passed str(user_role) to the role lookup, so an
+    account whose account_clearance is NULL searched for a role literally
+    named 'None'. This compares against the column, so NULL matches nothing.
+    Both return an empty permission list unless a role really is called
+    'None'. scripts/verify_permission_parity.py checks this against every
+    real account rather than taking the argument on trust.
+    """
+    # Read-only: one SELECT, no writes. Saves the BEGIN round trip on
+    # every authenticated request in the application.
+    dbconnect = db_pool.connect(readonly=True)
     try:
         with dbconnect:
             with dbconnect.cursor() as cursor:
-                # Get user's role name and account_root from dll_access_relay
-                cursor.execute(
-                    "SELECT account_clearance, account_type, account_root "
-                    "FROM dll_access_relay WHERE account_uid = %s AND access_status = 'active'",
-                    (str(account_uid),)
-                )
-                if cursor.rowcount == 0:
+                cursor.execute(_PERMISSIONS_SQL, {'uid': str(account_uid)})
+                rows = cursor.fetchall()
+
+                if not rows:
                     return None, None, None, []
 
-                row = cursor.fetchone()
-                user_role = row[0]
-                account_type = row[1]
-                account_root = row[2]
-
-                # Get role_uid from role name. If the name lookup misses, try
-                # the UID — handles historical rows where create_user wrote a
-                # role UID into account_clearance instead of the role name.
-                cursor.execute(
-                    "SELECT role_uid FROM dll_roles WHERE role_name = %s AND (is_deleted = FALSE OR is_deleted IS NULL)",
-                    (str(user_role),)
-                )
-                if cursor.rowcount == 0:
-                    # Fallback: maybe the stored value IS a UID.
-                    cursor.execute(
-                        "SELECT role_uid FROM dll_roles WHERE role_uid = %s AND (is_deleted = FALSE OR is_deleted IS NULL)",
-                        (str(user_role),)
-                    )
-                    if cursor.rowcount == 0:
-                        return user_role, account_type, account_root, []
-
-                role_uid = cursor.fetchone()[0]
-
-                # Get permissions for this role
-                cursor.execute(
-                    "SELECT p.permission_name FROM dll_role_permissions rp JOIN dll_permissions p ON rp.permission_uid = p.permission_uid WHERE rp.role_uid = %s AND (p.is_deleted = FALSE OR p.is_deleted IS NULL)",
-                    (str(role_uid),)
-                )
-                permissions = [r[0] for r in cursor.fetchall()]
+                user_role, account_type, account_root = rows[0][:3]
+                permissions = [r[3] for r in rows if r[3] is not None]
                 return user_role, account_type, account_root, permissions
     except Exception:
         return None, None, None, []
@@ -220,6 +371,73 @@ def is_customer_account(role, account_type):
 
 def _is_platform_admin(role, account_type):
     return role in ('super_admin', 'system') or account_type == 'system_account'
+
+
+def resolve_wallet_owner(cursor, uid):
+    """Map any account uid to the client wallet it belongs to.
+
+    A client's tokens live in dll_user_token_accounts keyed by client_uid,
+    which is dll_access_relay.account_root (rbac.py joins the two columns
+    directly). But a login under that client carries its own account_uid, and
+    the OLIWA console asked for the balance with that account_uid. For the
+    account owner the two happen to be equal, so it looked right; for every
+    other user of the same company the client lookup missed and the console
+    showed an empty wallet.
+
+    The console also tagged purchases with the signed-in account_uid, and the
+    payment webhook credits whatever uid it finds on the payment row — so some
+    real tokens are keyed by a user rather than the company. Those rows are
+    part of the same wallet and are counted here, rather than being stranded.
+
+    Returns (client_uid, owner_uids) — the canonical client account, and every
+    uid that may hold a row belonging to it. Widening to the account family is
+    not a widening of access: the guard in access_guard.py has already checked
+    that a customer may only name their own account, root or team.
+    """
+    uid = str(uid or '').strip()
+
+    cursor.execute(
+        "SELECT account_root FROM dll_access_relay WHERE account_uid=%s",
+        (uid,)
+    )
+    row = cursor.fetchone()
+    root = str(row[0]).strip() if row and row[0] else ''
+    client_uid = root or uid
+
+    cursor.execute(
+        "SELECT account_uid FROM dll_access_relay WHERE account_root=%s",
+        (client_uid,)
+    )
+    owners = {client_uid, uid}
+    owners.update(str(r[0]).strip() for r in cursor.fetchall() if r[0])
+    owners.discard('')
+    return client_uid, sorted(owners)
+
+
+def resolve_client_account(cursor, uid):
+    """The CLIENT account that should own tokens bought or granted for [uid].
+
+    Tokens belong to companies. Every row in dll_user_token_accounts is keyed
+    by client_uid, and every balance screen, subscription check and renewal
+    sweep reads it by that key — so a credit written under anything that is
+    not a client account creates a wallet nobody can ever see, and money that
+    was really taken buys tokens that never appear.
+
+    [uid] may be a client account, a login belonging to one (a company's own
+    staff, whose account_root is the company), or the client a member of 3D
+    Services staff picked when buying on a customer's behalf. All three
+    resolve to the same place. Anything else — a staff login with no client
+    behind it, a typo, a deleted company — returns None, and the caller must
+    refuse rather than write the row.
+    """
+    client_uid, _ = resolve_wallet_owner(cursor, uid)
+    if not client_uid:
+        return None
+    cursor.execute(
+        "SELECT client_uid FROM dll_client_accounts WHERE client_uid=%s",
+        (client_uid,)
+    )
+    return client_uid if cursor.fetchone() else None
 
 
 def require_permission(*required_perms):
@@ -388,7 +606,7 @@ def require_auth(f):
 
 def config_element_data(element, device_imei):
 
-    dbconnect = psycopg2.connect(current_app.config["db_link"])
+    dbconnect = db_pool.connect()
 
     try:
 
@@ -416,7 +634,7 @@ def config_element_data(element, device_imei):
 
 def config_element_formular_data(element_formular, device_imei):
 
-    dbconnect = psycopg2.connect(current_app.config["db_link"])
+    dbconnect = db_pool.connect()
 
     try:
 
@@ -459,9 +677,61 @@ def compare_years(start_date, end_date):
     
 
 
+# ── One connection per request, for the read-only device lookups ────────────
+# check_device, CheckHardware and CheckHardware2 are called several times per
+# request and each used to open its own connection. Against this host a
+# connect costs ~2.3s, so a single trips_history request spent ~7s of its 30
+# doing nothing but handshakes.
+#
+# RESERVED FOR READS. These three helpers are pure SELECTs. Do NOT hand this
+# connection to anything that writes: every caller wraps its work in
+# `with dbconnect:`, which COMMITS, so a writer sharing this connection would
+# commit whatever else happened to be pending on it. The ~190 functions in
+# this codebase that open their own connection need a pool and a review of
+# what each transaction spans; that is deliberately not this change.
+_READ_CONN_KEY = '_navas_read_only_connection'
+
+
+def _read_connection():
+    """The request's shared read-only connection, opening it on first use.
+
+    Outside an app context — a script importing this module — a fresh
+    connection is returned instead, so existing callers keep working.
+    """
+    if not has_app_context():
+        return db_pool.connect()
+    existing = getattr(g, _READ_CONN_KEY, None)
+    if existing is not None and not existing.closed:
+        return existing
+    fresh = db_pool.connect()
+    setattr(g, _READ_CONN_KEY, fresh)
+    return fresh
+
+
+def close_read_connection(_exception=None):
+    """Close the shared read connection at the end of the app context.
+
+    Registered in app.py. Without this the connection would be left to
+    CPython's refcounting, which is what the audit flagged as fragile even
+    though it currently works.
+    """
+    existing = getattr(g, _READ_CONN_KEY, None) if has_app_context() else None
+    if existing is None:
+        return
+    try:
+        if not existing.closed:
+            existing.close()
+    except Exception:                                   # noqa: BLE001
+        pass
+    try:
+        setattr(g, _READ_CONN_KEY, None)
+    except Exception:                                   # noqa: BLE001
+        pass
+
+
 def check_device(device_imei):
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = _read_connection()
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
@@ -480,7 +750,7 @@ def check_device(device_imei):
 
 def CheckHardware(device_imei):
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = _read_connection()
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
@@ -499,7 +769,7 @@ def CheckHardware(device_imei):
 
 def CheckHardware2(device_imei):
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = _read_connection()
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
@@ -530,7 +800,7 @@ def NextRenewal(months):
 
 def SubscriptionManager(UserID, TokenAttached, ImeiNumber):
     try:
-        _dbconnect = psycopg2.connect(current_app.config['db_link'])
+        _dbconnect = db_pool.connect()
 
         with _dbconnect:
             with _dbconnect.cursor() as cursor:

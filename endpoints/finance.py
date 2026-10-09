@@ -2,6 +2,7 @@ from flask import Flask
 from flask import Blueprint
 from flask import request
 import psycopg2
+from . import db_pool
 from flask import json
 from flask import jsonify
 import datetime
@@ -9,7 +10,9 @@ import random
 from flask import current_app
 import base64
 from decimal import Decimal
-from .globals import reply, require_permission, require_staff
+from .globals import (reply, require_permission, require_staff,
+                      resolve_wallet_owner, resolve_client_account,
+                      log_audit_event)
 import base64
 import requests
 from .globals import check_device
@@ -110,6 +113,21 @@ def BuyTokens():
                 _TokenPaymentCurrency = str(_token_row[1]).upper()
                 _TokenValidity = _token_row[2]
 
+                # token_buyer means different things depending on who is
+                # calling: the OLIWA console sends the signed-in customer's
+                # own login, while the staff top-up and instant-buy screens
+                # send the client they picked. Tokens belong to companies
+                # either way, so it is resolved to one here — before the
+                # customer is charged, so a purchase that has nowhere to land
+                # is refused instead of taking money for tokens that would
+                # never appear.
+                _TokenClient = resolve_client_account(cursor, _TokenBuyer)
+
+            if _TokenClient is None:
+                return reply("error", 400,
+                             "We couldn't tell which company these tokens are "
+                             "for. Please pick a client and try again.", "")
+
             if _TokenPaymentCurrency == 'KES':
                 _LocalCountry = 'kenya'
             elif _TokenPaymentCurrency == 'UGX':
@@ -142,12 +160,26 @@ def BuyTokens():
                 with _dbconnect.cursor() as cursor:
                     cursor.execute(
                         "INSERT INTO dll_payment_logs (payment_uid, payment_account, token_number, token_validity, total_cost, payment_currency, payment_date, payment_status, payment_owner, remote_uid, token_quantity) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                        (_PaymentReferance, _TokenBuyer, _TokenNumber, _TokenValidity,
+                        (_PaymentReferance, _TokenClient, _TokenNumber, _TokenValidity,
                          _TotalAmount_Payable, _TokenPaymentCurrency,
                          str(datetime.datetime.now().date()), 'pending', '3dservices',
                          RemoteReferance, _TokenQuantity,)
                     )
                     _dbconnect.commit()
+
+                # payment_account is now the company, so the login that
+                # actually paid is recorded here instead of being lost.
+                log_audit_event(
+                    actor=_TokenBuyer, action='CREATE',
+                    obj=(f"token purchase {_PaymentReferance}: {_TokenQuantity} x "
+                         f"{_TokenNumber} for client {_TokenClient}"),
+                    domain='PAYMENT', tenant_id=_TokenClient,
+                    meta={'payment_uid': _PaymentReferance,
+                          'requested_by': _TokenBuyer,
+                          'client_uid': _TokenClient,
+                          'token_uid': _TokenNumber,
+                          'quantity': _TokenQuantity},
+                )
 
                 _ResponseObjt = {
                     "transaction_uid": _PaymentReferance
@@ -224,8 +256,18 @@ def TransactionUpdate():
                             _dataTunnel = cursor.fetchone()
                             _TokenUID = _dataTunnel[0]
                             _TokenValidity = _dataTunnel[1]
-                            _ClientUID = _dataTunnel[2]
                             _TotalTokenQuantity = _dataTunnel[3]
+
+                            # payment_account is the company as of the buy
+                            # route above. Payments logged before that still
+                            # carry whichever login paid, so resolve it again
+                            # here — and fall back to the stored value rather
+                            # than dropping a settled payment on the floor if
+                            # the company can no longer be identified.
+                            _PaidFor = _dataTunnel[2]
+                            _ClientUID = (resolve_client_account(cursor, _PaidFor)
+                                          or resolve_wallet_owner(cursor, _PaidFor)[0]
+                                          or _PaidFor)
 
                             cursor.execute("DELETE FROM dll_user_token_accounts WHERE token_balance=%s AND client_uid=%s AND token_status='expired'", (_TokenUID, _ClientUID,))
                             for i in range(int(_TotalTokenQuantity)):
@@ -257,6 +299,14 @@ def SpecialTokenAuthorization():
         
         with _dbconnect:
             with _dbconnect.cursor() as cursor:
+                # Granting tokens writes the same wallet rows a purchase does,
+                # so it has to name a company just the same.
+                _ResolvedClient = resolve_client_account(cursor, _ClientUID_Authorized)
+                if _ResolvedClient is None:
+                    return reply('error', 400,
+                                 'No client account matches that client_uid.', '')
+                _ClientUID_Authorized = _ResolvedClient
+
                 for i in range(int(_QuantityAuthorized)):
                     _TokenBillingUID = str(uuid.uuid4())
                     cursor.execute("INSERT INTO dll_user_token_accounts (client_uid, token_balance, token_status, token_hours_used, token_hours_left, token_billing_uid, token_units_left, token_used_units) VALUES(%s, %s, %s, %s, %s, %s, %s, %s)", (_ClientUID_Authorized, _TokenUID_Authorized, 'new', 0, 0, _TokenBillingUID, 0, 0,))
@@ -272,10 +322,16 @@ def SpecialTokenAuthorization():
 @require_permission('finance.view')
 def TransactionLogs(transaction_owner):
     try:
-        _dbconnect = psycopg2.connect(current_app.config['db_link'])
+        # Read-only: one SELECT after resolve_wallet_owner, no writes.
+        _dbconnect = db_pool.connect(readonly=True)
         with _dbconnect:
             with _dbconnect.cursor() as cursor:
-                cursor.execute("SELECT payment_uid,token_number,token_validity,total_cost,payment_currency,payment_date,payment_status FROM dll_payment_logs WHERE payment_account=%s ORDER BY id DESC", (str(transaction_owner),))
+                # Purchases are logged against the login that paid. A company
+                # sees every purchase made under its account, not only the ones
+                # its owner login made.
+                _, _PaymentOwners = resolve_wallet_owner(cursor, transaction_owner)
+
+                cursor.execute("SELECT payment_uid,token_number,token_validity,total_cost,payment_currency,payment_date,payment_status FROM dll_payment_logs WHERE payment_account = ANY(%s) ORDER BY id DESC", (_PaymentOwners,))
 
                 if(cursor.rowcount >= 1):
 

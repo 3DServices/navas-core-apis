@@ -1,3 +1,5 @@
+from .globals import STORE_UNAVAILABLE
+import logging
 from flask import Flask
 from flask import Blueprint
 from flask import request
@@ -55,35 +57,13 @@ from config import (
     CASSANDRA_LOCAL_DC,
 )
 
-_cassandra_cluster = None
-_cassandra_session = None
+# B9: one Cassandra session per PROCESS, not one per module. This module
+# used to define its own get_cassandra_session() over its own globals and
+# its own Cluster(); six identical copies meant a worker could hold six
+# pools to the same database, each paying its own 6-7s handshake. The
+# name is re-exported so this module's callers and importers are unchanged.
+from .cassandra_store import get_cassandra_session
 
-def get_cassandra_session():
-    global _cassandra_cluster, _cassandra_session
-    if _cassandra_session and not _cassandra_session.is_shutdown:
-        return _cassandra_session
-    try:
-        auth_provider = PlainTextAuthProvider(
-            username=CASSANDRA_USERNAME,
-            password=CASSANDRA_PASSWORD
-        )
-        profile = ExecutionProfile(
-            load_balancing_policy=TokenAwarePolicy(DCAwareRoundRobinPolicy(local_dc=CASSANDRA_LOCAL_DC)),
-            consistency_level=ConsistencyLevel.ONE
-        )
-        _cassandra_cluster = Cluster(
-            contact_points=CASSANDRA_CONTACT_POINTS,
-            port=CASSANDRA_PORT,
-            auth_provider=auth_provider,
-            protocol_version=4,
-            execution_profiles={EXEC_PROFILE_DEFAULT: profile}
-        )
-        _cassandra_session = _cassandra_cluster.connect(CASSANDRA_KEYSPACE)
-        print("Successfully connected to Cassandra cluster")
-        return _cassandra_session
-    except Exception as e:
-        print(f"Error connecting to Cassandra: {e}")
-        return None
 
 data_handler_bp = Blueprint("DataHandler", __name__)
 
@@ -139,6 +119,9 @@ def TripsLoader():
         _dbconnect = psycopg2.connect(current_app.config['db_link'])
         _payload_data = request.get_json()
         _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            logging.warning('TripsLoader: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         _ReportFormat = str(_payload_data['data']['report_format'])
         _ReportDevices = _payload_data['data']['report_devices']
@@ -255,7 +238,8 @@ def TripsLoader_ByExcel_File():
 
         _cassandra_session: Session = get_cassandra_session()
         if not _cassandra_session:
-            print("Failed to get Cassandra session. Cannot process data.")
+            logging.warning('TripsLoader_ByExcel_File: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         _ReportDevices = _payload_data['data']['report_devices']
         _StartReport_Date = str(_payload_data['data']['start_date'])
@@ -403,7 +387,8 @@ def TripsLoader_ByPDF_File():
 
         _cassandra_session = get_cassandra_session()
         if not _cassandra_session:
-            print("Failed to get Cassandra session. Cannot process data.")
+            logging.warning('TripsLoader_ByPDF_File: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         _ReportDevices = _payload_data['data']['report_devices']
         _StartReport_Date = str(_payload_data['data']['start_date'])
@@ -628,7 +613,8 @@ def FuelLevelReport_ByFile():
         # Cassandra session
         _cassandra_session: Session = get_cassandra_session()
         if not _cassandra_session:
-            print("Failed to get Cassandra session. Cannot process data.")
+            logging.warning('FuelLevelReport_ByFile: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         _ReportDevices = _payload_data['data']['report_devices']
         _StartReport_Date = str(_payload_data['data']['start_date'])
@@ -789,7 +775,8 @@ def FuelLevelReport_ByPDF():
         _dbconnect = psycopg2.connect(current_app.config['db_link'])
         _cassandra_session = get_cassandra_session()
         if not _cassandra_session:
-            print("Failed to get Cassandra session. Cannot process data.")
+            logging.warning('FuelLevelReport_ByPDF: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         _payload_data = request.get_json()
         _ReportDevices = _payload_data['data']['report_devices']
@@ -976,7 +963,8 @@ def NightDrivingReport_ByExcell():
         # Cassandra session
         _cassandra_session: Session = get_cassandra_session()
         if not _cassandra_session:
-            print("Failed to get Cassandra session. Cannot process data.")
+            logging.warning('NightDrivingReport_ByExcell: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         _ReportDevices = _payload_data['data']['report_devices']
         _StartDate = _payload_data['data']['start_date']

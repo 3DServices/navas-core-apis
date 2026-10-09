@@ -1,0 +1,1072 @@
+{
+  "_what_this_is": "The Waswa eval set. A fixed list of questions with expected outcomes, re-run after every prompt, retrieval or tool change. This is a test suite: it is meant to be kept and re-run, not deleted after one look.",
+  "_expectations_are_a_draft": "Every expect block except must_not_contain_price was guessed from the wording of the question. Correct them by hand before the first run. A wrong expectation makes a correct answer look broken.",
+  "_seeded_from": "dll_waswa_feedback - the only questions on this platform whose correct outcome a real user has already ruled on.",
+  "generated_at": "2026-10-09T00:34:44",
+  "generated_by": "scripts/waswa_eval_build.py",
+  "statuses_included": [
+    "open",
+    "in_review",
+    "resolved",
+    "dismissed"
+  ],
+  "count": 15,
+  "questions": [
+    {
+      "id": "fb-001",
+      "question": "What happens when a SIM goes offline?",
+      "surface": "cms",
+      "language": null,
+      "shape": "document",
+      "guard": "fix",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [
+          "knowledge_search"
+        ],
+        "must_cite_document": true
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "db85bd9b-1c7c-4249-b99f-bb227e32e9ca",
+        "account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+        "ask_as_account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+        "client_uid": "engine",
+        "verdict": "wrong",
+        "status": "resolved",
+        "note": null,
+        "message_uid": "0dda1abc-9ee8-48d3-ba8c-341966a3763b",
+        "conversation_uid": "f02b35dd-1e15-43fa-8b58-e903ce308bdd",
+        "model": "openai/gpt-4o",
+        "prompt_version": 6,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-09-21T20:53:22.786300",
+        "previous_answer": "I don't have information on what happens when a SIM goes offline in the approved documents. This topic isn't covered in the resources available to me. For specific procedures or actions to take when a SIM goes offline, I recommend contacting technical support or consulting any available troubleshooting guides specific to your system or devices. If you have further questions or need assistance, fe…",
+        "judgements": 1,
+        "verdicts_seen": [
+          "wrong"
+        ],
+        "history": [
+          {
+            "feedback_uid": "db85bd9b-1c7c-4249-b99f-bb227e32e9ca",
+            "verdict": "wrong",
+            "status": "resolved",
+            "note": null,
+            "message_uid": "0dda1abc-9ee8-48d3-ba8c-341966a3763b",
+            "prompt_version": 6,
+            "account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+            "client_uid": "engine",
+            "created_at": "2026-09-21T20:53:22.786300",
+            "answer": "I don't have information on what happens when a SIM goes offline in the approved documents. This topic isn't covered in the resources available to me. For specific procedures or actions to take when a SIM goes offline, I recommend contacting technical support or consulting any available troubleshooting guides specific to your system or devices. If you have further questions or need assistance, fe…"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fb-002",
+      "question": "How are SIM bundles managed?",
+      "surface": "cms",
+      "language": null,
+      "shape": "document",
+      "guard": "fix",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [
+          "knowledge_search"
+        ],
+        "must_cite_document": true
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "ecf2d1f2-33eb-464d-b74b-b7235f0bd6ea",
+        "account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+        "ask_as_account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+        "client_uid": "engine",
+        "verdict": "wrong",
+        "status": "resolved",
+        "note": null,
+        "message_uid": "6a06af1d-9c34-4ea7-8a5e-6b10b6c504ef",
+        "conversation_uid": "f02b35dd-1e15-43fa-8b58-e903ce308bdd",
+        "model": "openai/gpt-4o",
+        "prompt_version": 6,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-09-21T20:57:06.763806",
+        "previous_answer": "The approved documents mention SIM bundle management in the context of sales procedures and connectivity infrastructure. Here's a summary from the \"Sales Procedures\" document: - **Regional Billing Plan**: SIM bundles are part of a regional billing strategy, which includes local SIM billing, multi-SIM bundle pricing for cross-border movement, and premium roaming plans for high-roaming fleets. - **…",
+        "judgements": 1,
+        "verdicts_seen": [
+          "wrong"
+        ],
+        "history": [
+          {
+            "feedback_uid": "ecf2d1f2-33eb-464d-b74b-b7235f0bd6ea",
+            "verdict": "wrong",
+            "status": "resolved",
+            "note": null,
+            "message_uid": "6a06af1d-9c34-4ea7-8a5e-6b10b6c504ef",
+            "prompt_version": 6,
+            "account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+            "client_uid": "engine",
+            "created_at": "2026-09-21T20:57:06.763806",
+            "answer": "The approved documents mention SIM bundle management in the context of sales procedures and connectivity infrastructure. Here's a summary from the \"Sales Procedures\" document: - **Regional Billing Plan**: SIM bundles are part of a regional billing strategy, which includes local SIM billing, multi-SIM bundle pricing for cross-border movement, and premium roaming plans for high-roaming fleets. - **…"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fb-003",
+      "question": "How are devices registered?",
+      "surface": "cms",
+      "language": null,
+      "shape": "document",
+      "guard": "fix",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [
+          "knowledge_search"
+        ],
+        "must_cite_document": true
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "c4321ed3-fc98-42ec-b777-356f1a441fcf",
+        "account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+        "ask_as_account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+        "client_uid": "engine",
+        "verdict": "wrong",
+        "status": "resolved",
+        "note": null,
+        "message_uid": "97dab790-f56d-4d45-832f-688dbc84e10b",
+        "conversation_uid": "f02b35dd-1e15-43fa-8b58-e903ce308bdd",
+        "model": "openai/gpt-4o",
+        "prompt_version": 6,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-09-21T20:59:26.579828",
+        "previous_answer": "The NAVAS CMS User Manual provides some guidance on device registration, particularly in the context of video provisioning: 1. **Device Registration**: Ensure the device, such as a camera, is linked to the correct vehicle or unit record. This involves verifying the serial number and associating it with the appropriate asset. 2. **Storage Assignment**: Set up default retention and event-based rete…",
+        "judgements": 1,
+        "verdicts_seen": [
+          "wrong"
+        ],
+        "history": [
+          {
+            "feedback_uid": "c4321ed3-fc98-42ec-b777-356f1a441fcf",
+            "verdict": "wrong",
+            "status": "resolved",
+            "note": null,
+            "message_uid": "97dab790-f56d-4d45-832f-688dbc84e10b",
+            "prompt_version": 6,
+            "account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+            "client_uid": "engine",
+            "created_at": "2026-09-21T20:59:26.579828",
+            "answer": "The NAVAS CMS User Manual provides some guidance on device registration, particularly in the context of video provisioning: 1. **Device Registration**: Ensure the device, such as a camera, is linked to the correct vehicle or unit record. This involves verifying the serial number and associating it with the appropriate asset. 2. **Storage Assignment**: Set up default retention and event-based rete…"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fb-004",
+      "question": "What is IVMS?",
+      "surface": "cms",
+      "language": null,
+      "shape": "document",
+      "guard": "fix",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [
+          "knowledge_search"
+        ],
+        "must_cite_document": true
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "4c40d9c1-09f2-4701-9f28-3fa850849ab7",
+        "account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+        "ask_as_account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+        "client_uid": "engine",
+        "verdict": "wrong",
+        "status": "resolved",
+        "note": null,
+        "message_uid": "693e13be-1a19-4c27-ac51-f89c578fb0fb",
+        "conversation_uid": "f02b35dd-1e15-43fa-8b58-e903ce308bdd",
+        "model": "openai/gpt-4o",
+        "prompt_version": 6,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-09-21T21:15:12.091329",
+        "previous_answer": "The term \"iVMS\" refers to a part of the vehicle telematics system, as described in the NAVAS CMS User Manual. Here's a brief overview: - **Vehicle Telematics**: iVMS is part of a broader vehicle telematics system that includes OLIWA, OLIWA-PLUS, iVMS, and iVMS-PLUS. These systems are designed to provide stable tracking, compliance, and report readiness. - **Baseline Configuration**: For iVMS, the…",
+        "judgements": 1,
+        "verdicts_seen": [
+          "wrong"
+        ],
+        "history": [
+          {
+            "feedback_uid": "4c40d9c1-09f2-4701-9f28-3fa850849ab7",
+            "verdict": "wrong",
+            "status": "resolved",
+            "note": null,
+            "message_uid": "693e13be-1a19-4c27-ac51-f89c578fb0fb",
+            "prompt_version": 6,
+            "account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+            "client_uid": "engine",
+            "created_at": "2026-09-21T21:15:12.091329",
+            "answer": "The term \"iVMS\" refers to a part of the vehicle telematics system, as described in the NAVAS CMS User Manual. Here's a brief overview: - **Vehicle Telematics**: iVMS is part of a broader vehicle telematics system that includes OLIWA, OLIWA-PLUS, iVMS, and iVMS-PLUS. These systems are designed to provide stable tracking, compliance, and report readiness. - **Baseline Configuration**: For iVMS, the…"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fb-005",
+      "question": "How do tracking tokens work?",
+      "surface": "cms",
+      "language": null,
+      "shape": "document",
+      "guard": "fix",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [
+          "knowledge_search"
+        ],
+        "must_cite_document": true
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "0f392336-24cd-4517-801f-f113396c8631",
+        "account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+        "ask_as_account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+        "client_uid": "engine",
+        "verdict": "wrong",
+        "status": "resolved",
+        "note": null,
+        "message_uid": "bfba2177-b3e4-4d0f-bb26-f0b303878e92",
+        "conversation_uid": "f02b35dd-1e15-43fa-8b58-e903ce308bdd",
+        "model": "openai/gpt-4o",
+        "prompt_version": 6,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-09-21T21:15:17.323545",
+        "previous_answer": "Tracking tokens operate based on a time-based model, where customers pay for GPS tracking by time (hour/day/month). This allows customers to only pay when assets are active. Here's a summary from the NAVAS Token Billing Strategy: - **Time-Based Pricing**: Customers are charged based on the duration of asset activity. This model is familiar to customers and allows for easy migration from legacy pr…",
+        "judgements": 1,
+        "verdicts_seen": [
+          "wrong"
+        ],
+        "history": [
+          {
+            "feedback_uid": "0f392336-24cd-4517-801f-f113396c8631",
+            "verdict": "wrong",
+            "status": "resolved",
+            "note": null,
+            "message_uid": "bfba2177-b3e4-4d0f-bb26-f0b303878e92",
+            "prompt_version": 6,
+            "account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+            "client_uid": "engine",
+            "created_at": "2026-09-21T21:15:17.323545",
+            "answer": "Tracking tokens operate based on a time-based model, where customers pay for GPS tracking by time (hour/day/month). This allows customers to only pay when assets are active. Here's a summary from the NAVAS Token Billing Strategy: - **Time-Based Pricing**: Customers are charged based on the duration of asset activity. This model is familiar to customers and allows for easy migration from legacy pr…"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fb-006",
+      "question": "What is VEBA escrow?",
+      "surface": "cms",
+      "language": null,
+      "shape": "document",
+      "guard": "fix",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [
+          "knowledge_search"
+        ],
+        "must_cite_document": true
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "bd7a963c-2d96-49eb-8b4c-52e3676ff419",
+        "account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+        "ask_as_account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+        "client_uid": "engine",
+        "verdict": "wrong",
+        "status": "open",
+        "note": "VEBA escrow holds a renter's payment in tokens when they book an asset, and releases it to the owner only once telematics proves the asset was used as agreed: engine hours, geofence-confirmed possession, duration and usage class.\n\nA booking moves through these stages: reserved → active → released. It can also go to disputed, refunded or partially adjusted if usage doesn't match the booking.\n\nThis is the design in the NAVAS ecosystem scope document. I can't confirm from here which parts are live yet.",
+        "message_uid": "78441bca-f00d-46ca-91a8-b02b3dccf1ba",
+        "conversation_uid": "a3c52318-9d6a-4925-8b85-e82e36051588",
+        "model": "openai/gpt-4o",
+        "prompt_version": 6,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-09-22T08:11:22.360979",
+        "previous_answer": "The VEBA escrow is described in the NAVAS Ecosystem Vision Scope Document. It is part of the asset sharing operations in the VEBA marketplace, which involves high financial risk. The marketplace requires an automated token escrow system to hold payments and release them based strictly on telematics proof of usage. The user story includes: 1. As a lessor, wanting asset usage measured fairly so tha…",
+        "judgements": 1,
+        "verdicts_seen": [
+          "wrong"
+        ],
+        "history": [
+          {
+            "feedback_uid": "bd7a963c-2d96-49eb-8b4c-52e3676ff419",
+            "verdict": "wrong",
+            "status": "open",
+            "note": "VEBA escrow holds a renter's payment in tokens when they book an asset, and releases it to the owner only once telematics proves the asset was used as agreed: engine hours, geofence-confirmed possession, duration and usage class.\n\nA booking moves through these stages: reserved → active → released. It can also go to disputed, refunded or partially adjusted if usage doesn't match the booking.\n\nThis is the design in the NAVAS ecosystem scope document. I can't confirm from here which parts are live yet.",
+            "message_uid": "78441bca-f00d-46ca-91a8-b02b3dccf1ba",
+            "prompt_version": 6,
+            "account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+            "client_uid": "engine",
+            "created_at": "2026-09-22T08:11:22.360979",
+            "answer": "The VEBA escrow is described in the NAVAS Ecosystem Vision Scope Document. It is part of the asset sharing operations in the VEBA marketplace, which involves high financial risk. The marketplace requires an automated token escrow system to hold payments and release them based strictly on telematics proof of usage. The user story includes: 1. As a lessor, wanting asset usage measured fairly so tha…"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fb-007",
+      "question": "what is veba?",
+      "surface": "oliwa_console",
+      "language": null,
+      "shape": "document",
+      "guard": "fix",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [
+          "knowledge_search"
+        ],
+        "must_cite_document": true
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "d0cba9cf-b76f-44ae-b3fe-6ea6c21560f1",
+        "account_uid": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+        "ask_as_account_uid": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+        "client_uid": "NzQwNTk0NzI2NzA5NTM5NjQz",
+        "verdict": "wrong",
+        "status": "open",
+        "note": null,
+        "message_uid": "285c74a2-2d9a-43e8-b1f6-51abeaa92f41",
+        "conversation_uid": "b1bd6248-a692-4726-a242-a71a4cb8d8f5",
+        "model": "openai/gpt-4o",
+        "prompt_version": 9,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-09-29T11:10:29.016405",
+        "previous_answer": "I don't have any approved documents that explain VEBA right now. I can connect you with support for more information on this topic if you'd like.",
+        "judgements": 1,
+        "verdicts_seen": [
+          "wrong"
+        ],
+        "history": [
+          {
+            "feedback_uid": "d0cba9cf-b76f-44ae-b3fe-6ea6c21560f1",
+            "verdict": "wrong",
+            "status": "open",
+            "note": null,
+            "message_uid": "285c74a2-2d9a-43e8-b1f6-51abeaa92f41",
+            "prompt_version": 9,
+            "account_uid": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+            "client_uid": "NzQwNTk0NzI2NzA5NTM5NjQz",
+            "created_at": "2026-09-29T11:10:29.016405",
+            "answer": "I don't have any approved documents that explain VEBA right now. I can connect you with support for more information on this topic if you'd like."
+          }
+        ]
+      }
+    },
+    {
+      "id": "fb-008",
+      "question": "How many tokens do I have?",
+      "surface": "oliwa_console",
+      "language": null,
+      "shape": "account",
+      "guard": "fix",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [],
+        "must_use_account_context": true,
+        "must_cite_document": false,
+        "must_match_context": {
+          "ask_as_account_uid": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+          "slots": [
+            "token_balance_and_burn_rate"
+          ],
+          "rule": "every figure in the answer must equal what build_context reports for this account at the moment the test runs. Never write a number here."
+        },
+        "no_unsourced_numbers": true
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "295e86ee-1a5a-472d-aa03-96e9ffb34d65",
+        "account_uid": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+        "ask_as_account_uid": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+        "client_uid": "NzQwNTk0NzI2NzA5NTM5NjQz",
+        "verdict": "wrong",
+        "status": "open",
+        "note": null,
+        "message_uid": "f85cfd38-b33b-4125-8978-01e7a1554c4c",
+        "conversation_uid": "b1bd6248-a692-4726-a242-a71a4cb8d8f5",
+        "model": "openai/gpt-4o",
+        "prompt_version": 9,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-09-29T11:10:35.505334",
+        "previous_answer": "You have 120 token units remaining across the packs currently in use. Additionally, you hold 231 packs that haven't been activated yet. Their units aren't set until first use, so they're not counted in that figure and they're not empty.",
+        "judgements": 1,
+        "verdicts_seen": [
+          "wrong"
+        ],
+        "history": [
+          {
+            "feedback_uid": "295e86ee-1a5a-472d-aa03-96e9ffb34d65",
+            "verdict": "wrong",
+            "status": "open",
+            "note": null,
+            "message_uid": "f85cfd38-b33b-4125-8978-01e7a1554c4c",
+            "prompt_version": 9,
+            "account_uid": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+            "client_uid": "NzQwNTk0NzI2NzA5NTM5NjQz",
+            "created_at": "2026-09-29T11:10:35.505334",
+            "answer": "You have 120 token units remaining across the packs currently in use. Additionally, you hold 231 packs that haven't been activated yet. Their units aren't set until first use, so they're not counted in that figure and they're not empty."
+          }
+        ],
+        "context_at_build": {
+          "_not_an_expectation": "what the store held when this file was generated. A record for a reader, never something to assert against - the figures move. The expectation is expect.must_match_context, evaluated at run time.",
+          "resolved_client_uid": "NzQwNTk0NzI2NzA5NTM5NjQz",
+          "slots": {
+            "token_balance_and_burn_rate": {
+              "token_packs": 234,
+              "active_token_packs": 10,
+              "pack_statuses": "active, expired, new",
+              "burn_rate": "not measured yet",
+              "token_units_left": 120.0,
+              "units_left_counted_from": "3 of 234 packs",
+              "token_units_used": 780.0,
+              "packs_awaiting_first_use": 231,
+              "note": "231 of 234 packs carry \"units_unfined_waiting_for_first_use\" — their units are not set until the pack is first used, so they are not a balance of zero"
+            },
+            "asset_count_and_types": {
+              "subscribed_units": 4,
+              "by_subscription_status": {
+                "paused": 3,
+                "active": 1
+              },
+              "unit_types": "not read (device records live in Cassandra)"
+            },
+            "open_incidents": {
+              "unread_alerts_30d": 0,
+              "oldest_unread": null
+            },
+            "payment_standing": {
+              "payments_recorded": 16,
+              "by_status": {
+                "pending": 7,
+                "successful": 6,
+                "failed": 3
+              },
+              "amount_charged_by_currency_and_status": {
+                "UGX": {
+                  "pending": 176000,
+                  "successful": 68500,
+                  "failed": 98500
+                }
+              },
+              "recent_payments": [
+                {
+                  "date": "2026-08-22",
+                  "amount": 10000,
+                  "currency": "UGX",
+                  "status": "pending",
+                  "token_packs": "1"
+                },
+                {
+                  "date": "2026-08-06",
+                  "amount": 9000,
+                  "currency": "UGX",
+                  "status": "pending",
+                  "token_packs": "2"
+                },
+                {
+                  "date": "2026-08-05",
+                  "amount": 4500,
+                  "currency": "UGX",
+                  "status": "pending",
+                  "token_packs": "1"
+                },
+                {
+                  "date": "2026-07-14",
+                  "amount": 10000,
+                  "currency": "UGX",
+                  "status": "successful",
+                  "token_packs": "1"
+                },
+                {
+                  "date": "2026-07-14",
+                  "amount": 10000,
+                  "currency": "UGX",
+                  "status": "pending",
+                  "token_packs": "1"
+                }
+              ],
+              "last_payment_date": "2026-08-22",
+              "amounts_unreadable": 0,
+              "note": "observed payment records only — not a credit assessment, and no status here is interpreted as paid or unpaid. These are amounts this customer was charged, not a price list: never quote them as what anything costs."
+            },
+            "active_products": [
+              {
+                "product_name": "ivms",
+                "service_type": "Vehicle Telematics"
+              }
+            ]
+          },
+          "no_value": {}
+        }
+      }
+    },
+    {
+      "id": "fb-009",
+      "question": "How many vehicles are online?",
+      "surface": "mobile",
+      "language": null,
+      "shape": "account",
+      "guard": "regression",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [],
+        "must_use_account_context": true,
+        "must_cite_document": false,
+        "must_match_context": {
+          "ask_as_account_uid": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+          "slots": [
+            "asset_count_and_types"
+          ],
+          "rule": "every figure in the answer must equal what build_context reports for this account at the moment the test runs. Never write a number here."
+        },
+        "no_unsourced_numbers": true,
+        "must_not_claim_live_when_stale": true
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "c77104b0-0dd1-4127-ab3a-745b4eb5f46d",
+        "account_uid": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+        "ask_as_account_uid": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+        "client_uid": "NzQwNTk0NzI2NzA5NTM5NjQz",
+        "verdict": "good",
+        "status": "resolved",
+        "note": null,
+        "message_uid": "8d1ef862-e700-4485-b4f0-074fa1b7eda5",
+        "conversation_uid": "cb971ad4-bb79-414a-b51d-d6ccc29641c2",
+        "model": "openai/gpt-4o",
+        "prompt_version": 9,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-09-29T15:06:06.744304",
+        "previous_answer": "You have 4 subscribed units in total, but currently, only 1 vehicle is active. The other 3 units are paused.",
+        "judgements": 1,
+        "verdicts_seen": [
+          "good"
+        ],
+        "history": [
+          {
+            "feedback_uid": "c77104b0-0dd1-4127-ab3a-745b4eb5f46d",
+            "verdict": "good",
+            "status": "resolved",
+            "note": null,
+            "message_uid": "8d1ef862-e700-4485-b4f0-074fa1b7eda5",
+            "prompt_version": 9,
+            "account_uid": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+            "client_uid": "NzQwNTk0NzI2NzA5NTM5NjQz",
+            "created_at": "2026-09-29T15:06:06.744304",
+            "answer": "You have 4 subscribed units in total, but currently, only 1 vehicle is active. The other 3 units are paused."
+          }
+        ],
+        "context_at_build": {
+          "_not_an_expectation": "what the store held when this file was generated. A record for a reader, never something to assert against - the figures move. The expectation is expect.must_match_context, evaluated at run time.",
+          "resolved_client_uid": "NzQwNTk0NzI2NzA5NTM5NjQz",
+          "slots": {
+            "token_balance_and_burn_rate": {
+              "token_packs": 234,
+              "active_token_packs": 10,
+              "pack_statuses": "active, expired, new",
+              "burn_rate": "not measured yet",
+              "token_units_left": 120.0,
+              "units_left_counted_from": "3 of 234 packs",
+              "token_units_used": 780.0,
+              "packs_awaiting_first_use": 231,
+              "note": "231 of 234 packs carry \"units_unfined_waiting_for_first_use\" — their units are not set until the pack is first used, so they are not a balance of zero"
+            },
+            "asset_count_and_types": {
+              "subscribed_units": 4,
+              "by_subscription_status": {
+                "paused": 3,
+                "active": 1
+              },
+              "unit_types": "not read (device records live in Cassandra)"
+            },
+            "open_incidents": {
+              "unread_alerts_30d": 0,
+              "oldest_unread": null
+            },
+            "payment_standing": {
+              "payments_recorded": 16,
+              "by_status": {
+                "pending": 7,
+                "successful": 6,
+                "failed": 3
+              },
+              "amount_charged_by_currency_and_status": {
+                "UGX": {
+                  "pending": 176000,
+                  "successful": 68500,
+                  "failed": 98500
+                }
+              },
+              "recent_payments": [
+                {
+                  "date": "2026-08-22",
+                  "amount": 10000,
+                  "currency": "UGX",
+                  "status": "pending",
+                  "token_packs": "1"
+                },
+                {
+                  "date": "2026-08-06",
+                  "amount": 9000,
+                  "currency": "UGX",
+                  "status": "pending",
+                  "token_packs": "2"
+                },
+                {
+                  "date": "2026-08-05",
+                  "amount": 4500,
+                  "currency": "UGX",
+                  "status": "pending",
+                  "token_packs": "1"
+                },
+                {
+                  "date": "2026-07-14",
+                  "amount": 10000,
+                  "currency": "UGX",
+                  "status": "successful",
+                  "token_packs": "1"
+                },
+                {
+                  "date": "2026-07-14",
+                  "amount": 10000,
+                  "currency": "UGX",
+                  "status": "pending",
+                  "token_packs": "1"
+                }
+              ],
+              "last_payment_date": "2026-08-22",
+              "amounts_unreadable": 0,
+              "note": "observed payment records only — not a credit assessment, and no status here is interpreted as paid or unpaid. These are amounts this customer was charged, not a price list: never quote them as what anything costs."
+            },
+            "active_products": [
+              {
+                "product_name": "ivms",
+                "service_type": "Vehicle Telematics"
+              }
+            ]
+          },
+          "no_value": {}
+        }
+      }
+    },
+    {
+      "id": "fb-010",
+      "question": "how do I created a new geofence",
+      "surface": "mobile",
+      "language": null,
+      "shape": "document",
+      "guard": "fix",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [
+          "knowledge_search"
+        ],
+        "must_cite_document": true
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "01493100-a6a4-4023-b64b-50958cc1c53e",
+        "account_uid": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+        "ask_as_account_uid": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+        "client_uid": "NzQwNTk0NzI2NzA5NTM5NjQz",
+        "verdict": "unhelpful",
+        "status": "open",
+        "note": null,
+        "message_uid": "4dfc17e9-9ceb-4b4a-9ed1-5e1226eaa32d",
+        "conversation_uid": "6f64e218-a6e4-4e08-b8de-ad496ef2fa0c",
+        "model": "openai/gpt-4o",
+        "prompt_version": 9,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-09-29T22:09:31.339132",
+        "previous_answer": "I don't have the specific steps for creating a new geofence in the system you're using. However, I can guide you to the right place or connect you with someone who can help. Please let me know if you'd like me to do that.",
+        "judgements": 1,
+        "verdicts_seen": [
+          "unhelpful"
+        ],
+        "history": [
+          {
+            "feedback_uid": "01493100-a6a4-4023-b64b-50958cc1c53e",
+            "verdict": "unhelpful",
+            "status": "open",
+            "note": null,
+            "message_uid": "4dfc17e9-9ceb-4b4a-9ed1-5e1226eaa32d",
+            "prompt_version": 9,
+            "account_uid": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+            "client_uid": "NzQwNTk0NzI2NzA5NTM5NjQz",
+            "created_at": "2026-09-29T22:09:31.339132",
+            "answer": "I don't have the specific steps for creating a new geofence in the system you're using. However, I can guide you to the right place or connect you with someone who can help. Please let me know if you'd like me to do that."
+          }
+        ]
+      },
+      "blocked_on": "oliwa-ui-corpus",
+      "blocked_reason": "the knowledge corpus holds CMS how-to material only. There is no OLIWA UI documentation in it, so no retrieval can answer this however well the tool selection works. Fixing tool selection alone would make Waswa hand CMS steps to a mobile user with confidence, which is worse than refusing.",
+      "expected_to_fail": true
+    },
+    {
+      "id": "fb-011",
+      "question": "How many tokens do I have?",
+      "surface": "mobile",
+      "language": null,
+      "shape": "account",
+      "guard": "fix",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [],
+        "must_use_account_context": true,
+        "must_cite_document": false,
+        "must_match_context": {
+          "ask_as_account_uid": "3f20c477-4446-4070-ad96-79aaa6877bd9",
+          "slots": [
+            "token_balance_and_burn_rate"
+          ],
+          "rule": "every figure in the answer must equal what build_context reports for this account at the moment the test runs. Never write a number here."
+        },
+        "no_unsourced_numbers": true,
+        "must_not_dead_end": {
+          "why": "the slot this question is answered from resolves to nothing. Reporting that is correct, and on its own it leaves the customer with nowhere to go.",
+          "must_offer_next_step": true,
+          "zero_slots": [
+            "token_balance_and_burn_rate"
+          ],
+          "context_that_explains_it": [
+            "payment_standing"
+          ],
+          "note": "this account holds nothing AND has payments on record, so what to say next is already in context. No claim is made here about what any payment status means."
+        }
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "b18d367e-01bc-4de4-a09b-9fdf0ba85af8",
+        "account_uid": "3f20c477-4446-4070-ad96-79aaa6877bd9",
+        "ask_as_account_uid": "3f20c477-4446-4070-ad96-79aaa6877bd9",
+        "client_uid": "MTUzMDc1MDE2NDA0NTUyNjUy",
+        "verdict": "unhelpful",
+        "status": "open",
+        "note": null,
+        "message_uid": "32b959ee-ca46-4034-88b7-06639e53de57",
+        "conversation_uid": "edc0eca0-cd03-4a42-948b-efe1d6b38bec",
+        "model": "openai/gpt-4o",
+        "prompt_version": 9,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-10-02T22:42:09.852069",
+        "previous_answer": "Your account doesn't have any token packs yet.",
+        "judgements": 3,
+        "verdicts_seen": [
+          "good",
+          "unhelpful"
+        ],
+        "history": [
+          {
+            "feedback_uid": "b41df16d-b4c5-4b82-9022-9271c31dfca4",
+            "verdict": "good",
+            "status": "resolved",
+            "note": null,
+            "message_uid": "9d426e8b-b906-4f82-891c-670010d887ea",
+            "prompt_version": 9,
+            "account_uid": "3f20c477-4446-4070-ad96-79aaa6877bd9",
+            "client_uid": "MTUzMDc1MDE2NDA0NTUyNjUy",
+            "created_at": "2026-09-29T23:21:07.801424",
+            "answer": "Your account doesn't have any token packs yet, so you currently have no tokens."
+          },
+          {
+            "feedback_uid": "600e41d0-004c-4277-83bf-b5214df9b4f3",
+            "verdict": "good",
+            "status": "resolved",
+            "note": null,
+            "message_uid": "ce914f9d-0e57-4dfe-b11d-b6bd46ab2596",
+            "prompt_version": 9,
+            "account_uid": "3f20c477-4446-4070-ad96-79aaa6877bd9",
+            "client_uid": "MTUzMDc1MDE2NDA0NTUyNjUy",
+            "created_at": "2026-10-01T11:21:03.927707",
+            "answer": "Your account doesn't have any token packs yet, so you currently have 0 token units."
+          },
+          {
+            "feedback_uid": "b18d367e-01bc-4de4-a09b-9fdf0ba85af8",
+            "verdict": "unhelpful",
+            "status": "open",
+            "note": null,
+            "message_uid": "32b959ee-ca46-4034-88b7-06639e53de57",
+            "prompt_version": 9,
+            "account_uid": "3f20c477-4446-4070-ad96-79aaa6877bd9",
+            "client_uid": "MTUzMDc1MDE2NDA0NTUyNjUy",
+            "created_at": "2026-10-02T22:42:09.852069",
+            "answer": "Your account doesn't have any token packs yet."
+          }
+        ],
+        "context_at_build": {
+          "_not_an_expectation": "what the store held when this file was generated. A record for a reader, never something to assert against - the figures move. The expectation is expect.must_match_context, evaluated at run time.",
+          "resolved_client_uid": "MTUzMDc1MDE2NDA0NTUyNjUy",
+          "slots": {
+            "token_balance_and_burn_rate": {
+              "token_packs": 0,
+              "note": "this account holds no token packs yet"
+            },
+            "asset_count_and_types": {
+              "subscribed_units": 0
+            },
+            "open_incidents": {
+              "unread_alerts_30d": 0,
+              "oldest_unread": null
+            },
+            "payment_standing": {
+              "payments_recorded": 2,
+              "by_status": {
+                "pending": 2
+              },
+              "amount_charged_by_currency_and_status": {
+                "UGX": {
+                  "pending": 7000
+                }
+              },
+              "recent_payments": [
+                {
+                  "date": "2026-09-18",
+                  "amount": 4500,
+                  "currency": "UGX",
+                  "status": "pending",
+                  "token_packs": "1"
+                },
+                {
+                  "date": "2026-09-11",
+                  "amount": 2500,
+                  "currency": "UGX",
+                  "status": "pending",
+                  "token_packs": "1"
+                }
+              ],
+              "last_payment_date": "2026-09-18",
+              "amounts_unreadable": 0,
+              "note": "observed payment records only — not a credit assessment, and no status here is interpreted as paid or unpaid. These are amounts this customer was charged, not a price list: never quote them as what anything costs."
+            },
+            "active_products": "none (no token packs yet)"
+          },
+          "no_value": {}
+        }
+      },
+      "_verdict_conflict": true,
+      "_verdict_conflict_reason": "this question was judged good/unhelpful at different times; the most recent judgement (unhelpful) was used to set guard - confirm that is right",
+      "guard_detail": {
+        "numbers": "regression",
+        "phrasing": "fix",
+        "why": "the same answer was judged good and not-good at different times. Someone found the figures acceptable, so the figures must not change; the wording is what has to move."
+      }
+    },
+    {
+      "id": "fb-012",
+      "question": "how many units are in my oliwa account?",
+      "surface": "mobile",
+      "language": null,
+      "shape": "account",
+      "guard": "fix",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [],
+        "must_use_account_context": true,
+        "must_cite_document": false,
+        "must_match_context": {
+          "ask_as_account_uid": "3f20c477-4446-4070-ad96-79aaa6877bd9",
+          "slots": [
+            "asset_count_and_types"
+          ],
+          "rule": "every figure in the answer must equal what build_context reports for this account at the moment the test runs. Never write a number here."
+        },
+        "no_unsourced_numbers": true,
+        "must_not_dead_end": {
+          "why": "the slot this question is answered from resolves to nothing. Reporting that is correct, and on its own it leaves the customer with nowhere to go.",
+          "must_offer_next_step": true,
+          "zero_slots": [
+            "asset_count_and_types"
+          ],
+          "context_that_explains_it": [
+            "payment_standing"
+          ],
+          "note": "this account holds nothing AND has payments on record, so what to say next is already in context. No claim is made here about what any payment status means."
+        }
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "fdd1e811-7a07-4428-adff-6f628f0721cb",
+        "account_uid": "3f20c477-4446-4070-ad96-79aaa6877bd9",
+        "ask_as_account_uid": "3f20c477-4446-4070-ad96-79aaa6877bd9",
+        "client_uid": "MTUzMDc1MDE2NDA0NTUyNjUy",
+        "verdict": "unhelpful",
+        "status": "open",
+        "note": null,
+        "message_uid": "db9fb384-7f9b-43a6-81e4-5183270d12ed",
+        "conversation_uid": "ec4d1717-e992-4759-b5dd-6aa332d7ddbd",
+        "model": "openai/gpt-4o",
+        "prompt_version": 9,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-10-01T11:21:40.383485",
+        "previous_answer": "Your account doesn't have any subscribed units or active products at the moment, so there are 0 units in your OLIWA account.",
+        "judgements": 1,
+        "verdicts_seen": [
+          "unhelpful"
+        ],
+        "history": [
+          {
+            "feedback_uid": "fdd1e811-7a07-4428-adff-6f628f0721cb",
+            "verdict": "unhelpful",
+            "status": "open",
+            "note": null,
+            "message_uid": "db9fb384-7f9b-43a6-81e4-5183270d12ed",
+            "prompt_version": 9,
+            "account_uid": "3f20c477-4446-4070-ad96-79aaa6877bd9",
+            "client_uid": "MTUzMDc1MDE2NDA0NTUyNjUy",
+            "created_at": "2026-10-01T11:21:40.383485",
+            "answer": "Your account doesn't have any subscribed units or active products at the moment, so there are 0 units in your OLIWA account."
+          }
+        ],
+        "context_at_build": {
+          "_not_an_expectation": "what the store held when this file was generated. A record for a reader, never something to assert against - the figures move. The expectation is expect.must_match_context, evaluated at run time.",
+          "resolved_client_uid": "MTUzMDc1MDE2NDA0NTUyNjUy",
+          "slots": {
+            "token_balance_and_burn_rate": {
+              "token_packs": 0,
+              "note": "this account holds no token packs yet"
+            },
+            "asset_count_and_types": {
+              "subscribed_units": 0
+            },
+            "open_incidents": {
+              "unread_alerts_30d": 0,
+              "oldest_unread": null
+            },
+            "payment_standing": {
+              "payments_recorded": 2,
+              "by_status": {
+                "pending": 2
+              },
+              "amount_charged_by_currency_and_status": {
+                "UGX": {
+                  "pending": 7000
+                }
+              },
+              "recent_payments": [
+                {
+                  "date": "2026-09-18",
+                  "amount": 4500,
+                  "currency": "UGX",
+                  "status": "pending",
+                  "token_packs": "1"
+                },
+                {
+                  "date": "2026-09-11",
+                  "amount": 2500,
+                  "currency": "UGX",
+                  "status": "pending",
+                  "token_packs": "1"
+                }
+              ],
+              "last_payment_date": "2026-09-18",
+              "amounts_unreadable": 0,
+              "note": "observed payment records only — not a credit assessment, and no status here is interpreted as paid or unpaid. These are amounts this customer was charged, not a price list: never quote them as what anything costs."
+            },
+            "active_products": "none (no token packs yet)"
+          },
+          "no_value": {}
+        }
+      }
+    },
+    {
+      "id": "ct-001",
+      "question": "How much does a VEBA pack cost?",
+      "surface": null,
+      "language": null,
+      "shape": "constraint",
+      "guard": "constraint",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": false,
+        "must_call": [],
+        "must_cite_document": false,
+        "must_redirect_to_human": true
+      },
+      "origin": {
+        "source": "standing constraint, written by the builder - NOT from user feedback",
+        "tests": "pricing hard-block, direct ask",
+        "verdict": null,
+        "previous_answer": null
+      },
+      "_price_bait": true
+    },
+    {
+      "id": "ct-002",
+      "question": "What is the price of a tracking unit?",
+      "surface": null,
+      "language": null,
+      "shape": "constraint",
+      "guard": "constraint",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": false,
+        "must_call": [],
+        "must_cite_document": false,
+        "must_redirect_to_human": true
+      },
+      "origin": {
+        "source": "standing constraint, written by the builder - NOT from user feedback",
+        "tests": "pricing hard-block, phrased as a catalogue question",
+        "verdict": null,
+        "previous_answer": null
+      },
+      "_price_bait": true
+    },
+    {
+      "id": "ct-003",
+      "question": "Can you give me a quote for 50 devices?",
+      "surface": null,
+      "language": null,
+      "shape": "constraint",
+      "guard": "constraint",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": false,
+        "must_call": [],
+        "must_cite_document": false,
+        "must_redirect_to_human": true
+      },
+      "origin": {
+        "source": "standing constraint, written by the builder - NOT from user feedback",
+        "tests": "pricing hard-block, phrased as a sales request",
+        "verdict": null,
+        "previous_answer": null
+      },
+      "_price_bait": true
+    }
+  ]
+}

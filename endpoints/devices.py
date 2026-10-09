@@ -1,7 +1,9 @@
+from .globals import STORE_UNAVAILABLE
 from flask import Flask
 from flask import Blueprint
 from flask import request
 import psycopg2
+from . import db_pool
 from flask import json
 from flask import jsonify
 import datetime
@@ -29,6 +31,7 @@ devices_bp = Blueprint('devices', __name__)
 # Cassandra connection settings, including the password, come from the
 # environment via config.py. They used to be written out in full in each
 # of these six files.
+import logging
 from config import (
     CASSANDRA_KEYSPACE,
     CASSANDRA_CONTACT_POINTS,
@@ -38,39 +41,17 @@ from config import (
     CASSANDRA_LOCAL_DC,
 )
 
-_cassandra_cluster = None
-_cassandra_session = None
+# B9: one Cassandra session per PROCESS, not one per module. This module
+# used to define its own get_cassandra_session() over its own globals and
+# its own Cluster(); six identical copies meant a worker could hold six
+# pools to the same database, each paying its own 6-7s handshake. The
+# name is re-exported so this module's callers and importers are unchanged.
+from .cassandra_store import get_cassandra_session
 
-def get_cassandra_session():
-    global _cassandra_cluster, _cassandra_session
-    if _cassandra_session and not _cassandra_session.is_shutdown:
-        return _cassandra_session
-    try:
-        auth_provider = PlainTextAuthProvider(
-            username=CASSANDRA_USERNAME,
-            password=CASSANDRA_PASSWORD
-        )
-        profile = ExecutionProfile(
-            load_balancing_policy=TokenAwarePolicy(DCAwareRoundRobinPolicy(local_dc=CASSANDRA_LOCAL_DC)),
-            consistency_level=ConsistencyLevel.ONE
-        )
-        _cassandra_cluster = Cluster(
-            contact_points=CASSANDRA_CONTACT_POINTS,
-            port=CASSANDRA_PORT,
-            auth_provider=auth_provider,
-            protocol_version=4,
-            execution_profiles={EXEC_PROFILE_DEFAULT: profile}
-        )
-        _cassandra_session = _cassandra_cluster.connect(CASSANDRA_KEYSPACE)
-        print("Successfully connected to Cassandra cluster")
-        return _cassandra_session
-    except Exception as e:
-        print(f"Error connecting to Cassandra: {e}")
-        return None
 
 
 def get_postgres_connection():
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
     return dbconnect
 #register device
 @devices_bp.route("/devices/create", methods=["POST"])
@@ -79,7 +60,7 @@ def register_device():
 
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     payload_data = request.get_json()
 
     try:
@@ -116,7 +97,11 @@ def register_device():
             return reply('error', 400, 'Something Is Missing', '')
 
     except Exception as error:
-        return reply('error', 500, error, '')
+        # B10 class: `error` is an exception OBJECT. scrub_secrets() passes
+        # non-strings through, jsonify then raises TypeError and the caller
+        # gets a 500 with no message at all.
+        logging.exception('devices: unhandled error')
+        return reply('error', 500, str(error), '')
     
 
 #get all devices
@@ -126,7 +111,7 @@ def get_devices():
 
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     payload_data = request.get_json()
 
     try:
@@ -198,7 +183,7 @@ def get_devices():
 def get_configured_devices():
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     payload_data = request.get_json()
 
     try:
@@ -393,7 +378,11 @@ def get_configured_devices():
         else:
             return reply('error', 400, 'Something Is Missing', '')
     except Exception as error:
-        return reply('error', 500, error, '')
+        # B10 class: `error` is an exception OBJECT. scrub_secrets() passes
+        # non-strings through, jsonify then raises TypeError and the caller
+        # gets a 500 with no message at all.
+        logging.exception('devices: unhandled error')
+        return reply('error', 500, str(error), '')
 
 
 BASIC_COLUMNS = ("device_imei, device_name, device_simcard, device_car_make, device_car_model, device_vin_number, "
@@ -404,7 +393,7 @@ BASIC_COLUMNS = ("device_imei, device_name, device_simcard, device_car_make, dev
 def get_system32_configured_devices():
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     payload_data = request.get_json()
 
     try:
@@ -496,6 +485,10 @@ def get_system32_configured_devices():
         return paged_reply('Found Devices', devices_found, pagination, status_counts=status_counts)
 
     except Exception as error:
+        # B10 class: `error` is an exception OBJECT. scrub_secrets() passes
+        # non-strings through, jsonify then raises TypeError and the caller
+        # gets a 500 with no message at all.
+        logging.exception('devices: unhandled error')
         return reply('error', 500, str(error), '')
 
 
@@ -513,7 +506,7 @@ def action():
 
             _cassandra_session = get_cassandra_session()
             if not _cassandra_session:
-                return reply('error', 500, 'Failed to connect to Cassandra', '')
+                return reply('error', 503, STORE_UNAVAILABLE, '')
 
             logs = []
 
@@ -606,7 +599,7 @@ def action():
 def ClientConfigured_Devices(client_id):
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     try:
         if(len(str(client_id)) > 5):
             AccountID = str(client_id)
@@ -678,11 +671,21 @@ def ClientConfigured_Devices(client_id):
         else:
             return reply('error', 400, 'Something Is Missing', '')
     except Exception as error:
-        return reply('error', 500, error, '')
+        # B10 class: `error` is an exception OBJECT. scrub_secrets() passes
+        # non-strings through, jsonify then raises TypeError and the caller
+        # gets a 500 with no message at all.
+        logging.exception('devices: unhandled error')
+        return reply('error', 500, str(error), '')
 
 
 @devices_bp.route("/devices/filter/clients/<client_uid>/network/group/<group_uid>/filter-out", methods=["GET"])
 def FilterRequest(client_uid, group_uid):
+    # B9: this route read the module global directly and never called the
+    # accessor, so on a cold worker it raised AttributeError on None.
+    _cassandra_session = get_cassandra_session()
+    if not _cassandra_session:
+        return reply('error', 503, STORE_UNAVAILABLE, '')
+
     try:
         ClientID = str(client_uid)
         GroupID = str(group_uid)
@@ -858,7 +861,7 @@ def FilterRequest(client_uid, group_uid):
 def single_configured_device(device_imei):
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     try:
         if(len(str(device_imei)) > 4):
             _basic_data_query = _cassandra_session.prepare("SELECT device_name, device_simcard, device_car_make, device_car_model, device_vin_number, device_car_type, events_attached, device_billing_status, device_client FROM dll_device_basic_data WHERE device_imei = ?")
@@ -905,7 +908,7 @@ def single_configured_device(device_imei):
 @devices_bp.route("/devices/simcards/create", methods=["POST"])
 def search_device():
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
     payload_data = request.get_json()
 
     try:
@@ -948,7 +951,7 @@ def search_device():
 @devices_bp.route("/devices/simcards/all", methods=["GET"])
 def get_simcards():
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
 
     try:
 
@@ -988,7 +991,7 @@ def get_simcards():
 @devices_bp.route("/devices/simcards/<simcard_owner>/all", methods=["GET"])
 def get_simcards_byOwner(simcard_owner):
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
 
     try:
 
@@ -1030,7 +1033,7 @@ def update_simcard():
 
     try:
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         payload_data = request.get_json()
 
         if(len(str(payload_data['data']['simcard_uid'])) > 2) and (len(str(payload_data['data']['simcard_number'])) > 2) and (len(str(payload_data['data']['telecom'])) > 2):
@@ -1067,7 +1070,7 @@ def update_simcard():
 def delete_simcard(simcard_uid):
 
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
 
         with dbconnect:
             with dbconnect.cursor() as cursor:
@@ -1094,7 +1097,7 @@ def delete_simcard(simcard_uid):
 @devices_bp.route("/events/create", methods=["POST"])
 def create_new_device_event():
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
     
     try:
         payload_data = request.get_json()
@@ -1132,7 +1135,7 @@ def update_event(event_uid):
 
     try:
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         payload_data = request.get_json()
 
         if(len(str(payload_data['data']['event_name'])) > 2) and (len(str(payload_data['data']['event_description'])) > 2) and (len(str(payload_data['data']['event_condition'])) > 2) and (len(str(payload_data['data']['event_condition_value'])) > 0):
@@ -1175,7 +1178,7 @@ def get_all_events():
 
     try:
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         payload_data = request.get_json()
 
         if(len(str(payload_data['data']['load_level'])) > 2) and (len(str(payload_data['data']['owner_uid'])) > 2):
@@ -1274,7 +1277,7 @@ def GetEventDetails(event_id):
 
     try:
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
 
         if(len(str(event_id)) > 2):
 
@@ -1317,7 +1320,7 @@ def GetEventDetails(event_id):
 def delete_event(event_uid):
 
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         
         with dbconnect:
             with dbconnect.cursor() as cursor:
@@ -1345,7 +1348,7 @@ def UpdateMileage():
 
     try:
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         payload_data = request.get_json()
 
         if(len(str(payload_data['data']['device_imei'])) > 5) and (len(str(payload_data['data']['updated_mileage'])) > 0):
@@ -1380,9 +1383,12 @@ def UpdateMileage():
 @devices_bp.route("/devices/update/properties", methods=['POST'])
 def update_device():
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         update_payload = request.get_json()
         _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            logging.warning('update_device: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         if (
             len(str(update_payload['data']['device_imei'])) > 4
@@ -1472,7 +1478,7 @@ def update_device():
 def AttachDevice(event_uid):
 
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         devices_payload = request.get_json()
         _devicesAttached = devices_payload['data']['device_list']
 
@@ -1522,7 +1528,7 @@ def AttachDevice(event_uid):
 def RemoveEvent(device_id, event_uid):
 
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         _EventID_Focus = str(event_uid)
         _Device_Focus = str(device_id)
 
@@ -1565,7 +1571,7 @@ def RemoveEvent(device_id, event_uid):
 def GetDevice_Events(device_imei):
 
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         _FocusedDevice_ID = str(device_imei)
 
         with dbconnect:
@@ -1617,7 +1623,7 @@ def sync_client_devices():
     """
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
 
     try:
         rows = _cassandra_session.execute(

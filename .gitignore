@@ -8,3 +8,11 @@ database/knowledge/uploads/
 # secrets and stale backups must never be committed
 *.bak
 *.bak.*
+
+# B5 measurement baseline (local only)
+.b5_capture.json
+
+# Kilo worktrees -- a full second copy of the tree, including its own
+# config.py. Git skips it today only because a worktree .git pointer makes
+# it look like a nested repo; nothing actually excludes it.
+.kilo/
