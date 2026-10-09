@@ -17,8 +17,11 @@ from cassandra import ConsistencyLevel
 from cassandra.policies import TokenAwarePolicy, DCAwareRoundRobinPolicy
 from cassandra.query import SimpleStatement
 from .globals import reply, require_permission
+from .resources import resource_policy
 import base64
 from .globals import check_device
+from .device_listing import (LIVE_STATUSES, cassandra_in, live_snapshots, live_summary, matches, page_request,
+                             paged_reply, paginate, pg_lookup)
 import uuid
 
 
@@ -112,101 +115,64 @@ def get_devices():
     payload_data = request.get_json()
 
     try:
-
-        if(len(str(payload_data['data']['data_level'])) > 2) and (len(str(payload_data['data']['account_uid'])) > 2):
-
-            dataLevel = payload_data['data']['data_level']
-            AccountID = payload_data['data']['account_uid']
-
-            if(dataLevel == 'service_provider'):
-                _data_query = _cassandra_session.prepare("SELECT * FROM dll_device_registrar WHERE service_provider_uid = ? ALLOW FILTERING")
-                rows = _cassandra_session.execute(_data_query,(AccountID,))
-
-                if rows:
-                    data_adapter = rows
-                    devices_found = []
-
-                    for row in data_adapter:
-                        single_device = {
-                            "device_local_uid": row.device_local_uid,
-                            "device_hardware": row.device_hardware,
-                            "device_vendor": row.device_vendor,
-                            "device_status": row.device_status,
-                            "device_imei": row.device_imei,
-                            "date_created": row.date_created,
-                            "billing_status": check_device(row.device_imei)
-                        }
-
-                        devices_found.append(single_device)
-                    return reply('success', 200, 'Found Account', devices_found)
-                    
-                else:
-                    return reply('error', 400, 'No Devices Found', '')
-
-
-            elif(dataLevel == 'client'):
-
-                _data_query = _cassandra_session.prepare("SELECT * FROM dll_device_registrar WHERE client_uid = ?")
-                rows = _cassandra_session.execute(
-                    _data_query,
-                    (AccountID,)
-                )
-
-                if rows:
-                    data_adapter = rows
-                    devices_found = []
-
-                    for row in data_adapter:
-                        single_device = {
-                            "device_local_uid": row.device_local_uid,
-                            "device_hardware": row.device_hardware,
-                            "device_vendor": row.device_vendor,
-                            "device_status": row.device_status,
-                            "device_imei": row.device_imei,
-                            "date_created": row.date_created,
-                            "billing_status": check_device(row.device_imei)
-                        }
-
-                        devices_found.append(single_device)
-                    return reply('success', 200, 'Found Account', devices_found)
-
-                else:
-                    return reply('error', 400, 'No Devices Found', '')
-
-
-            elif(dataLevel == 'inhouse'):
-
-                rows = _cassandra_session.execute(
-                    "SELECT * FROM dll_device_registrar"
-                )
-
-                if rows:
-                    data_adapter = rows
-                    devices_found = []
-
-                    for row in data_adapter:
-                        single_device = {
-                            "device_local_uid": row.device_local_uid,
-                            "device_hardware": row.device_hardware,
-                            "device_vendor": row.device_vendor,
-                            "device_status": row.device_status,
-                            "device_imei": row.device_imei,
-                            "service_provider": row.service_provider_uid,
-                            "date_created": row.date_created,
-                            "billing_status": check_device(row.device_imei)
-                        }
-
-                        devices_found.append(single_device)
-                    return reply('success', 200, 'Found Account', devices_found)
-
-                else:
-                    return reply('error', 400, 'No Devices Found', '')
-
-            else:
-                return reply('error', 400, 'Unknown data level', '')
-
-        else:
+        data = payload_data['data']
+        dataLevel = str(data.get('data_level') or '')
+        AccountID = str(data.get('account_uid') or '')
+        if len(dataLevel) <= 2 or len(AccountID) <= 2:
             return reply('error', 400, 'Something Is Missing', '')
+        page, page_size, search, _ = page_request(data)
+
+        columns = "device_local_uid, device_hardware, device_vendor, device_status, device_imei, date_created, service_provider_uid"
+        if dataLevel == 'service_provider':
+            query = _cassandra_session.prepare(
+                "SELECT %s FROM dll_device_registrar WHERE service_provider_uid = ? ALLOW FILTERING" % columns)
+            rows = list(_cassandra_session.execute(query, (AccountID,)))
+        elif dataLevel == 'client':
+            owned = _cassandra_session.prepare(
+                "SELECT device_imei FROM dll_device_basic_data WHERE device_client = ? ALLOW FILTERING")
+            imeis = [row.device_imei for row in _cassandra_session.execute(owned, (AccountID,)) if row.device_imei]
+            rows = cassandra_in(_cassandra_session,
+                                "SELECT %s FROM dll_device_registrar WHERE device_imei IN ?" % columns, imeis)
+        elif dataLevel == 'inhouse':
+            rows = list(_cassandra_session.execute("SELECT %s FROM dll_device_registrar" % columns))
+        else:
+            return reply('error', 400, 'Unknown data level', '')
+
+        if not rows:
+            return reply('error', 400, 'No Devices Found', '')
+
+        rows = [row for row in rows if matches(search, row.device_imei, row.device_hardware, row.device_vendor,
+                                               row.device_status)]
+        rows.sort(key=lambda row: str(row.device_imei or ''))
+        page_rows, pagination = paginate(rows, page, page_size)
+
+        page_imeis = [row.device_imei for row in page_rows]
+        billing = pg_lookup("SELECT device_imei, device_billing_status FROM dll_device_basic_data WHERE device_imei = ANY(%s)",
+                            page_imeis)
+        owners = {row.device_imei: row.device_client for row in cassandra_in(
+            _cassandra_session, "SELECT device_imei, device_client FROM dll_device_basic_data WHERE device_imei IN ?",
+            page_imeis)}
+        client_names = pg_lookup("SELECT client_uid, client_name FROM dll_client_accounts WHERE client_uid = ANY(%s)",
+                                 set(owners.values()))
+
+        devices_found = []
+        for row in page_rows:
+            owner = owners.get(row.device_imei)
+            item = {
+                "device_local_uid": row.device_local_uid,
+                "device_hardware": row.device_hardware,
+                "device_vendor": row.device_vendor,
+                "device_status": row.device_status,
+                "device_imei": row.device_imei,
+                "date_created": row.date_created,
+                "billing_status": billing.get(str(row.device_imei), 'not-found'),
+                "client_uid": owner,
+                "client_name": client_names.get(str(owner)) if owner else None,
+            }
+            if dataLevel == 'inhouse':
+                item["service_provider"] = row.service_provider_uid
+            devices_found.append(item)
+        return paged_reply('Found Account', devices_found, pagination)
 
     except Exception as error:
         return reply('error', 500, str(error), '')
@@ -419,6 +385,10 @@ def get_configured_devices():
         return reply('error', 500, str(error), '')
 
 
+BASIC_COLUMNS = ("device_imei, device_name, device_simcard, device_car_make, device_car_model, device_vin_number, "
+                 "device_car_type, events_attached, device_billing_status, device_client")
+
+
 @devices_bp.route("/system32/devices/configured/all", methods=["POST"])
 def get_system32_configured_devices():
     _cassandra_session = get_cassandra_session()
@@ -427,190 +397,93 @@ def get_system32_configured_devices():
     payload_data = request.get_json()
 
     try:
-        if(len(str(payload_data['data']['data_level'])) > 2) and (len(str(payload_data['data']['account_uid'])) > 2):
-            dataLevel = payload_data['data']['data_level']
-            AccountID = payload_data['data']['account_uid']
-
-            if(dataLevel == 'service_provider'):
-                _data_query = _cassandra_session.prepare("SELECT device_imei FROM dll_device_registrar WHERE service_provider_uid = ? ALLOW FILTERING")
-                rows = _cassandra_session.execute(_data_query, (AccountID,))
-                if rows:
-                    data_adapter = rows
-                    devices_found = []
-                    for row in data_adapter:
-                        FoundIMEI = row.device_imei
-                        _simcard_query = _cassandra_session.prepare("SELECT device_name, device_simcard, device_car_make, device_car_model, device_vin_number, device_car_type, events_attached, device_billing_status, device_client FROM dll_device_basic_data WHERE device_imei = ?")
-                        rows_basic = _cassandra_session.execute(_simcard_query, (FoundIMEI,))
-                        DeviceBasicData_Adapter = rows_basic[0] if rows_basic else None
-                        if DeviceBasicData_Adapter:
-                            SimCard = DeviceBasicData_Adapter.device_simcard
-                            # Using PostgreSQL for dll_telecom_assets query
-                            conn = get_postgres_connection()
-                            cur = conn.cursor()
-                            cur.execute("SELECT simcard_number FROM dll_telecom_assets WHERE asset_uid = %s", (SimCard,))
-                            rows_simcard = cur.fetchone()
-                            #conn.close()
-                            SimcardData = rows_simcard if rows_simcard else None
-                            SimcardNumber = SimcardData[0] if SimcardData else None
-                            _hardware_query = _cassandra_session.prepare("SELECT device_vendor, device_hardware FROM dll_device_registrar WHERE device_imei = ?")
-                            rows_hardware = _cassandra_session.execute(_hardware_query, (FoundIMEI,))
-                            Hardware_dataAdapter = rows_hardware[0] if rows_hardware else None
-                            Hardware = Hardware_dataAdapter.device_vendor if Hardware_dataAdapter else None
-                            HardwareModel = Hardware_dataAdapter.device_hardware if Hardware_dataAdapter else None
-                            
-                            # Query to get the client name
-                            cur.execute("SELECT client_name FROM dll_client_accounts WHERE client_uid = %s", (DeviceBasicData_Adapter.device_client,))
-                            client_record = cur.fetchone()
-                            client_name = client_record[0] if client_record else None
-
-                            # Query to get the subscription end date
-                            cur.execute("SELECT end_date FROM dll_device_subscriptions WHERE device_imei_number = %s", (FoundIMEI,))
-                            subscription_record = cur.fetchone()
-                            expiry_date = subscription_record[0] if subscription_record else '0'
-
-                            SingleBasic_Data = {
-                                "device_name": DeviceBasicData_Adapter.device_name,
-                                "simcard": SimcardNumber,
-                                "simcard_uid": SimCard,
-                                "car_make": DeviceBasicData_Adapter.device_car_make,
-                                "car_model": DeviceBasicData_Adapter.device_car_model,
-                                "vin_number": DeviceBasicData_Adapter.device_vin_number,
-                                "car_type": DeviceBasicData_Adapter.device_car_type,
-                                "events_attached": DeviceBasicData_Adapter.events_attached,
-                                "billing_status": DeviceBasicData_Adapter.device_billing_status,
-                                "device_imei": FoundIMEI,
-                                "subscription_end_date": expiry_date,
-                                "client_uid": DeviceBasicData_Adapter.device_client,
-                                "client_name": client_name,
-                                "hardware": Hardware,
-                                "hardware_model": HardwareModel
-                            }
-                            devices_found.append(SingleBasic_Data)
-                    if(len(devices_found) > 0):
-                        return reply('success', 200, 'Found Devices', devices_found)
-                    elif(len(devices_found) == 0):
-                        return reply('error', 400, 'No Devices Found', '')
-                else:
-                    return reply('error', 400, 'No Devices Found', '')
-
-            elif(dataLevel == 'client'):
-
-                _client_data_query = _cassandra_session.prepare("SELECT device_imei FROM dll_device_basic_data WHERE device_client = ? ALLOW FILTERING")
-                rows = _cassandra_session.execute(_client_data_query, (AccountID,))
-                if rows:
-                    data_adapter = rows
-                    devices_found = []
-                    for row in data_adapter:
-                        FoundIMEI = row.device_imei
-                        _simcard_query = _cassandra_session.prepare("SELECT device_name, device_simcard, device_car_make, device_car_model, device_vin_number, device_car_type, events_attached, device_billing_status, device_client FROM dll_device_basic_data WHERE device_imei = ?")
-                        rows_basic = _cassandra_session.execute(_simcard_query, (FoundIMEI,))
-                        DeviceBasicData_Adapter = rows_basic[0] if rows_basic else None
-                        if DeviceBasicData_Adapter:
-                            SimCard = DeviceBasicData_Adapter.device_simcard
-                            # Using PostgreSQL for dll_telecom_assets query
-                            conn = get_postgres_connection()
-                            cur = conn.cursor()
-                            cur.execute("SELECT simcard_number FROM dll_telecom_assets WHERE asset_uid = %s", (SimCard,))
-                            rows_simcard = cur.fetchone()
-                            #conn.close()
-                            SimcardData = rows_simcard if rows_simcard else None
-                            SimcardNumber = SimcardData[0] if SimcardData else None
-                            _hardware_query = _cassandra_session.prepare("SELECT device_vendor, device_hardware FROM dll_device_registrar WHERE device_imei = ?")
-                            rows_hardware = _cassandra_session.execute(_hardware_query, (FoundIMEI,))
-                            Hardware_dataAdapter = rows_hardware[0] if rows_hardware else None
-                            Hardware = Hardware_dataAdapter.device_vendor if Hardware_dataAdapter else None
-                            HardwareModel = Hardware_dataAdapter.device_hardware if Hardware_dataAdapter else None
-                            cur.execute("SELECT client_name FROM dll_client_accounts WHERE client_uid = %s", (DeviceBasicData_Adapter.device_client,))
-                            client_record = cur.fetchone()
-                            client_name = client_record[0] if client_record else None
-
-                            SingleBasic_Data = {
-                                "device_name": DeviceBasicData_Adapter.device_name,
-                                "simcard": SimCard,
-                                "simcard_uid": SimCard,
-                                "car_make": DeviceBasicData_Adapter.device_car_make,
-                                "car_model": DeviceBasicData_Adapter.device_car_model,
-                                "vin_number": DeviceBasicData_Adapter.device_vin_number,
-                                "car_type": DeviceBasicData_Adapter.device_car_type,
-                                "events_attached": DeviceBasicData_Adapter.events_attached,
-                                #"billing_status": 'running',
-                                "device_imei": FoundIMEI,
-                                #"subscription_status": expiry_date,
-                                #"subscription_status": "running",
-                                "client_uid": DeviceBasicData_Adapter.device_client,
-                                "client_name": client_name,
-                                "hardware": Hardware,
-                                "hardware_model": HardwareModel
-                            }
-                            devices_found.append(SingleBasic_Data)
-                    if(len(devices_found) > 0):
-                        return reply('success', 200, 'Found Devices', devices_found)
-                    elif(len(devices_found) == 0):
-                        return reply('error', 400, 'No Devices Found', '')
-                else:
-                    return reply('error', 400, 'No Devices Found', '')
-
-            elif(dataLevel == 'inhouse'):
-                _inhouse_data_query = _cassandra_session.prepare("SELECT device_imei FROM dll_device_basic_data")
-                rows = _cassandra_session.execute(_inhouse_data_query)
-                if rows:
-                    data_adapter = rows
-                    devices_found = []
-                    for row in data_adapter:
-                        FoundIMEI = row.device_imei
-                        _simcard_query = _cassandra_session.prepare("SELECT device_name, device_simcard, device_car_make, device_car_model, device_vin_number, device_car_type, events_attached, device_billing_status, device_client FROM dll_device_basic_data WHERE device_imei = ?")
-                        rows_basic = _cassandra_session.execute(_simcard_query, (FoundIMEI,))
-                        DeviceBasicData_Adapter = rows_basic[0] if rows_basic else None
-                        if DeviceBasicData_Adapter:
-                            SimCard = DeviceBasicData_Adapter.device_simcard
-                            # Using PostgreSQL for dll_telecom_assets query
-                            conn = get_postgres_connection()
-                            cur = conn.cursor()
-                            cur.execute("SELECT simcard_number FROM dll_telecom_assets WHERE asset_uid = %s", (SimCard,))
-                            rows_simcard = cur.fetchone()
-                            #conn.close()
-                            SimcardData = rows_simcard if rows_simcard else None
-                            SimcardNumber = SimcardData[0] if SimcardData else None
-                            _hardware_query = _cassandra_session.prepare("SELECT device_vendor, device_hardware FROM dll_device_registrar WHERE device_imei = ?")
-                            rows_hardware = _cassandra_session.execute(_hardware_query, (FoundIMEI,))
-                            Hardware_dataAdapter = rows_hardware[0] if rows_hardware else None
-                            Hardware = Hardware_dataAdapter.device_vendor if Hardware_dataAdapter else None
-                            HardwareModel = Hardware_dataAdapter.device_hardware if Hardware_dataAdapter else None
-                            cur.execute("SELECT client_name FROM dll_client_accounts WHERE client_uid = %s", (DeviceBasicData_Adapter.device_client,))
-                            client_record = cur.fetchone()
-                            client_name = client_record[0] if client_record else None
-
-                            # Query to get the subscription end date
-                            cur.execute("SELECT subscription_status FROM dll_device_subscriptions WHERE device_imei_number = %s", (FoundIMEI,))
-                            subscription_record = cur.fetchone()
-                            expiry_date = subscription_record[0] if subscription_record else 'token_subscription_status_not_found'
-
-                            SingleBasic_Data = {
-                                "device_name": DeviceBasicData_Adapter.device_name,
-                                "simcard": SimCard,
-                                "simcard_uid": SimCard,
-                                "car_make": DeviceBasicData_Adapter.device_car_make,
-                                "car_model": DeviceBasicData_Adapter.device_car_model,
-                                "vin_number": DeviceBasicData_Adapter.device_vin_number,
-                                "car_type": DeviceBasicData_Adapter.device_car_type,
-                                "events_attached": DeviceBasicData_Adapter.events_attached,
-                                #"billing_status": 'running',
-                                "client_uid": DeviceBasicData_Adapter.device_client,
-                                "client_name": client_name,
-                                #"subscription_status": expiry_date,
-                                #"subscription_status": "running",
-                                "hardware": Hardware,
-                                "hardware_model": HardwareModel,
-                                "device_imei": FoundIMEI 
-                            }
-                            devices_found.append(SingleBasic_Data)
-                    return reply('success', 200, 'Found Devices', devices_found)
-                else:
-                    return reply('error', 400, 'No Devices Found', '')
-            else:
-                return reply('error', 400, 'Unknown data level', '')
-        else:
+        data = payload_data['data']
+        dataLevel = str(data.get('data_level') or '')
+        AccountID = str(data.get('account_uid') or '')
+        if len(dataLevel) <= 2 or len(AccountID) <= 2:
             return reply('error', 400, 'Something Is Missing', '')
+        page, page_size, search, status_filter = page_request(data)
+
+        if dataLevel == 'service_provider':
+            registrar_query = _cassandra_session.prepare(
+                "SELECT device_imei FROM dll_device_registrar WHERE service_provider_uid = ? ALLOW FILTERING")
+            imeis = [row.device_imei for row in _cassandra_session.execute(registrar_query, (AccountID,)) if row.device_imei]
+            basics = cassandra_in(_cassandra_session,
+                                  "SELECT %s FROM dll_device_basic_data WHERE device_imei IN ?" % BASIC_COLUMNS, imeis)
+        elif dataLevel == 'client':
+            client_query = _cassandra_session.prepare(
+                "SELECT %s FROM dll_device_basic_data WHERE device_client = ? ALLOW FILTERING" % BASIC_COLUMNS)
+            basics = list(_cassandra_session.execute(client_query, (AccountID,)))
+        elif dataLevel == 'inhouse':
+            basics = list(_cassandra_session.execute("SELECT %s FROM dll_device_basic_data" % BASIC_COLUMNS))
+        else:
+            return reply('error', 400, 'Unknown data level', '')
+
+        basics = [row for row in basics if row.device_imei]
+        if not basics:
+            return reply('error', 400, 'No Devices Found', '')
+
+        all_imeis = [row.device_imei for row in basics]
+        client_names = pg_lookup("SELECT client_uid, client_name FROM dll_client_accounts WHERE client_uid = ANY(%s)",
+                                 {row.device_client for row in basics})
+        subscriptions = pg_lookup(
+            "SELECT device_imei_number, subscription_status FROM dll_device_subscriptions WHERE device_imei_number = ANY(%s)",
+            all_imeis)
+        snapshots = live_snapshots(all_imeis)
+
+        rows = []
+        for row in basics:
+            client_name = client_names.get(str(row.device_client))
+            if not matches(search, row.device_name, row.device_imei, client_name, row.device_car_make,
+                           row.device_car_model, row.device_vin_number):
+                continue
+            rows.append((row, client_name, live_summary(snapshots.get(row.device_imei))))
+
+        status_counts = {name: 0 for name in LIVE_STATUSES}
+        for _, _, live in rows:
+            status_counts[live['live_status']] += 1
+        if status_filter:
+            rows = [entry for entry in rows if entry[2]['live_status'] == status_filter]
+        rows.sort(key=lambda entry: ((entry[0].device_name or '').lower(), entry[0].device_imei))
+        page_rows, pagination = paginate(rows, page, page_size)
+
+        page_imeis = [entry[0].device_imei for entry in page_rows]
+        hardware = {row.device_imei: row for row in cassandra_in(
+            _cassandra_session,
+            "SELECT device_imei, device_vendor, device_hardware FROM dll_device_registrar WHERE device_imei IN ?",
+            page_imeis)}
+        simcards = {}
+        if dataLevel == 'service_provider':
+            simcards = pg_lookup("SELECT asset_uid, simcard_number FROM dll_telecom_assets WHERE asset_uid = ANY(%s)",
+                                 {entry[0].device_simcard for entry in page_rows})
+
+        devices_found = []
+        for row, client_name, live in page_rows:
+            hw = hardware.get(row.device_imei)
+            item = {
+                "device_name": row.device_name,
+                "simcard": simcards.get(str(row.device_simcard)) if dataLevel == 'service_provider' else row.device_simcard,
+                "simcard_uid": row.device_simcard,
+                "car_make": row.device_car_make,
+                "car_model": row.device_car_model,
+                "vin_number": row.device_vin_number,
+                "car_type": row.device_car_type,
+                "events_attached": row.events_attached,
+                "device_imei": row.device_imei,
+                "client_uid": row.device_client,
+                "client_name": client_name,
+                "hardware": hw.device_vendor if hw else None,
+                "hardware_model": hw.device_hardware if hw else None,
+                "subscription_status": subscriptions.get(row.device_imei) or "",
+                "live": live,
+            }
+            if dataLevel == 'service_provider':
+                item["billing_status"] = row.device_billing_status
+                item["subscription_end_date"] = '0'
+            devices_found.append(item)
+
+        return paged_reply('Found Devices', devices_found, pagination, status_counts=status_counts)
+
     except Exception as error:
         # B10 class: `error` is an exception OBJECT. scrub_secrets() passes
         # non-strings through, jsonify then raises TypeError and the caller
@@ -1317,7 +1190,8 @@ def get_all_events():
 
                 with dbconnect:
                     with dbconnect.cursor() as cursor:
-                        cursor.execute("SELECT * FROM dll_device_events WHERE owner_org_uid=%s;", (Load_owner_uid,))
+                        _policy = resource_policy()
+                        cursor.execute("SELECT * FROM dll_device_events WHERE owner_org_uid=%s OR event_local_uid = ANY(%s);", (Load_owner_uid, _policy.granted_uids('event_rule')))
 
                         if(cursor.rowcount >= 1):
 
@@ -1341,6 +1215,9 @@ def get_all_events():
                                 events_data.append(single_event)
                             
                             cursor.close()
+                            events_data = _policy.apply('event_rule', events_data, 'event_uid')
+                            if not events_data:
+                                return reply('error', 400, 'No Events Found', '')
                             return reply('success', 200, 'Events Found', events_data)
 
                         elif(cursor.rowcount == 0):
@@ -1720,6 +1597,9 @@ def GetDevice_Events(device_imei):
                             }
                             _AttachedEvents.append(_SingleEvent)
 
+                        _AttachedEvents = resource_policy().apply('event_rule', _AttachedEvents, 'event_id')
+                        if not _AttachedEvents:
+                            return reply("error", 400, "No Events Attached", "")
                         return reply("success", 200, "Found Events", _AttachedEvents)
                     
                     elif(len(_deviceEventsList) == 0):

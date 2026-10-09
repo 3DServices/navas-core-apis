@@ -26,7 +26,10 @@ Two jobs:
      - "show everything" levels (inhouse, service_provider, ussrx, all) are
        refused;
      - staff-only routes (tenants, global statistics, billing dashboards,
-       device deletion, SIM stock, ...) answer 403.
+       device deletion, SIM stock, ...) answer 403;
+     - geofences, geofence groups and event rules held in a resource are
+       refused to team members without a grant, and changes to them are
+       refused to those with a view-only grant (resources.py).
    Staff and platform admins are not restricted here.
 
 A refused request gets 403 "This record doesn't belong to your account." and
@@ -44,6 +47,7 @@ from .globals import (
     reply, _extract_account_uid, _get_user_permissions,
     is_customer_account, _is_platform_admin, log_audit_event,
 )
+from .resources import check_access, ResourceDenied
 
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -105,6 +109,7 @@ STAFF_ONLY_PREFIXES = (
     '/billing/tokens/',
     '/billing/revenue/',
     '/billing/subscriptions/',
+    '/resources/admin/',
 )
 STAFF_ONLY_RULES = frozenset({
     # whole-platform numbers (the per-client versions stay available)
@@ -407,6 +412,34 @@ def check_customer_request(scope, rule, view_args):
     _check_fields(scope, rule, _body_fields(rule))
 
 
+# Elements that can sit in a resource, by the (table, id, owner) triple above.
+_RESOURCE_KIND = {_GEOZONE: 'geozone', _GEOZONE_GROUP: 'geozone_group', _EVENT: 'event_rule'}
+
+
+def _resource_refs(rule, view_args):
+    """(kind, uid) of every resource-holdable element this request names."""
+    refs = []
+    for name, value in (view_args or {}).items():
+        kind = _RESOURCE_KIND.get(_object_kind(rule, name))
+        if kind:
+            refs.append((kind, value))
+    fields = _body_fields(rule)
+    zones = fields.get('geozone_uids')
+    for z in (zones if isinstance(zones, list) else [zones] if zones else []):
+        refs.append(('geozone', z))
+    if fields.get('event_uid'):
+        refs.append(('event_rule', fields['event_uid']))
+    return refs
+
+
+def check_resource_request(rule, view_args):
+    """Elements in a resource: hidden from team members without a grant, and
+    read-only to those with a view grant (see resources.py)."""
+    refs = _resource_refs(rule, view_args)
+    if refs:
+        check_access(refs, changing=request.method not in ('GET', 'HEAD'))
+
+
 # ── The hook ─────────────────────────────────────────────────────────────────
 
 def _client_ip():
@@ -459,6 +492,16 @@ def access_guard():
     scope = _Scope(account_uid, account_root)
     try:
         check_customer_request(scope, rule, request.view_args)
+        check_resource_request(rule, request.view_args)
+    except ResourceDenied as denied:
+        log_audit_event(
+            actor=account_uid, action='ACCESS_DENIED',
+            obj=f"{request.method} {request.path} ({denied.kind}={str(denied.uid)[:80]}, "
+                f"resource access {denied.level})",
+            domain='SECURITY', severity='Warn', tenant_id=scope.root,
+            ip_address=_client_ip(),
+        )
+        return reply('error', 403, denied.message(), '')
     except _Denied as denied:
         log_audit_event(
             actor=account_uid, action='ACCESS_DENIED',

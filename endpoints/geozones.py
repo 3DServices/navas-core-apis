@@ -14,6 +14,7 @@ import base64
 import uuid
 import re
 from . import geozone_shapes
+from .resources import resource_policy
 
 
 geozones_bp = Blueprint('GeoZones', __name__)
@@ -224,7 +225,8 @@ def GetGeoZone(owner_uid, access_level):
 
                 with _dbconnect:
                     with _dbconnect.cursor() as cursor:
-                        cursor.execute("SELECT * FROM dll_geozones WHERE geozone_owner=%s", (_GeozoneOwnerID,))
+                        _policy = resource_policy()
+                        cursor.execute("SELECT * FROM dll_geozones WHERE geozone_owner=%s OR geozone_uid = ANY(%s)", (_GeozoneOwnerID, _policy.granted_uids('geozone')))
 
                         if(cursor.rowcount >= 1):
 
@@ -244,6 +246,9 @@ def GetGeoZone(owner_uid, access_level):
                                 }
                                 _dataHolder.append(_SingleGeozone)
 
+                            _dataHolder = _policy.apply('geozone', _dataHolder, 'geozone_uid')
+                            if not _dataHolder:
+                                return reply("error", 400, "No Geozones Found", "")
                             return reply("success", 200, "Geozones Found", _dataHolder)
 
                         elif(cursor.rowcount == 0):
@@ -437,6 +442,9 @@ def GetGeozones(device_uid):
                                 }
                                 _AvailableZones.append(_SingleZone)
 
+                            _AvailableZones = resource_policy().apply('geozone', _AvailableZones, 'zone_uid')
+                            if not _AvailableZones:
+                                return reply("error", 400, "No Geozones Attached", "")
                             return reply("success", 200, "Found Geozones", _AvailableZones)
                         else:
                             return reply("error", 400, "No Geozones Attached", "")
@@ -612,9 +620,10 @@ def ListGeozoneGroups(owner_uid):
 
         with _dbconnect:
             with _dbconnect.cursor() as cursor:
+                _policy = resource_policy()
                 cursor.execute(
-                    "SELECT group_uid, group_name, group_description, group_owner, date_created FROM dll_geozone_groups WHERE group_owner=%s ORDER BY date_created DESC",
-                    (_OwnerUID,)
+                    "SELECT group_uid, group_name, group_description, group_owner, date_created FROM dll_geozone_groups WHERE group_owner=%s OR group_uid = ANY(%s) ORDER BY date_created DESC",
+                    (_OwnerUID, _policy.granted_uids('geozone_group'))
                 )
 
                 if cursor.rowcount == 0:
@@ -638,6 +647,7 @@ def ListGeozoneGroups(owner_uid):
                         "geozone_count": _count
                     })
 
+                _groups = _policy.apply('geozone_group', _groups, 'group_uid')
                 return reply("success", 200, "Groups retrieved", _groups)
 
     except Exception as error:
