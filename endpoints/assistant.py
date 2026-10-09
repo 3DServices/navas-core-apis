@@ -387,6 +387,12 @@ def _needs_lookup(message):
 # Vehicle-shaped questions. Narrower than _needs_lookup on purpose: that gate
 # also fires for tokens and charges, which waswa_context already carries, and a
 # fleet read for "what is my balance" would be two wasted queries.
+# "Is anything running right now" -- answerable only from heartbeats, never
+# from a subscription status or a trip record.
+_LIVENESS_QUESTION = re.compile(
+    r"\b(online|offline|reporting|live|active now|still (on|going|running)|"
+    r"last seen|disconnected|not showing|connected|transmitting)\b", re.I)
+
 _FLEET_QUESTION = re.compile(
     r"\b(unit|units|vehicle|vehicles|truck|lorry|car|bike|boda|fleet|"
     r"trip|trips|route|journey|mileage|odometer|driver|"
@@ -408,6 +414,80 @@ def _plate_or_imei(message):
         return imei.group(0)
     plate = re.search(r"\b[A-Z]{2,3}\s?\d{3}\s?[A-Z]?\b", text)
     return plate.group(0).strip() if plate else None
+
+
+# Slots where nothing held means the person cannot do something, so the
+# answer needs a next step. open_incidents is not here: no open incidents is
+# good news and a complete answer by itself.
+_BLOCKING_WHEN_EMPTY = ('token_balance_and_burn_rate',
+                        'asset_count_and_types',
+                        'active_products')
+
+
+def _holds_nothing(value):
+    """True when a resolved slot says the customer holds none of something."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower().startswith('none')
+    if isinstance(value, (list, tuple)):
+        return len(value) == 0
+    if isinstance(value, dict):
+        numbers = [v for v in value.values()
+                   if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        return bool(numbers) and all(x == 0 for x in numbers)
+    return False
+
+
+def _zero_state_note(context):
+    """A system note for an account that holds nothing.
+
+    Why: a customer with two payments recorded against their account, and no
+    token packs, asked how many tokens they had on three separate days. Each
+    time Waswa answered "your account doesn't have any token packs yet" and
+    stopped. That is correct and it is useless -- the reason they had none
+    was sitting one context slot away, in payments.
+
+    This does NOT interpret a payment status. Whether "pending" means
+    awaiting settlement or stuck is the business's to define, and
+    _payment_history refuses to guess for the same reason. The note states
+    that records exist and what they are labelled, nothing more.
+
+    Returns a note, or None when the account holds something.
+    """
+    known = (context or {}).get('known') or {}
+    empty = [slot for slot in _BLOCKING_WHEN_EMPTY
+             if slot in known and _holds_nothing(known[slot])]
+    if not empty:
+        return None
+
+    lines = [
+        "This account holds nothing in: %s." % ', '.join(empty),
+        "Reporting that is correct and you must not soften it or invent a "
+        "holding. But do not stop there: an answer of 'you have none' with "
+        "nothing after it leaves the person with nowhere to go.",
+    ]
+
+    standing = known.get('payment_standing')
+    recent = (standing or {}).get('recent_payments') if isinstance(
+        standing, dict) else None
+    if recent:
+        listed = '; '.join(
+            '%s recorded as %s' % (r.get('date', 'date unrecorded'),
+                                   r.get('status', 'unrecorded'))
+            for r in recent[:3])
+        lines.append(
+            "Payments ARE on record for this account: %s. Say so, with the "
+            "dates and the status exactly as labelled above. Do NOT say what "
+            "a status means, do not say a payment will or will not complete, "
+            "and do not promise a timeframe -- you do not know. Offer to put "
+            "them in touch with someone who can check it." % listed)
+    else:
+        lines.append(
+            "No payments are on record either. Say that plainly and offer who "
+            "can help them get started. Never quote a price or a cost.")
+
+    return '\n'.join(lines)
 
 
 def _prefetch_fleet(message, fleet_scope):
@@ -469,10 +549,42 @@ def _prefetch_fleet(message, fleet_scope):
                     "last_position.at are LOCAL times. State these figures; if a "
                     "field is null say it could not be read rather than filling "
                     "the gap:\n" + json.dumps(status, default=str))
-    elif len(units) > 1:
+    elif named and len(units) > 1:
+        # Only an ambiguity when they actually named a vehicle. Without the
+        # `named` guard this fired on every fleet-wide question too --
+        # telling the model to ask which vehicle they meant when they had
+        # asked about all of them.
         notes.append(
             "More than one vehicle matches what they said. Ask which one, "
             "naming the candidates above, and stop there.")
+
+    # A question about what is running NOW needs every unit's heartbeat, not
+    # one unit's. Reading them here means the model cannot answer from a
+    # sample: the whole fleet's state is already in front of it.
+    if _LIVENESS_QUESTION.search(str(message or '')) and len(units) > 1:
+        try:
+            live = waswa_fleet.fleet_liveness(scope=fleet_scope)
+        except waswa_fleet.FleetUnavailable as error:
+            _log('liveness prefetch: unreachable (%s)', error)
+            notes.append(
+                "The heartbeat registry could not be read just now. Say you "
+                "cannot tell which vehicles are reporting at the moment. Do "
+                "NOT fall back to the subscription status: 'active' there is "
+                "a billing state and says nothing about whether a vehicle is "
+                "transmitting.")
+            evidence.append(('fleet', 'fleet_liveness(unavailable)', 1))
+        except Exception as error:      # noqa: BLE001 - never break the turn
+            _log('liveness prefetch failed: %s: %s',
+                 error.__class__.__name__, error)
+        else:
+            evidence.append(('fleet', 'fleet_liveness(all, prefetched)', 1))
+            notes.append(
+                "Which units are reporting right now, every one of them "
+                "measured just now. Answer the count from these figures and "
+                "no others. A unit under could_not_read was not reached and "
+                "must not be called offline. Never describe a unit as "
+                "reporting or online if its hours_since_last_report says "
+                "otherwise:\n" + json.dumps(live, default=str))
 
     return notes, evidence
 
@@ -793,6 +905,9 @@ def AssistantChat():
 
         messages = [{"role": "system", "content": prompt_body}]
         messages.append({"role": "system", "content": render_for_prompt(context)})
+        zero_note = _zero_state_note(context)
+        if zero_note:
+            messages.append({"role": "system", "content": zero_note})
         if verified:
             messages.append({"role": "system",
                              "content": waswa_answers.render_for_prompt(verified)})

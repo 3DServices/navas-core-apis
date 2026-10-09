@@ -2,6 +2,7 @@ from flask import Flask
 from flask import Blueprint
 from flask import request
 import psycopg2
+from . import db_pool
 from flask import json
 from flask import jsonify
 import datetime
@@ -321,7 +322,7 @@ def SpecialTokenAuthorization():
 @require_permission('finance.view')
 def TransactionLogs(transaction_owner):
     try:
-        _dbconnect = psycopg2.connect(current_app.config['db_link'])
+        _dbconnect = db_pool.connect()
         with _dbconnect:
             with _dbconnect.cursor() as cursor:
                 # Purchases are logged against the login that paid. A company

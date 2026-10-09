@@ -2,6 +2,7 @@ from flask import Flask
 from flask import Blueprint
 from flask import request
 import psycopg2
+from . import db_pool
 from flask import json
 from flask import jsonify
 import datetime
@@ -450,7 +451,7 @@ def _value_state(val):
 @_token_billing.route("/tokens/<string:client_uid>/balance", methods=["GET"])
 @require_permission('tokens.view_balance')
 def ClientToken_Balance(client_uid):
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
 
     with dbconnect:
         with dbconnect.cursor() as cursor:

@@ -37,6 +37,7 @@ import re
 import json
 
 import psycopg2
+from . import db_pool
 from flask import request, g, current_app
 
 from .globals import (
@@ -228,7 +229,7 @@ class _Scope:
     # database
     def conn(self):
         if self._conn is None:
-            self._conn = psycopg2.connect(current_app.config['db_link'])
+            self._conn = db_pool.connect()
         return self._conn
 
     def close(self):

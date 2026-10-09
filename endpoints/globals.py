@@ -4,6 +4,7 @@ from flask import request as flask_request
 from flask import g
 from flask import has_app_context
 import psycopg2
+from . import db_pool
 import psycopg2.extras
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
@@ -39,7 +40,7 @@ def log_audit_event(actor, action, obj, domain, severity='Info', tenant_id=None,
         meta:       Optional dict of extra context (stored as JSONB)
     """
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         try:
             event_id = 'evt-' + str(uuid.uuid4())[:8]
             now = datetime.utcnow()
@@ -257,7 +258,7 @@ def _get_user_permissions(account_uid):
 
 
 def _load_user_permissions(account_uid):
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
     try:
         with dbconnect:
             with dbconnect.cursor() as cursor:
@@ -576,7 +577,7 @@ def require_auth(f):
 
 def config_element_data(element, device_imei):
 
-    dbconnect = psycopg2.connect(current_app.config["db_link"])
+    dbconnect = db_pool.connect()
 
     try:
 
@@ -604,7 +605,7 @@ def config_element_data(element, device_imei):
 
 def config_element_formular_data(element_formular, device_imei):
 
-    dbconnect = psycopg2.connect(current_app.config["db_link"])
+    dbconnect = db_pool.connect()
 
     try:
 
@@ -669,11 +670,11 @@ def _read_connection():
     connection is returned instead, so existing callers keep working.
     """
     if not has_app_context():
-        return psycopg2.connect(current_app.config['db_link'])
+        return db_pool.connect()
     existing = getattr(g, _READ_CONN_KEY, None)
     if existing is not None and not existing.closed:
         return existing
-    fresh = psycopg2.connect(current_app.config['db_link'])
+    fresh = db_pool.connect()
     setattr(g, _READ_CONN_KEY, fresh)
     return fresh
 
@@ -770,7 +771,7 @@ def NextRenewal(months):
 
 def SubscriptionManager(UserID, TokenAttached, ImeiNumber):
     try:
-        _dbconnect = psycopg2.connect(current_app.config['db_link'])
+        _dbconnect = db_pool.connect()
 
         with _dbconnect:
             with _dbconnect.cursor() as cursor:

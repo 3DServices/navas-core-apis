@@ -98,6 +98,26 @@ from endpoints.globals import close_read_connection as _close_read_connection
 app.teardown_appcontext(_close_read_connection)
 
 
+# Return this request's pooled connections, however the route left them.
+# 310 call sites in endpoints/ use `with conn:` -- which commits but does NOT
+# close -- so without this hook a pooled connection is never given back and
+# the pool drains to nothing within seconds of real traffic. See
+# endpoints/db_pool.py. close() is idempotent, so routes that DO close are
+# unaffected.
+from endpoints import db_pool as _db_pool
+app.teardown_appcontext(_db_pool.release_all)
+
+
+# Build the connection pool on a background thread, and again in each forked
+# worker. A connection to this database costs ~2,027 ms (TCP 284 ms + startup
+# and auth), against 282 ms for a query on an open one, so the pool is the
+# difference between a dashboard that loads and one that times out. Opening
+# the warm set inline would stall startup for ~16 s, hence the thread -- the
+# same shape as the Cassandra warm-up below. Never raises, never blocks; until
+# it is ready, connections are direct, exactly as before.
+_db_pool.start_warmup(DB_LINK)
+
+
 # B9: connect to Cassandra on a background thread now, and again in each
 # forked worker, so the first request that needs the store does not pay the
 # 6-7s handshake (or time out and answer 503, which was observed twice).

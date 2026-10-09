@@ -234,6 +234,14 @@ _SLOT_HINTS = [
 ]
 
 
+# A question about whether things are running NOW. "active" in
+# by_subscription_status is a billing state, not a liveness state, and
+# answering one with the other is the fb-009 defect.
+_LIVENESS_QUESTION = re.compile(
+    r'\b(online|offline|reporting|moving|running|live|active\s+now|'
+    r'still\s+(on|going)|last\s+seen)\b', re.I)
+
+
 def context_slots_for(question):
     """Which slots this question is answered from. All of them when unsure --
     a narrower guess would let an unsourced figure through."""
@@ -305,7 +313,14 @@ def expectations(shape, question='', account_uid=None):
         exp['must_call'] = ['knowledge_search']
         exp['must_cite_document'] = True
     elif shape == 'account':
-        exp['must_call'] = ['waswa_context']
+        # NOT must_call: ['waswa_context']. waswa_context is not a tool the
+        # model can call -- build_context assembles it server-side and
+        # assistant.py seeds the evidence list with
+        # ('account_context', 'waswa_context', 3) before any tool runs. The
+        # thing worth asserting is that the answer had that context, which is
+        # what this says.
+        exp['must_call'] = []
+        exp['must_use_account_context'] = True
         exp['must_cite_document'] = False
         # The durable form of "is this number right?". Not a figure: an
         # instruction to compare the answer against the live store.
@@ -325,6 +340,141 @@ def expectations(shape, question='', account_uid=None):
         exp['must_call'] = []
         exp['must_cite_document'] = False
     return exp
+
+
+# ---------------------------------------------------------------------------
+# Expectations that can only be derived once the context snapshot is in hand.
+#
+# These are RULES, not hand-edits. A correction applied by hand to the
+# generated file is lost the next time anyone rebuilds it, and this file was
+# rebuilt five times in one afternoon. Anything worth correcting is worth
+# deriving, so it survives and so it applies to the next question too.
+# ---------------------------------------------------------------------------
+
+# Slots where a resolved zero means the customer cannot do something, so the
+# answer needs a next step. open_incidents is deliberately NOT here: "no open
+# incidents" is good news and a complete answer on its own.
+_BLOCKING_WHEN_ZERO = (
+    'token_balance_and_burn_rate',
+    'asset_count_and_types',
+    'active_products',
+)
+
+# Questions nothing in the corpus can answer yet. A red result on these is a
+# missing document, not a regression, and must not be read as one. Keyed on
+# the normalised question text.
+BLOCKED_QUESTIONS = {
+    'how do i created a new geofence': {
+        'on': 'oliwa-ui-corpus',
+        'why': 'the knowledge corpus holds CMS how-to material only. There '
+               'is no OLIWA UI documentation in it, so no retrieval can '
+               'answer this however well the tool selection works. Fixing '
+               'tool selection alone would make Waswa hand CMS steps to a '
+               'mobile user with confidence, which is worse than refusing.',
+    },
+}
+
+
+def _is_zero_state(value):
+    """True when a resolved slot says the customer holds nothing.
+
+    Reads the shape rather than guessing at wording: a dict whose numbers are
+    all zero, an empty list, or a string that opens with "none".
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower().startswith('none')
+    if isinstance(value, (list, tuple)):
+        return len(value) == 0
+    if isinstance(value, dict):
+        numbers = [v for v in value.values()
+                   if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        return bool(numbers) and all(n == 0 for n in numbers)
+    return False
+
+
+def _has_payment_record(snapshot):
+    """Whether this account has payments on record at all.
+
+    Deliberately does NOT look at which statuses they carry. Whether pending
+    means awaiting settlement or stuck is the business's to say, and
+    _payment_history refuses to interpret those strings for the same reason.
+    The only claim made here is that something in payment_standing bears on
+    why the account holds nothing.
+    """
+    standing = (snapshot.get('slots') or {}).get('payment_standing')
+    return isinstance(standing, dict) and bool(standing.get('by_status'))
+
+
+def apply_derived_expectations(questions):
+    """Three corrections, each derived from evidence already in the file."""
+    found = {'dead_end': [], 'blocked': [], 'split': [], 'liveness': []}
+
+    for q in questions:
+        exp = q.get('expect', {})
+        origin = q.get('origin', {})
+
+        # 1. A zero state is a correct answer that strands the customer.
+        if q.get('shape') == 'account':
+            snap = origin.get('context_at_build') or {}
+            slots = snap.get('slots') or {}
+            compared = (exp.get('must_match_context') or {}).get('slots', [])
+            zeros = [name for name in compared
+                     if name in _BLOCKING_WHEN_ZERO
+                     and _is_zero_state(slots.get(name))]
+            if zeros:
+                rule = {
+                    'why': 'the slot this question is answered from resolves '
+                           'to nothing. Reporting that is correct, and on its '
+                           'own it leaves the customer with nowhere to go.',
+                    'must_offer_next_step': True,
+                    'zero_slots': zeros,
+                }
+                if _has_payment_record(snap):
+                    rule['context_that_explains_it'] = ['payment_standing']
+                    rule['note'] = (
+                        'this account holds nothing AND has payments on '
+                        'record, so what to say next is already in context. '
+                        'No claim is made here about what any payment status '
+                        'means.')
+                exp['must_not_dead_end'] = rule
+                found['dead_end'].append((q['id'], zeros,
+                                          'context_that_explains_it' in rule))
+
+        # 1b. A liveness question answered from a subscription count.
+        if (q.get('shape') == 'account'
+                and _LIVENESS_QUESTION.search(q.get('question') or '')):
+            # No threshold here on purpose: a figure in an expect block is
+            # refused by assert_no_literal_figures, and rightly. The runner
+            # holds the staleness threshold.
+            exp['must_not_claim_live_when_stale'] = True
+            found['liveness'].append(q['id'])
+
+        # 2. Questions nothing in the corpus can answer yet.
+        blocked = BLOCKED_QUESTIONS.get(norm(q.get('question')))
+        if blocked:
+            # Outside `expect` on purpose: this is not something the answer
+            # must do, it is a statement about why the row will fail.
+            q['blocked_on'] = blocked['on']
+            q['blocked_reason'] = blocked['why']
+            q['expected_to_fail'] = True
+            found['blocked'].append((q['id'], blocked['on']))
+
+        # 3. Verdicts that disagree, where one of them was good.
+        seen = origin.get('verdicts_seen') or []
+        if len(seen) > 1 and 'good' in seen:
+            q['guard_detail'] = {
+                'numbers': 'regression',
+                'phrasing': 'fix',
+                'why': 'the same answer was judged good and not-good at '
+                       'different times. Someone found the figures '
+                       'acceptable, so the figures must not change; the '
+                       'wording is what has to move.',
+            }
+            found['split'].append((q['id'], seen))
+
+    return found
 
 
 def attach_context_snapshot(questions, db_link):
@@ -634,6 +784,9 @@ def main():
     if not args.no_context:
         snapshots, snap_failures = attach_context_snapshot(questions, DB_LINK)
 
+    # Derived AFTER the snapshot, because all three rules read it.
+    derived = apply_derived_expectations(questions)
+
     # Nothing is written until this passes. A figure in an expect block is a
     # suite that fails on correct answers later.
     assert_no_literal_figures(questions)
@@ -763,6 +916,36 @@ def main():
         for uid in skipped_no_question:
             print('      %s' % uid)
         print('')
+    if any(derived.values()):
+        print('-' * 78)
+        print('  corrections derived from the evidence (not hand-applied)')
+        print('-' * 78)
+    for qid, zeros, explained in derived['dead_end']:
+        print('  %s  must_not_dead_end' % qid)
+        print('      because %s resolves to nothing for this account'
+              % ', '.join(zeros))
+        if explained:
+            print('      and payment_standing holds records that bear on it,')
+            print('      so what to say next is already in context')
+    for qid in derived['liveness']:
+        print('  %s  must_not_claim_live_when_stale' % qid)
+        print('      asks whether something is running now, so the answer')
+        print('      must not call a unit live while also dating its last')
+        print('      report hours ago')
+    for qid, on in derived['blocked']:
+        print('  %s  blocked_on: %s' % (qid, on))
+        print('      expected_to_fail - a red result here is a missing')
+        print('      document, not a regression')
+    for qid, seen in derived['split']:
+        print('  %s  guard split: numbers=regression, phrasing=fix' % qid)
+        print('      judged %s at different times on the same answer'
+              % '/'.join(seen))
+    if any(derived.values()):
+        print('')
+        print('  These are rules in the builder, so a rebuild keeps them and')
+        print('  the next question that matches gets them too.')
+        print('')
+
     accounts = [q for q in questions if q['shape'] == 'account']
     if accounts:
         print('-' * 78)

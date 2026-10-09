@@ -10,6 +10,7 @@ import jwt
 import uuid
 import hashlib
 import psycopg2
+from . import db_pool
 from datetime import datetime, timedelta, timezone
 from flask import current_app
 from config import JWT_SECRET, JWT_ACCESS_EXPIRY_MINUTES, JWT_REFRESH_EXPIRY_DAYS
@@ -54,7 +55,7 @@ def decode_access_token(token):
 def _is_token_blacklisted(jti):
     """Check if a JTI exists in the blacklist table."""
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         try:
             with dbconnect:
                 with dbconnect.cursor() as cursor:
@@ -79,7 +80,7 @@ def blacklist_access_token(jti, account_uid, expires_at):
     Called during logout to immediately invalidate the access token.
     """
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         try:
             with dbconnect:
                 with dbconnect.cursor() as cursor:
@@ -103,7 +104,7 @@ def create_refresh_token(account_uid):
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
     expires_at = datetime.now(timezone.utc) + timedelta(days=JWT_REFRESH_EXPIRY_DAYS)
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
     try:
         with dbconnect:
             with dbconnect.cursor() as cursor:
@@ -124,7 +125,7 @@ def validate_refresh_token(raw_token):
     """
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
     try:
         with dbconnect:
             with dbconnect.cursor() as cursor:
@@ -156,7 +157,7 @@ def revoke_refresh_token(raw_token):
     """Revoke a single refresh token (logout from one device)."""
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
     try:
         with dbconnect:
             with dbconnect.cursor() as cursor:
@@ -170,7 +171,7 @@ def revoke_refresh_token(raw_token):
 
 def revoke_all_refresh_tokens(account_uid):
     """Revoke all refresh tokens for a user (logout from all devices)."""
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
     try:
         with dbconnect:
             with dbconnect.cursor() as cursor:

@@ -840,6 +840,123 @@ def fleet_activity(days=None, client_uid=None, scope=None):
 
 # ── Tool specifications ─────────────────────────────────────────────────────
 
+# How recently a unit must have reported to be called live. Stated in the
+# payload so the answer can quote it instead of implying one.
+LIVE_WITHIN_HOURS = 1.0
+
+# A point read each, so this is cheap, but not free. Beyond this the answer
+# says how many it checked rather than pretending to have seen them all.
+MAX_LIVENESS_UNITS = 120
+
+
+def fleet_liveness(client_uid=None, scope=None):
+    """Which of the account's units are reporting right now.
+
+    Why this exists: answering "how many vehicles are online" needed one
+    unit_status call per unit, and nothing made the model do all of them. In
+    four recorded runs it made one call three times, described a
+    five-vehicle fleet from whichever unit it looked at first, and called a
+    unit silent for eight hours "actively reporting". The fix is to make the
+    whole answer available in a single call, so under-sampling is not
+    possible.
+
+    Three states, kept apart on purpose:
+
+        reporting    a heartbeat within LIVE_WITHIN_HOURS
+        silent       a heartbeat, but older than that
+        never        no heartbeat row at all
+        unread       the lookup failed
+
+    `unread` is NOT `silent`. A Cassandra read that times out says nothing
+    about whether a vehicle is running, and a fleet audit in this repo once
+    reported 272 units as never seen because a failed read was recorded as
+    an absence.
+    """
+    target = _target_client(scope, client_uid)
+    if not target:
+        return {'found': False,
+                'reason': 'no client named — ask which client this is about'}
+    units = _units_of(target)
+    if not units:
+        return {'found': False,
+                'reason': 'no units are registered to this account'}
+
+    try:
+        session = _cassandra()
+    except Exception as error:      # noqa: BLE001
+        raise FleetUnavailable(str(error)) from error
+    if session is None:
+        raise FleetUnavailable('no Cassandra session')
+
+    considered = [u for u in units if u.get('imei')][:MAX_LIVENESS_UNITS]
+    stmt = session.prepare(
+        "SELECT last_heartbeat_date, last_heartbeat_time "
+        "FROM dll_pulse_status_registry WHERE device_data_imei = ? LIMIT 1")
+
+    # One point read per unit on the partition key. Fired together rather
+    # than in sequence: sequentially this is one network round trip per
+    # vehicle, which is what makes the obvious implementation too slow to
+    # put in a chat turn.
+    pending = []
+    for unit in considered:
+        try:
+            pending.append((unit, session.execute_async(stmt, (unit['imei'],))))
+        except Exception:       # noqa: BLE001
+            pending.append((unit, None))
+
+    now = datetime.now()
+    reporting, silent, never, unread = [], [], [], []
+    for unit, future in pending:
+        entry = {'imei': unit['imei'], 'name': unit.get('name')}
+        if future is None:
+            unread.append(entry)
+            continue
+        try:
+            row = future.result().one()
+        except Exception:       # noqa: BLE001
+            unread.append(entry)
+            continue
+        if row is None:
+            never.append(entry)
+            continue
+        seen = _stamp(getattr(row, 'last_heartbeat_date', None),
+                      getattr(row, 'last_heartbeat_time', None))
+        if seen is None:
+            # A heartbeat exists but its timestamp will not parse. That is
+            # not silence either.
+            entry['note'] = 'a heartbeat is recorded but its timestamp could '\
+                            'not be read'
+            unread.append(entry)
+            continue
+        hours = (now - seen).total_seconds() / 3600.0
+        entry['last_reported_at'] = seen.isoformat(sep=' ')
+        entry['hours_since_last_report'] = round(hours, 1)
+        (reporting if hours <= LIVE_WITHIN_HOURS else silent).append(entry)
+
+    result = {
+        'found': True,
+        'units_registered': len(units),
+        'units_checked': len(considered),
+        'live_within_hours': LIVE_WITHIN_HOURS,
+        'counts': {'reporting': len(reporting), 'silent': len(silent),
+                   'never_reported': len(never), 'could_not_read': len(unread)},
+        'reporting': reporting,
+        'silent': silent,
+        'never_reported': never,
+        'could_not_read': unread,
+        'note': ('"reporting" means a heartbeat within the last %g hour(s). '
+                 'A unit under could_not_read was NOT checked successfully — '
+                 'do not describe it as offline or silent.'
+                 % LIVE_WITHIN_HOURS),
+    }
+    if len(considered) < len(units):
+        result['truncated'] = (
+            'Only the first %d of %d units were checked. Say so rather than '
+            'giving a total for the whole fleet.'
+            % (len(considered), len(units)))
+    return result
+
+
 TOOL_SPECS = [
     {
         'type': 'function',
@@ -945,6 +1062,24 @@ TOOL_SPECS = [
     {
         'type': 'function',
         'function': {
+            'name': 'fleet_liveness',
+            'description': (
+                'Which units are reporting RIGHT NOW, for the whole account '
+                'in one call. Use for "how many vehicles are online", "what '
+                'is reporting", "which are offline", "is anything live". Do '
+                'NOT answer those from a subscription or billing status, and '
+                'do not call unit_status per vehicle to work it out.'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'client_uid': {'type': 'string', 'description': 'Staff only.'},
+                },
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
             'name': 'fleet_activity',
             'description': (
                 'How much each unit moved over the last N days — trips and '
@@ -967,6 +1102,7 @@ _DISPATCH = {
     'unit_trips': unit_trips,
     'unit_route_probe': unit_route_probe,
     'fleet_activity': fleet_activity,
+    'fleet_liveness': fleet_liveness,
 }
 
 

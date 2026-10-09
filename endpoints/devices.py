@@ -3,6 +3,7 @@ from flask import Flask
 from flask import Blueprint
 from flask import request
 import psycopg2
+from . import db_pool
 from flask import json
 from flask import jsonify
 import datetime
@@ -47,7 +48,7 @@ from .cassandra_store import get_cassandra_session
 
 
 def get_postgres_connection():
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
     return dbconnect
 #register device
 @devices_bp.route("/devices/create", methods=["POST"])
@@ -1034,7 +1035,7 @@ def single_configured_device(device_imei):
 @devices_bp.route("/devices/simcards/create", methods=["POST"])
 def search_device():
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
     payload_data = request.get_json()
 
     try:
@@ -1077,7 +1078,7 @@ def search_device():
 @devices_bp.route("/devices/simcards/all", methods=["GET"])
 def get_simcards():
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
 
     try:
 
@@ -1117,7 +1118,7 @@ def get_simcards():
 @devices_bp.route("/devices/simcards/<simcard_owner>/all", methods=["GET"])
 def get_simcards_byOwner(simcard_owner):
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
 
     try:
 
@@ -1159,7 +1160,7 @@ def update_simcard():
 
     try:
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         payload_data = request.get_json()
 
         if(len(str(payload_data['data']['simcard_uid'])) > 2) and (len(str(payload_data['data']['simcard_number'])) > 2) and (len(str(payload_data['data']['telecom'])) > 2):
@@ -1196,7 +1197,7 @@ def update_simcard():
 def delete_simcard(simcard_uid):
 
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
 
         with dbconnect:
             with dbconnect.cursor() as cursor:
@@ -1223,7 +1224,7 @@ def delete_simcard(simcard_uid):
 @devices_bp.route("/events/create", methods=["POST"])
 def create_new_device_event():
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
     
     try:
         payload_data = request.get_json()
@@ -1261,7 +1262,7 @@ def update_event(event_uid):
 
     try:
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         payload_data = request.get_json()
 
         if(len(str(payload_data['data']['event_name'])) > 2) and (len(str(payload_data['data']['event_description'])) > 2) and (len(str(payload_data['data']['event_condition'])) > 2) and (len(str(payload_data['data']['event_condition_value'])) > 0):
@@ -1304,7 +1305,7 @@ def get_all_events():
 
     try:
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         payload_data = request.get_json()
 
         if(len(str(payload_data['data']['load_level'])) > 2) and (len(str(payload_data['data']['owner_uid'])) > 2):
@@ -1399,7 +1400,7 @@ def GetEventDetails(event_id):
 
     try:
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
 
         if(len(str(event_id)) > 2):
 
@@ -1442,7 +1443,7 @@ def GetEventDetails(event_id):
 def delete_event(event_uid):
 
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         
         with dbconnect:
             with dbconnect.cursor() as cursor:
@@ -1470,7 +1471,7 @@ def UpdateMileage():
 
     try:
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         payload_data = request.get_json()
 
         if(len(str(payload_data['data']['device_imei'])) > 5) and (len(str(payload_data['data']['updated_mileage'])) > 0):
@@ -1505,7 +1506,7 @@ def UpdateMileage():
 @devices_bp.route("/devices/update/properties", methods=['POST'])
 def update_device():
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         update_payload = request.get_json()
         _cassandra_session = get_cassandra_session()
         if not _cassandra_session:
@@ -1600,7 +1601,7 @@ def update_device():
 def AttachDevice(event_uid):
 
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         devices_payload = request.get_json()
         _devicesAttached = devices_payload['data']['device_list']
 
@@ -1650,7 +1651,7 @@ def AttachDevice(event_uid):
 def RemoveEvent(device_id, event_uid):
 
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         _EventID_Focus = str(event_uid)
         _Device_Focus = str(device_id)
 
@@ -1693,7 +1694,7 @@ def RemoveEvent(device_id, event_uid):
 def GetDevice_Events(device_imei):
 
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         _FocusedDevice_ID = str(device_imei)
 
         with dbconnect:
