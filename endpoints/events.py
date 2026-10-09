@@ -180,7 +180,8 @@ def mark_all_notifications_read(owner_uid):
 def get_unread_count(owner_uid):
     """Get the count of unread notifications for an owner."""
     try:
-        dbconnect = db_pool.connect()
+        # Read-only: one SELECT COUNT(*).
+        dbconnect = db_pool.connect(readonly=True)
         cur = dbconnect.cursor()
 
         cur.execute("""

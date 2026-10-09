@@ -315,7 +315,9 @@ def _load_user_permissions(account_uid):
     'None'. scripts/verify_permission_parity.py checks this against every
     real account rather than taking the argument on trust.
     """
-    dbconnect = db_pool.connect()
+    # Read-only: one SELECT, no writes. Saves the BEGIN round trip on
+    # every authenticated request in the application.
+    dbconnect = db_pool.connect(readonly=True)
     try:
         with dbconnect:
             with dbconnect.cursor() as cursor:

@@ -206,12 +206,13 @@ class PooledConnection:
     existing call sites keep their shape.
     """
 
-    __slots__ = ('_conn', '_owner', '_released')
+    __slots__ = ('_conn', '_owner', '_released', '_readonly')
 
-    def __init__(self, conn, owner):
+    def __init__(self, conn, owner, readonly=False):
         object.__setattr__(self, '_conn', conn)
         object.__setattr__(self, '_owner', owner)
         object.__setattr__(self, '_released', False)
+        object.__setattr__(self, '_readonly', readonly)
 
     # -- the one changed behaviour ------------------------------------
     def close(self):
@@ -220,6 +221,16 @@ class PooledConnection:
             return
         object.__setattr__(self, '_released', True)
         conn, owner = self._conn, self._owner
+        try:
+            # THE HAZARD THIS WHOLE FEATURE INTRODUCES. A connection handed
+            # back with autocommit still on would silently strip transactions
+            # from whatever code picks it up next -- a write path would lose
+            # its atomicity with no error and no sign. Reset it FIRST, before
+            # anything else can fail and skip it.
+            if self._readonly and not conn.closed:
+                conn.autocommit = False
+        except Exception:                                  # noqa: BLE001
+            pass
         try:
             # psycopg2's _putconn rolls back anything not IDLE, but say it
             # here too: a connection carrying a failed transaction into
@@ -252,10 +263,30 @@ class PooledConnection:
             setattr(self._conn, name, value)
 
     def __enter__(self):
-        self._conn.__enter__()
+        # On a read-only connection this is deliberately a NO-OP.
+        #
+        # psycopg2's connection.__enter__ opens a transaction even when
+        # autocommit is on -- measured, not assumed: scripts/
+        # transaction_cost_probe.py case (d) timed the same SELECT at 614 ms
+        # inside `with conn:` against 307 ms outside it, with autocommit on
+        # for both. That is the BEGIN, costing its own round trip.
+        #
+        # So without this, readonly=True buys nothing anywhere the codebase
+        # uses `with conn:` -- which is 310 call sites. The first attempt at
+        # this fix set autocommit and stopped there; it improved exactly one
+        # call site, the only one that happened not to use the idiom.
+        #
+        # Skipping it is correct, not a trick: with autocommit on, every
+        # statement commits itself, so a transaction block has nothing to
+        # open and nothing to commit. The call sites keep their `with`
+        # blocks and need no edit.
+        if not self._readonly:
+            self._conn.__enter__()
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
+        if self._readonly:
+            return False        # nothing was opened; nothing to commit
         return self._conn.__exit__(exc_type, exc_value, traceback)
 
     def __repr__(self):
@@ -279,7 +310,7 @@ def _remember(proxy):
         pass
 
 
-def connect(dsn=None):
+def connect(dsn=None, readonly=False):
     """A connection, from the pool when there is one.
 
     Drop-in for psycopg2.connect(current_app.config['db_link']): the object
@@ -287,6 +318,18 @@ def connect(dsn=None):
     shutting the socket. Falls back to a direct connection whenever the pool
     cannot serve -- not built yet, exhausted, disabled, or erroring -- so this
     is never worse than the behaviour it replaces.
+
+    readonly=True turns autocommit ON, which means psycopg2 sends no BEGIN.
+    That is worth exactly one round trip -- 283 ms against this database,
+    measured by scripts/transaction_cost_probe.py, which found a statement
+    costs 566 ms as the first in a transaction and 283 ms otherwise.
+
+    USE IT ONLY WHERE EVERY STATEMENT IS A SELECT. Without a transaction
+    there is no atomicity and no rollback: two writes could half-apply and
+    nothing would say so. It is deliberately not the default, and the
+    existing `with conn:` blocks around a read-only connection become
+    harmless no-ops rather than erroring, which is convenient and also why
+    the flag has to be applied by someone who has checked the call site.
     """
     global _direct_connects, _pooled_connects
 
@@ -297,7 +340,12 @@ def connect(dsn=None):
     if pool is not None:
         try:
             raw = pool.getconn()
-            proxy = PooledConnection(raw, pool)
+            if readonly:
+                # Client-side only: PostgreSQL has no autocommit setting, it
+                # is purely whether the driver sends BEGIN. So this costs no
+                # round trip, which is the entire point.
+                raw.autocommit = True
+            proxy = PooledConnection(raw, pool, readonly=readonly)
             _remember(proxy)
             _pooled_connects += 1
             return proxy
@@ -310,7 +358,10 @@ def connect(dsn=None):
                          'connection', type(error).__name__, error)
 
     _direct_connects += 1
-    return psycopg2.connect(target)
+    fresh = psycopg2.connect(target)
+    if readonly:
+        fresh.autocommit = True
+    return fresh
 
 
 def release_all(_exception=None):

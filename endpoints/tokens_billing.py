@@ -451,7 +451,8 @@ def _value_state(val):
 @_token_billing.route("/tokens/<string:client_uid>/balance", methods=["GET"])
 @require_permission('tokens.view_balance')
 def ClientToken_Balance(client_uid):
-    dbconnect = db_pool.connect()
+    # Read-only: five SELECTs, no writes (checked by AST, not by eye).
+    dbconnect = db_pool.connect(readonly=True)
 
     with dbconnect:
         with dbconnect.cursor() as cursor:

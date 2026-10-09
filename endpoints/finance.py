@@ -322,7 +322,8 @@ def SpecialTokenAuthorization():
 @require_permission('finance.view')
 def TransactionLogs(transaction_owner):
     try:
-        _dbconnect = db_pool.connect()
+        # Read-only: one SELECT after resolve_wallet_owner, no writes.
+        _dbconnect = db_pool.connect(readonly=True)
         with _dbconnect:
             with _dbconnect.cursor() as cursor:
                 # Purchases are logged against the login that paid. A company

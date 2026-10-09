@@ -61,7 +61,17 @@ class FakeConnection:
         self.commits = 0
         self.entered = 0
         self.exited = 0
-        self.autocommit = False
+        self._autocommit = False
+        self.autocommit_history = []
+
+    @property
+    def autocommit(self):
+        return self._autocommit
+
+    @autocommit.setter
+    def autocommit(self, value):
+        self._autocommit = value
+        self.autocommit_history.append(value)
 
     def close(self):
         self.closed = 1
@@ -342,6 +352,126 @@ class TestStats(PoolTestCase):
         after = db_pool.stats()
         self.assertEqual(after['pooled_connects'],
                          before['pooled_connects'] + 1)
+
+
+# --------------------------------------------------------------- read-only
+
+class TestReadOnlyConnections(PoolTestCase):
+    """readonly=True removes the BEGIN -- worth one round trip, 283 ms here.
+
+    test_a_readonly_connection_is_reset_before_going_back is the one that
+    matters. A connection returned with autocommit still on would silently
+    strip transactions from whatever code picks it up next: a write path
+    would lose its atomicity with no error and no sign at all. That is the
+    single hazard this feature introduces, and it is the reason the reset
+    happens first in close(), before anything else can fail and skip it.
+    """
+
+    def test_readonly_turns_autocommit_on(self):
+        conn = FakeConnection()
+        self.install(FakePool([conn]))
+        db_pool.connect(readonly=True)
+        self.assertTrue(conn.autocommit,
+                        'no autocommit means psycopg2 still sends BEGIN, '
+                        'which is the round trip this exists to avoid')
+
+    def test_the_default_is_still_transactional(self):
+        conn = FakeConnection()
+        self.install(FakePool([conn]))
+        db_pool.connect()
+        self.assertFalse(conn.autocommit,
+                         'every existing caller must keep its transaction')
+
+    def test_a_readonly_connection_is_reset_before_going_back(self):
+        conn = FakeConnection()
+        pool = self.install(FakePool([conn]))
+        handed = db_pool.connect(readonly=True)
+        self.assertTrue(conn.autocommit)
+
+        handed.close()
+
+        self.assertFalse(conn.autocommit,
+                         'a connection returned with autocommit ON would '
+                         'silently remove transactions from the next caller')
+        self.assertEqual(pool.returned, [conn])
+        self.assertEqual(conn.autocommit_history, [True, False],
+                         'on for the read, off again before it is reused')
+
+    def test_teardown_also_resets_it(self):
+        """The 310 call sites that never close reach the pool this way."""
+        conn = FakeConnection()
+        self.install(FakePool([conn]))
+        db_pool.connect(readonly=True)
+        db_pool.release_all()
+        self.assertFalse(conn.autocommit,
+                         'the teardown path must reset it too, not just '
+                         'an explicit close()')
+
+    def test_a_normal_connection_is_not_touched(self):
+        conn = FakeConnection()
+        self.install(FakePool([conn]))
+        db_pool.connect().close()
+        self.assertEqual(conn.autocommit_history, [],
+                         'a transactional checkout must not fiddle with the '
+                         'flag at all')
+
+    def test_the_direct_fallback_honours_readonly_too(self):
+        """An exhausted pool must not quietly give back a transactional one."""
+        self.install(FakePool([]))
+        sentinel = FakeConnection()
+        with mock.patch.object(psycopg2, 'connect', return_value=sentinel):
+            db_pool.connect(readonly=True)
+        self.assertTrue(sentinel.autocommit)
+
+    def test_with_block_opens_NO_transaction_on_a_readonly_connection(self):
+        """The whole fix. Measured: `with conn:` costs a round trip even with
+        autocommit on (614 ms vs 307 ms), so on a read-only connection it must
+        not reach the real connection at all. Without this, readonly=True buys
+        nothing at the 310 call sites that use the idiom -- which is what the
+        first attempt did, improving exactly one."""
+        conn = FakeConnection()
+        self.install(FakePool([conn]))
+        handed = db_pool.connect(readonly=True)
+        with handed:
+            handed.cursor()
+        self.assertEqual(conn.entered, 0,
+                         'a read-only `with conn:` must NOT open a '
+                         'transaction -- that is the entire round trip this '
+                         'change exists to save')
+        self.assertEqual(conn.commits, 0, 'nothing was opened to commit')
+        handed.close()
+        self.assertEqual(conn.closed, 0)
+
+    def test_a_transactional_with_block_is_untouched(self):
+        """Every existing caller keeps its transaction, unchanged."""
+        conn = FakeConnection()
+        self.install(FakePool([conn]))
+        handed = db_pool.connect()
+        with handed:
+            handed.cursor()
+        self.assertEqual(conn.entered, 1)
+        self.assertEqual(conn.commits, 1,
+                         'a normal connection must still commit on exit')
+
+    def test_an_error_inside_a_readonly_with_block_still_propagates(self):
+        """Suppressing the exception would be far worse than the round trip."""
+        conn = FakeConnection()
+        self.install(FakePool([conn]))
+        handed = db_pool.connect(readonly=True)
+        with self.assertRaises(ValueError):
+            with handed:
+                raise ValueError('boom')
+        self.assertEqual(conn.rollbacks, 0,
+                         'there was no transaction to roll back')
+
+    def test_a_transactional_error_still_rolls_back(self):
+        conn = FakeConnection()
+        self.install(FakePool([conn]))
+        handed = db_pool.connect()
+        with self.assertRaises(ValueError):
+            with handed:
+                raise ValueError('boom')
+        self.assertGreaterEqual(conn.rollbacks, 1)
 
 
 if __name__ == '__main__':

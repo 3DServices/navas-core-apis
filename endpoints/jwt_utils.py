@@ -100,7 +100,8 @@ def _is_token_blacklisted(jti):
 def _blacklist_lookup(jti):
     """The uncached database check. Fails OPEN -- see the handler below."""
     try:
-        dbconnect = db_pool.connect()
+        # Read-only: one SELECT. Saves the BEGIN round trip.
+        dbconnect = db_pool.connect(readonly=True)
         try:
             with dbconnect:
                 with dbconnect.cursor() as cursor:
