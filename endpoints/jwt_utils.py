@@ -12,7 +12,7 @@ import hashlib
 import psycopg2
 from . import db_pool
 from datetime import datetime, timedelta, timezone
-from flask import current_app
+from flask import current_app, g, has_app_context
 from config import JWT_SECRET, JWT_ACCESS_EXPIRY_MINUTES, JWT_REFRESH_EXPIRY_DAYS
 
 
@@ -52,8 +52,53 @@ def decode_access_token(token):
     return payload
 
 
+# Where this request's blacklist answers are kept. Keyed on the jti, never
+# blanket: a request that decodes two different tokens must get two different
+# answers, and an authorisation path is the wrong place to be clever.
+_BLACKLIST_CACHE_KEY = '_navas_blacklist_checks'
+
+
+def _blacklist_cache():
+    """This request's jti -> bool map, or None outside a request."""
+    if not has_app_context():
+        return None
+    try:
+        cache = getattr(g, _BLACKLIST_CACHE_KEY, None)
+        if cache is None:
+            cache = {}
+            setattr(g, _BLACKLIST_CACHE_KEY, cache)
+        return cache
+    except Exception:                                      # noqa: BLE001
+        return None
+
+
 def _is_token_blacklisted(jti):
-    """Check if a JTI exists in the blacklist table."""
+    """Check if a JTI exists in the blacklist table.
+
+    Cached for the rest of the request. Every route with a permission
+    decorator decodes the token twice -- once in the access guard
+    (access_guard.py:440) and again in the decorator (globals.py 434, 491,
+    525, 559) -- and each decode was costing a round trip to a database
+    282 ms away. Measured at 1,148-1,270 ms per request on the dashboard
+    routes, for an answer that cannot change mid-request.
+
+    The cache lives on flask.g, so it dies with the request: a token revoked
+    now is still rejected on the very next one. _get_user_permissions beside
+    this does the same thing for the same reason.
+    """
+    key = str(jti)
+    cache = _blacklist_cache()
+    if cache is not None and key in cache:
+        return cache[key]
+
+    answer = _blacklist_lookup(key)
+    if cache is not None:
+        cache[key] = answer
+    return answer
+
+
+def _blacklist_lookup(jti):
+    """The uncached database check. Fails OPEN -- see the handler below."""
     try:
         dbconnect = db_pool.connect()
         try:
@@ -79,6 +124,14 @@ def blacklist_access_token(jti, account_uid, expires_at):
     Add a JWT's JTI to the blacklist so it is rejected on future requests.
     Called during logout to immediately invalidate the access token.
     """
+    # Drop any cached "not blacklisted" answer for this jti. The cache is
+    # per-request and a logout ends the request, so this window is tiny --
+    # but "the token I just revoked still passes" is not a sentence worth
+    # leaving true for even one more call.
+    cache = _blacklist_cache()
+    if cache is not None:
+        cache.pop(str(jti), None)
+
     try:
         dbconnect = db_pool.connect()
         try:

@@ -257,49 +257,76 @@ def _get_user_permissions(account_uid):
     return result
 
 
+_PERMISSIONS_SQL = """
+WITH acct AS (
+    SELECT account_clearance, account_type, account_root
+    FROM dll_access_relay
+    WHERE account_uid = %(uid)s AND access_status = 'active'
+),
+chosen_role AS (
+    -- The old code looked the role up BY NAME first and only fell back to
+    -- treating the stored value as a UID if that missed. That precedence is
+    -- load-bearing: if one role is named X and a different role's uid is X,
+    -- the name match is the one that wins. A plain OR would union both roles'
+    -- permissions, which in an authorisation path means granting more than
+    -- before. Hence the explicit ordering.
+    --
+    -- COALESCE, not a bare boolean: in Postgres "ORDER BY <bool> DESC" is
+    -- NULLS FIRST, so a NULL comparison would outrank a true one and pick
+    -- the wrong role.
+    SELECT r.role_uid
+    FROM dll_roles r, acct a
+    WHERE (r.is_deleted = FALSE OR r.is_deleted IS NULL)
+      AND (r.role_name = a.account_clearance
+           OR r.role_uid = a.account_clearance)
+    ORDER BY COALESCE(r.role_name = a.account_clearance, FALSE) DESC
+    LIMIT 1
+)
+SELECT a.account_clearance, a.account_type, a.account_root, p.permission_name
+FROM acct a
+LEFT JOIN chosen_role ON TRUE
+LEFT JOIN dll_role_permissions rp ON rp.role_uid = chosen_role.role_uid
+LEFT JOIN dll_permissions p
+       ON p.permission_uid = rp.permission_uid
+      AND (p.is_deleted = FALSE OR p.is_deleted IS NULL)
+"""
+
+
 def _load_user_permissions(account_uid):
+    """Role, account_type, account_root and permissions, in ONE round trip.
+
+    This used to be three sequential queries -- account row, then role_uid,
+    then permissions -- each waiting on the one before. Against a database
+    282 ms away that is three round trips, measured at 1.2-1.4 s, and the
+    access guard calls this on every authenticated request in the
+    application. One statement does the same work.
+
+    The three original outcomes are preserved exactly:
+
+        no active account row   -> (None, None, None, [])
+        role not found          -> (clearance, type, root, [])
+        role found              -> (clearance, type, root, [names...])
+
+    ONE KNOWN DIVERGENCE, and it is a bug fix rather than a change of
+    behaviour: the old code passed str(user_role) to the role lookup, so an
+    account whose account_clearance is NULL searched for a role literally
+    named 'None'. This compares against the column, so NULL matches nothing.
+    Both return an empty permission list unless a role really is called
+    'None'. scripts/verify_permission_parity.py checks this against every
+    real account rather than taking the argument on trust.
+    """
     dbconnect = db_pool.connect()
     try:
         with dbconnect:
             with dbconnect.cursor() as cursor:
-                # Get user's role name and account_root from dll_access_relay
-                cursor.execute(
-                    "SELECT account_clearance, account_type, account_root "
-                    "FROM dll_access_relay WHERE account_uid = %s AND access_status = 'active'",
-                    (str(account_uid),)
-                )
-                if cursor.rowcount == 0:
+                cursor.execute(_PERMISSIONS_SQL, {'uid': str(account_uid)})
+                rows = cursor.fetchall()
+
+                if not rows:
                     return None, None, None, []
 
-                row = cursor.fetchone()
-                user_role = row[0]
-                account_type = row[1]
-                account_root = row[2]
-
-                # Get role_uid from role name. If the name lookup misses, try
-                # the UID — handles historical rows where create_user wrote a
-                # role UID into account_clearance instead of the role name.
-                cursor.execute(
-                    "SELECT role_uid FROM dll_roles WHERE role_name = %s AND (is_deleted = FALSE OR is_deleted IS NULL)",
-                    (str(user_role),)
-                )
-                if cursor.rowcount == 0:
-                    # Fallback: maybe the stored value IS a UID.
-                    cursor.execute(
-                        "SELECT role_uid FROM dll_roles WHERE role_uid = %s AND (is_deleted = FALSE OR is_deleted IS NULL)",
-                        (str(user_role),)
-                    )
-                    if cursor.rowcount == 0:
-                        return user_role, account_type, account_root, []
-
-                role_uid = cursor.fetchone()[0]
-
-                # Get permissions for this role
-                cursor.execute(
-                    "SELECT p.permission_name FROM dll_role_permissions rp JOIN dll_permissions p ON rp.permission_uid = p.permission_uid WHERE rp.role_uid = %s AND (p.is_deleted = FALSE OR p.is_deleted IS NULL)",
-                    (str(role_uid),)
-                )
-                permissions = [r[0] for r in cursor.fetchall()]
+                user_role, account_type, account_root = rows[0][:3]
+                permissions = [r[3] for r in rows if r[3] is not None]
                 return user_role, account_type, account_root, permissions
     except Exception:
         return None, None, None, []
