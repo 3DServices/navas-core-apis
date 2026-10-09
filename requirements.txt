@@ -16,6 +16,13 @@ pytz
 psutil
 kafka-python
 
+# Live device snapshots (endpoints/device_listing.py). Imported at MODULE
+# level, so the application will not start without it -- a clean deploy or a
+# fresh checkout dies at `from endpoints import ...` with ModuleNotFoundError.
+# The server itself is optional: live_snapshots() catches the connection
+# failure and degrades to no live data.
+redis
+
 # Auth
 PyJWT
 bcrypt

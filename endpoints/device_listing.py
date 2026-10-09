@@ -14,6 +14,7 @@ import os
 import time
 
 import psycopg2
+from . import db_pool
 import redis
 from flask import current_app, jsonify
 
@@ -82,7 +83,7 @@ def pg_lookup(sql, keys):
     keys = [k for k in {str(k) for k in keys if k}]
     if not keys:
         return {}
-    connection = psycopg2.connect(current_app.config['db_link'])
+    connection = db_pool.connect()
     try:
         with connection:
             with connection.cursor() as cursor:
