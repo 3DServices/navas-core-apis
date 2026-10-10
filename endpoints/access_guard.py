@@ -97,6 +97,9 @@ INTERNAL_RULES = frozenset({
     '/alerts/run',
 })
 
+# The Waswa data API (waswa_data_api.PREFIX): authenticated by its own token.
+DATA_API_PREFIX = '/waswa/data'
+
 # Never available to customer logins.
 STAFF_ONLY_PREFIXES = (
     '/tenants/',
@@ -463,6 +466,13 @@ def access_guard():
         return None
     rule = _norm(request.url_rule.rule)
     if rule in PUBLIC_RULES:
+        return None
+
+    # The Waswa data API takes no user token and no service key: only its own
+    # short-lived data token, which its blueprint verifies on every request,
+    # always enforced whatever AUTH_GATE_MODE says. Running the user checks
+    # here as well would only log every agent call as unauthenticated.
+    if rule.startswith(DATA_API_PREFIX + '/'):
         return None
 
     key = _service_key()

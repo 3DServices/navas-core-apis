@@ -254,6 +254,21 @@ def knowledge_search(query, product=None, document_type=None, limit=None,
             rows, how = _search(cur, query, filters, limit, include_unapproved,
                                 audience)
 
+            # The model chooses document_type itself, and guesses: "what
+            # happens when a SIM goes offline?" was searched as a "procedure"
+            # when the only document covering it is a specification, and the
+            # filter turned an answerable question into "not covered". A wrong
+            # guess at the type must not hide the answer, so widen once -- and
+            # say so, as for an unknown product.
+            if not rows and filters.get('document_type'):
+                widened = dict(filters, document_type=None)
+                rows, how = _search(cur, query, widened, limit,
+                                    include_unapproved, audience)
+                if rows:
+                    notes.append(
+                        f"nothing of type '{document_type}' matched, so these "
+                        f"results come from other document types")
+
             if not rows:
                 total, approved, visible = _corpus_state(cur, audience)
                 if not total:

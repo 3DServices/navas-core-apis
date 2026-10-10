@@ -26,6 +26,7 @@ from .product_variant import _products_variant
 from .marketplace import marketplace_bp
 from .events import device_eventsbp
 from .assistant import assistant_bp
+from .waswa_data_api import waswa_data_bp
 from .pause import pause_bp
 from .team import team_bp
 from .alert_engine import alerts_bp
@@ -62,6 +63,7 @@ def Sentinel_Fleet():
     app.register_blueprint(marketplace_bp)
     app.register_blueprint(device_eventsbp)
     app.register_blueprint(assistant_bp)
+    app.register_blueprint(waswa_data_bp)
     app.register_blueprint(pause_bp)
     app.register_blueprint(team_bp)
     app.register_blueprint(alerts_bp)

@@ -69,6 +69,17 @@ import time
 
 sys.path.insert(0, '.')
 
+# Verify TLS against the OS trust store rather than certifi's bundle. On a
+# machine whose antivirus re-signs HTTPS (Avast Web Shield does), certifi does
+# not know the interception root, every OpenRouter call fails verification,
+# and the whole run comes back as 502s that look like a Waswa regression.
+# Verification stays on; only the source of trusted roots changes.
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
 QUESTIONS = os.path.join('tests', 'waswa_eval', 'questions.json')
 RUNS_DIR = os.path.join('tests', 'waswa_eval', 'runs')
 
@@ -274,9 +285,11 @@ def close_conversation(cur, conversation_uid):
     return cur.rowcount
 
 
-def ask(client, base_url, token, question, surface):
+def ask(client, base_url, token, question, surface, agent_version=None):
     """One turn. Returns (http_status, payload, seconds)."""
     body = {'data': {'message': question, 'surface': surface or 'mobile'}}
+    if agent_version:
+        body['data']['agent_version'] = agent_version
     headers = {'Authorization': 'Bearer %s' % token}
     started = time.time()
     if base_url:
@@ -642,6 +655,8 @@ def main():
     ap.add_argument('--replay', default=None, metavar='RUNFILE',
                     help='re-score a recorded run with the current checks. '
                          'No model calls, no database, no writes.')
+    ap.add_argument('--agent-version', default=None,
+                    help="v1 or v2; default is whatever the server runs")
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
 
@@ -749,7 +764,8 @@ def main():
             if args.isolate_surface:
                 surface = ('eval-' + surface)[:20]
             status, payload, elapsed = ask(
-                client, args.base_url, token, row['question'], surface)
+                client, args.base_url, token, row['question'], surface,
+                args.agent_version)
 
             data = (payload or {}).get('data') or {}
             if data.get('conversation_uid'):
@@ -800,6 +816,7 @@ def main():
                 'intent': data.get('intent'),
                 'router_tier': data.get('router_tier'),
                 'prompt_version': data.get('prompt_version'),
+                'agent_version': data.get('agent_version'),
                 'conversation_uid': data.get('conversation_uid'),
                 'message_uid': data.get('message_uid'),
                 'checks': checks, 'not_scored': unscored,
@@ -887,6 +904,20 @@ def main():
           % (len(created['conversations']), len(created['messages'])))
     print('  remove them with:')
     print('      python scripts/waswa_eval_cleanup.py %s' % out)
+
+    # Track the run in MLflow when a tracking server is configured. A failure
+    # here never fails the run: the run file is the record, and
+    # scripts/waswa_eval_mlflow.py can log it later.
+    if os.environ.get('MLFLOW_TRACKING_URI'):
+        try:
+            from waswa_eval_mlflow import log_run
+            import mlflow
+            mlflow.set_tracking_uri(os.environ['MLFLOW_TRACKING_URI'])
+            print('')
+            log_run(out, live=True)
+        except Exception as error:                      # noqa: BLE001
+            print('  not logged to MLflow (%s: %s)'
+                  % (error.__class__.__name__, error))
     return 1 if crashed else 0
 
 

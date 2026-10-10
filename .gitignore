@@ -16,3 +16,6 @@ database/knowledge/uploads/
 # config.py. Git skips it today only because a worktree .git pointer makes
 # it look like a nested repo; nothing actually excludes it.
 .kilo/
+
+# Local MLflow tracking server: its own venv, run store and artifacts
+.mlflow/
