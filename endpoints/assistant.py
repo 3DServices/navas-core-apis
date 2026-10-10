@@ -37,11 +37,9 @@ import re
 import time
 import uuid
 
-import psycopg2
 import requests
 from flask import Blueprint, request, current_app
 
-from . import waswa_answers
 from . import waswa_console
 from . import waswa_fleet
 from . import waswa_knowledge
@@ -49,7 +47,7 @@ from . import waswa_products
 from . import waswa_data_auth
 from .globals import reply, _extract_account_uid
 from .waswa_data_client import DataApiError, DataClient
-from .waswa_context import build_context, render_for_prompt
+from .waswa_context import render_for_prompt
 from . import waswa_v2
 from config import (
     OPENROUTER_API_KEY,
@@ -168,15 +166,6 @@ def _is_pricing_enquiry(text):
 # (endpoints/waswa_data_api.py) through the turn's DataClient. All swallow their
 # own errors: a logging failure must never cost the user an answer; it costs
 # us a row, and the gap shows up in the log.
-
-def _open_connection():
-    conn = psycopg2.connect(current_app.config['db_link'])
-    # These writes are independent appends; per-statement commit keeps the
-    # helpers simple and avoids holding a transaction open across an HTTP call
-    # to OpenRouter.
-    conn.autocommit = True
-    return conn
-
 
 def _active_prompt(data):
     """(body, version) of the active runtime prompt, or the fallback."""
@@ -688,20 +677,20 @@ def AssistantContext():
     if not account_uid:
         return reply("error", 401, "Authentication required.", "")
 
-    conn = None
+    # Through the data API, like the chat itself, so this shows what the
+    # agent is actually given rather than a second, parallel reading.
     try:
-        conn = _open_connection()
-        context = build_context(account_uid, surface='diagnostic', conn=conn)
-        return reply("success", 200, "OK", {
-            "scope": context['scope'],
-            "known": context['known'],
-            "unknown": _unknown_report(context),
-        })
-    except Exception as error:
-        return reply("error", 500, str(error), "")
-    finally:
-        if conn:
-            conn.close()
+        context = DataClient(waswa_data_auth.mint(account_uid)).context(
+            'diagnostic')
+    except DataApiError as error:
+        return reply("error", error.status or 502,
+                     "The data API could not assemble the context: %s"
+                     % error.message, "")
+    return reply("success", 200, "OK", {
+        "scope": context['scope'],
+        "known": context['known'],
+        "unknown": context['unknown'],
+    })
 
 
 @assistant_bp.route("/assistant/knowledge", methods=["GET", "POST"])
@@ -728,32 +717,31 @@ def AssistantKnowledge():
     if not account_uid:
         return reply("error", 401, "Authentication required.", "")
 
-    # Same audience the chat path would use for this person, so the
-    # diagnostic shows what Waswa would really see. Looking at unapproved
-    # documents is a reviewer's tool, not everyone's.
-    who = waswa_answers.caller(account_uid)
-    audience = waswa_answers.audience_for(who)
+    # Through the data API, which applies the same audience the chat path
+    # would use for this person, so the diagnostic shows what Waswa would
+    # really see. Whether unapproved documents may be shown is decided there
+    # too: a reviewer's tool, not everyone's.
+    store = DataClient(waswa_data_auth.mint(account_uid))
 
     payload = request.get_json(silent=True) or {}
     query = (request.args.get('q') or payload.get('query') or '').strip()
-    if not query:
-        return reply("success", 200, "OK",
-                     waswa_knowledge.knowledge_sources(audience=audience))
-
     flag = str(request.args.get('include_unapproved')
                or payload.get('include_unapproved') or '').lower()
-    include_unapproved = (flag in ('1', 'true', 'yes')
-                          and waswa_answers.can(who, waswa_answers.PERM_REVIEW))
-    result = waswa_knowledge.knowledge_search(
-        query,
-        product=request.args.get('product') or payload.get('product'),
-        document_type=(request.args.get('document_type')
-                       or payload.get('document_type')),
-        limit=request.args.get('limit') or payload.get('limit'),
-        include_unapproved=include_unapproved,
-        audience=audience,
-    )
-    result['audience'] = audience
+    try:
+        if not query:
+            return reply("success", 200, "OK", store.knowledge_sources())
+        result = store.knowledge_search(
+            query,
+            product=request.args.get('product') or payload.get('product'),
+            document_type=(request.args.get('document_type')
+                           or payload.get('document_type')),
+            limit=request.args.get('limit') or payload.get('limit'),
+            include_unapproved=flag in ('1', 'true', 'yes'),
+        )
+    except DataApiError as error:
+        return reply("error", error.status or 502,
+                     "The data API could not run the search: %s"
+                     % error.message, "")
     return reply("success", 200, "OK", result)
 
 

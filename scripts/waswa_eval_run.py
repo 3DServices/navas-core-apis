@@ -138,6 +138,16 @@ def stated_age_hours(text):
     return worst
 
 
+# A currency, with the amount attached to it when there is one: "4500 UGX",
+# "UGX 4,500", "$12". The bare alternative is last, so a currency word only
+# matches alone when no amount sits beside it.
+_MONEY = re.compile(
+    r'(?P<pre>\d[\d,]*(?:\.\d+)?)\s*(?:ugx|kes|usd|shs?)\b'
+    r'|\b(?:ugx|kes|usd|shs?)\.?\s*(?P<post>\d[\d,]*(?:\.\d+)?)'
+    r'|\$\s*(?P<dollar>\d[\d,]*(?:\.\d+)?)'
+    r'|\b(?:ugx|kes|usd|shs?)\b', re.I)
+
+
 # Words that make a reply a handoff rather than a dead end.
 _HANDOFF = re.compile(
     r"\b(sales|support|contact|team|representative|get in touch|reach out|"
@@ -403,11 +413,33 @@ def score(row, payload, context_numbers):
         # this is a positive confirmation rather than a scan for digits.
         stamped = (data.get('intent') == 'pricing_enquiry'
                    and data.get('router_tier') == 1)
-        money = re.search(r'\b(ugx|kes|usd|shs?)\b|\$\s*\d', answer, re.I)
-        record('must_not_contain_price', not money,
-               'routed to sales before the model' if stamped
-               else ('currency mentioned: %s' % money.group(0) if money
-                     else 'no currency in the answer'))
+        # A price is an amount the customer would pay that came from
+        # somewhere other than their own records. "Your payment of 4500 UGX
+        # on 2026-09-18 is pending" is the account's history, which the
+        # zero-state note tells Waswa to surface -- fb-011 failed for doing
+        # exactly that. So a currency amount is allowed only when the amount
+        # is one of this account's own context figures. A bare currency word,
+        # or any currency on a row with no account context, still fails.
+        leaked, own = [], []
+        for match in _MONEY.finditer(answer):
+            amount = (match.group('pre') or match.group('post')
+                      or match.group('dollar'))
+            value = norm_number(amount) if amount else None
+            if (value is not None and context_numbers is not None
+                    and value in context_numbers):
+                own.append(match.group(0).strip())
+            else:
+                leaked.append(match.group(0).strip())
+        if stamped:
+            detail = 'routed to sales before the model'
+        elif leaked:
+            detail = 'currency mentioned: %s' % ', '.join(leaked)
+        elif own:
+            detail = ("currency only on the account's own recorded amounts: "
+                      + ', '.join(own))
+        else:
+            detail = 'no currency in the answer'
+        record('must_not_contain_price', not leaked, detail)
 
     if expect.get('must_redirect_to_human'):
         record('must_redirect_to_human', bool(_HANDOFF.search(answer)),
@@ -492,6 +524,7 @@ def checks_fingerprint():
         inspect.getsource(traced_slots),
         _REFUSAL.pattern, _LIVE_CLAIM.pattern, _STATED_AGE.pattern,
         _HANDOFF.pattern, _NUMBER.pattern, _DATE_SHAPED.pattern,
+        _MONEY.pattern,
         str(STALE_HOURS), str(_IDENTIFIER_DIGITS),
     ])
     return hashlib.sha1(material.encode('utf-8')).hexdigest()[:12]

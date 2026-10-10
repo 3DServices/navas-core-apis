@@ -124,7 +124,9 @@ def test_every_route_needs_a_data_token():
               ('GET', '/waswa/data/prompt'),
               ('POST', '/waswa/data/conversations'),
               ('POST', '/waswa/data/answers/match'),
-              ('POST', '/waswa/data/tools/unit_find')]
+              ('POST', '/waswa/data/tools/unit_find'),
+              ('GET', '/waswa/data/knowledge/sources'),
+              ('POST', '/waswa/data/knowledge/search')]
     user = _user_token(account)
     for method, path in routes:
         for header in ({}, {'Authorization': 'Bearer ' + user},
@@ -204,7 +206,7 @@ _DIRECT_CALLS = {('waswa_fleet', 'dispatch'), ('waswa_fleet', 'unit_find'),
 _AGENT_FUNCS = ('AssistantChat', '_active_prompt', '_resume_or_open_conversation',
                 '_stored_history', '_record_turn', '_record_evidence',
                 '_log_transparency', '_prefetch_fleet', '_strict_fleet_read',
-                '_fetch_context')
+                '_fetch_context', 'AssistantContext', 'AssistantKnowledge')
 
 
 def test_the_agent_holds_no_database_handle():
@@ -237,11 +239,9 @@ def test_a_chat_turn_works_with_direct_access_cut_off():
     client = app.test_client()
     account = _account()
 
-    def refuse(*_a, **_k):
-        raise AssertionError('the agent touched the database directly')
-
-    saved = (assistant._open_connection, assistant.build_context)
-    assistant._open_connection, assistant.build_context = refuse, refuse
+    # Not patched out: gone. The module has no way left to reach a store.
+    for name in ('psycopg2', 'build_context', '_open_connection', 'db_pool'):
+        assert not hasattr(assistant, name), 'assistant still has ' + name
     conversation_uid = None
     try:
         resp = client.post('/assistant/chat', headers={
@@ -256,7 +256,6 @@ def test_a_chat_turn_works_with_direct_access_cut_off():
         assert data['intent'] == 'pricing_enquiry'
         assert isinstance(data['context_unknown'], list)
     finally:
-        assistant._open_connection, assistant.build_context = saved
         if conversation_uid:
             conn = psycopg2.connect(DB_LINK)
             conn.autocommit = True
@@ -277,6 +276,38 @@ def test_a_chat_turn_works_with_direct_access_cut_off():
                 conn.close()
             assert turns == 2, 'user + assistant turns recorded, got %s' % turns
             assert logged == 1, 'transparency entry written, got %s' % logged
+
+
+def test_the_context_diagnostic_goes_through_the_api():
+    client = _app().test_client()
+    header = {'Authorization': 'Bearer ' + _user_token(_account())}
+    resp = client.get('/assistant/context', headers=header)
+    data = resp.get_json()['data']
+    assert resp.status_code == 200, resp.get_json()
+    assert data['known'].get('surface') == 'diagnostic', data['known']
+    assert isinstance(data['unknown'], list) and data['scope'].get('account_uid')
+    assert client.get('/assistant/context').status_code == 401
+
+
+def test_the_knowledge_diagnostic_goes_through_the_api():
+    from endpoints import waswa_answers
+    app = _app()
+    client = app.test_client()
+    account = _account()
+    header = {'Authorization': 'Bearer ' + _user_token(account)}
+    listed = client.get('/assistant/knowledge', headers=header)
+    assert listed.status_code == 200, listed.get_json()
+    found = client.get('/assistant/knowledge?q=tracking+tokens'
+                       '&include_unapproved=true', headers=header)
+    body = found.get_json()['data']
+    assert found.status_code == 200, found.get_json()
+    assert 'found' in body and body['audience'] in ('staff', 'everyone')
+    # Asked for, and honoured only for a reviewer -- decided by the API.
+    with app.test_request_context():
+        reviewer = waswa_answers.can(waswa_answers.caller(account),
+                                     waswa_answers.PERM_REVIEW)
+    assert body['include_unapproved'] is reviewer, body['include_unapproved']
+    assert client.get('/assistant/knowledge').status_code == 401
 
 
 def main():

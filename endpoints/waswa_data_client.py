@@ -118,6 +118,18 @@ class DataClient:
                    json={'entry_type': entry_type, 'message_uid': message_uid,
                          'action': action, 'rationale': rationale})
 
+    # ── knowledge diagnostics ─────────────────────────────────────────
+
+    def knowledge_sources(self):
+        return self._call('GET', '/knowledge/sources')
+
+    def knowledge_search(self, query, product=None, document_type=None,
+                         limit=None, include_unapproved=False):
+        """The API decides whether include_unapproved is honoured."""
+        return self._call('POST', '/knowledge/search', json={
+            'query': query, 'product': product, 'document_type': document_type,
+            'limit': limit, 'include_unapproved': include_unapproved})
+
     # ── answers and tools ─────────────────────────────────────────────
 
     def match_answers(self, question):

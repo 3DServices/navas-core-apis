@@ -32,6 +32,8 @@ Routes (all under /waswa/data, all need `Authorization: Bearer <data token>`):
   POST /conversations/<uid>/transparency          transparency log entry
   POST /messages/<uid>/evidence                   evidence rows for a turn
   POST /answers/match                             verified answers for a question
+  GET  /knowledge/sources                         documents this account may draw on
+  POST /knowledge/search                          a search, as the diagnostic runs it
   POST /tools/<name>                              run a fleet/knowledge/product tool
 """
 
@@ -178,6 +180,9 @@ def context():
     ctx = build_context(_account_uid(), surface=surface, conn=_conn())
     return reply('success', 200, 'OK', {
         'scope': _plain(ctx['scope']),
+        # The raw slots, for the /assistant/context diagnostic. The agent
+        # itself uses the rendered text below.
+        'known': _plain(ctx['known']),
         'rendered': render_for_prompt(ctx),
         'zero_state_note': _zero_state_note(ctx),
         'unknown': _unknown_report(ctx),
@@ -343,6 +348,37 @@ def match_answers():
         'verified': _plain(verified),
         'rendered': (waswa_answers.render_for_prompt(verified)
                      if verified else None)})
+
+
+# ── Knowledge diagnostics ──────────────────────────────────────────────────
+# For GET /assistant/knowledge, which shows exactly what retrieval returns.
+# Unlike /tools/knowledge_search -- which the model drives, and which always
+# drops include_unapproved -- this honours it, but only for an account that
+# holds the reviewer permission, decided here from the token's account.
+
+@waswa_data_bp.route('/knowledge/sources', methods=['GET'])
+def knowledge_sources():
+    return reply('success', 200, 'OK', _plain(
+        waswa_knowledge.knowledge_sources(audience=_audience())))
+
+
+@waswa_data_bp.route('/knowledge/search', methods=['POST'])
+def knowledge_search():
+    body = _body()
+    query = str(body.get('query') or '').strip()
+    if not query:
+        return reply('error', 400, 'query is required.', '')
+    who = waswa_answers.caller(_account_uid())
+    audience = waswa_answers.audience_for(who)
+    include_unapproved = (bool(body.get('include_unapproved'))
+                          and waswa_answers.can(who, waswa_answers.PERM_REVIEW))
+    result = waswa_knowledge.knowledge_search(
+        query, product=body.get('product'),
+        document_type=body.get('document_type'), limit=body.get('limit'),
+        include_unapproved=include_unapproved, audience=audience)
+    result['audience'] = audience
+    result['include_unapproved'] = include_unapproved
+    return reply('success', 200, 'OK', _plain(result))
 
 
 # ── Tools ──────────────────────────────────────────────────────────────────
