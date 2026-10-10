@@ -688,7 +688,7 @@
         "must_not_contain_price": true,
         "must_not_refuse": true,
         "must_call": [
-          "knowledge_search"
+          "app_guide_search"
         ],
         "must_cite_document": true
       },
@@ -728,9 +728,11 @@
           }
         ]
       },
-      "blocked_on": "oliwa-ui-corpus",
       "blocked_reason": "the knowledge corpus holds CMS how-to material only. There is no OLIWA UI documentation in it, so no retrieval can answer this however well the tool selection works. Fixing tool selection alone would make Waswa hand CMS steps to a mobile user with confidence, which is worse than refusing.",
-      "expected_to_fail": true
+      "expected_to_fail": true,
+      "notes": [
+        "2026-10-10: unblocked. The OLIWA mobile app guide (oliwa-mobile/docs/user-guide, synced by /kb-sync) now covers this, and app questions are answered through app_guide_search rather than knowledge_search, which ranked the CMS manual first."
+      ]
     },
     {
       "id": "fb-011",

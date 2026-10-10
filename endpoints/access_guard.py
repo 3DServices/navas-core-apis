@@ -135,7 +135,10 @@ STAFF_ONLY_RULES = frozenset({
     '/configurations/new',
     '/gateways/mobile-money/update',
     '/tokens/subscriptions/update',
-    '/subscriptions/token/<token_billing_uid>/devices',
+    # /subscriptions/token/<token_billing_uid>/devices used to be listed here,
+    # which made the app's per-token usage screen fail for every customer.
+    # It is open to customers now, for their own tokens only: _TOKEN below
+    # checks the token's client against the caller's account.
     '/finance/subscriptions/devices/<device_imei>/period/<renewal_period>/account/<account_uid_renewing>/renew',
 }) | INTERNAL_RULES
 
@@ -192,6 +195,8 @@ _NOTIFICATION = ('dll_event_notifications', 'notification_uid', 'owner_uid')
 _REPORT = ('dll_reports_downloadable_files', 'request_uid', 'report_caller')
 _PAYMENT = ('dll_payment_logs', 'payment_uid', 'payment_account')
 _PAUSE_RULE = ('dll_pause_rules', 'id', 'owner_uid')
+# A token pack belongs to the client that bought it.
+_TOKEN = ('dll_user_token_accounts', 'token_billing_uid', 'client_uid')
 
 
 def _object_kind(rule, param):
@@ -209,6 +214,8 @@ def _object_kind(rule, param):
         return _PAYMENT
     if param == 'rule_id' and rule.startswith('/pause/'):
         return _PAUSE_RULE
+    if param == 'token_billing_uid':
+        return _TOKEN
     return None
 
 

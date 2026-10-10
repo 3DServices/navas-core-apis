@@ -63,7 +63,7 @@ _MAX_HISTORY = 50
 _ROLES = frozenset({'user', 'assistant'})
 
 # Arguments only the server may set. Dropped from whatever the model sent.
-_SERVER_ONLY_ARGS = ('scope', 'audience', 'include_unapproved')
+_SERVER_ONLY_ARGS = ('scope', 'audience', 'include_unapproved', 'app_guide')
 
 
 # ── Authentication ─────────────────────────────────────────────────────────

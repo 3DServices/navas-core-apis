@@ -145,6 +145,20 @@ def _search(cur, query, filters, limit, include_unapproved,
     if filters.get('document_type'):
         where.append("c.document_type = %(document_type)s")
         params['document_type'] = filters['document_type']
+    if filters.get('app_guide'):
+        # The guide's newest version of each article, and the version it
+        # replaces: while a new version awaits review the old one is still
+        # the live one, and the article must not vanish from search for that
+        # window. vw_waswa_retrievable drops whichever of the two is not live.
+        where.append(
+            "c.source_uid IN ("
+            " SELECT g.source_uid FROM dll_waswa_app_guide g"
+            "  WHERE g.app = %(app_guide)s"
+            " UNION"
+            " SELECT s.replaces_source_uid FROM dll_waswa_app_guide g"
+            "  JOIN dll_waswa_sources s ON s.source_uid = g.source_uid"
+            "  WHERE g.app = %(app_guide)s AND s.replaces_source_uid IS NOT NULL)")
+        params['app_guide'] = filters['app_guide']
     if filters.get('max_authority_level'):
         where.append("c.authority_level <= %(max_authority_level)s")
         params['max_authority_level'] = filters['max_authority_level']
@@ -223,8 +237,14 @@ def _corpus_state(cur, audience='everyone'):
 
 
 def knowledge_search(query, product=None, document_type=None, limit=None,
-                     include_unapproved=False, audience='everyone'):
-    """Search approved company documents for text answering a question."""
+                     include_unapproved=False, audience='everyone',
+                     app_guide=None):
+    """Search approved company documents for text answering a question.
+
+    app_guide narrows the search to one app's synced guide (see
+    waswa_app_guide). It is how app_guide_search is built, not a filter the
+    model is told about.
+    """
     query = (query or '').strip()
     if not query:
         return {'found': False, 'reason': 'no query given', 'results': []}
@@ -234,7 +254,8 @@ def knowledge_search(query, product=None, document_type=None, limit=None,
     try:
         conn.autocommit = True
         with conn.cursor() as cur:
-            filters = {'document_type': document_type}
+            filters = {'document_type': document_type,
+                       'app_guide': app_guide}
             notes = []
 
             if product:
@@ -463,6 +484,34 @@ TOOL_SPECS = [
     {
         'type': 'function',
         'function': {
+            'name': 'app_guide_search',
+            'description': (
+                'Step-by-step instructions for doing something in the OLIWA '
+                'mobile app: which screen, which button, what to enter, what '
+                'happens next. Use this FIRST for any "how do I ...", "where '
+                'is ...", "why can\'t I ..." question about using the app. '
+                'It searches only the app guide, which is kept in step with '
+                'the app itself. Returns found: false when the guide does not '
+                'cover it.'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'query': {
+                        'type': 'string',
+                        'description': (
+                            'What the person wants to do, in the words the '
+                            'app uses, e.g. "add a vehicle", "top up tokens", '
+                            '"export a trip report".')},
+                    'limit': {'type': 'integer',
+                              'description': 'Results to return, 1-8. Default 4.'},
+                },
+                'required': ['query'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
             'name': 'knowledge_sources',
             'description': (
                 'List the approved documents available to search, with their '
@@ -479,9 +528,33 @@ TOOL_SPECS = [
     },
 ]
 
+APP_GUIDE_APP = 'oliwa-mobile'
+
+
+def app_guide_search(query, limit=None, audience='everyone'):
+    """Search the OLIWA mobile app's own guide, and nothing else.
+
+    Separate from knowledge_search on purpose. Asked how to do something in
+    the app, a general search ranks the CMS manual -- 54 passages on
+    geofences, all of them about a different application -- above anything
+    about the app, and the model then presents CMS steps as app steps. This
+    tool cannot return them.
+    """
+    result = knowledge_search(query, limit=limit, audience=audience,
+                              app_guide=APP_GUIDE_APP)
+    if not result.get('found'):
+        result['reason'] = (
+            'The OLIWA mobile app guide does not cover this. Do not answer '
+            'with steps from another application (such as the NAVAS CMS) as '
+            'if they were app steps; say the app guide does not cover it and '
+            'offer who can help.')
+    return result
+
+
 _DISPATCH = {
     'knowledge_search': knowledge_search,
     'knowledge_sources': knowledge_sources,
+    'app_guide_search': app_guide_search,
 }
 
 

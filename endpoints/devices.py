@@ -1094,6 +1094,32 @@ def delete_simcard(simcard_uid):
 
 
 #Create New Event
+def _geofence_value_error(condition, value):
+    """Why a geofence rule's condition value cannot work, or None.
+
+    The alert engine (alert_engine.load_rules) reads a geofence_breach
+    rule's value as {"zones": [geozone_uid, ...], "breach_type":
+    "enter" | "exit" | "both"} and silently skips anything else. The mobile
+    app used to send a bare "enter" or "exit": the rule was saved, listed,
+    and never fired. Refuse what can never be read, rather than store it.
+    An empty zone list is allowed -- the console saves a rule first and
+    picks its zones afterwards.
+    """
+    if condition != 'geofence_breach':
+        return None
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        parsed = None
+    if not isinstance(parsed, dict) or not isinstance(parsed.get('zones'), list):
+        return ('A geofence rule needs the zones it watches: send '
+                'event_condition_value as {"zones": [geozone_uid, ...], '
+                '"breach_type": "enter" | "exit" | "both"}.')
+    if parsed.get('breach_type', 'both') not in ('enter', 'exit', 'both'):
+        return 'breach_type must be enter, exit or both.'
+    return None
+
+
 @devices_bp.route("/events/create", methods=["POST"])
 def create_new_device_event():
 
@@ -1112,6 +1138,10 @@ def create_new_device_event():
             AlertChannels = json.dumps(payload_data['data']['alert_channels'])
             EventCondition_value = str(payload_data['data']['event_condition_value'])
             EventOwner = str(payload_data['data']['event_owner_uid'])
+
+            problem = _geofence_value_error(EventCondition, EventCondition_value)
+            if problem:
+                return reply('error', 400, problem, '')
 
             EventID = str(uuid.uuid4())
 
@@ -1148,6 +1178,10 @@ def update_event(event_uid):
             AlertChannels = json.dumps(payload_data['data']['alert_channels'])
             EventCondition_value = str(payload_data['data']['event_condition_value'])
             Event_UID = str(event_uid)
+
+            problem = _geofence_value_error(EventCondition, EventCondition_value)
+            if problem:
+                return reply('error', 400, problem, '')
 
             with dbconnect:
                 with dbconnect.cursor() as cursor:

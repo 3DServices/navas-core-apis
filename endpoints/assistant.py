@@ -40,6 +40,7 @@ import uuid
 import requests
 from flask import Blueprint, request, current_app
 
+from . import waswa_app_guide
 from . import waswa_console
 from . import waswa_fleet
 from . import waswa_knowledge
@@ -58,6 +59,7 @@ from config import (
 
 assistant_bp = Blueprint("Assistant", __name__)
 waswa_console.register(assistant_bp)
+waswa_app_guide.register(assistant_bp)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -897,6 +899,21 @@ def AssistantChat():
             "actually does is worse for the customer than no answer. If the "
             "search returns nothing, say you could not find it and offer to "
             "put them in touch with someone who can help.")})
+
+        # Asked from the app, "how do I create a geofence?" was answered from
+        # the CMS manual or not at all. The app now has its own guide, kept in
+        # step with the app (waswa_app_guide); this says to use it first and
+        # never to dress another application's steps up as the app's.
+        if waswa_v2.surface_family(surface) == 'mobile':
+            messages.append({"role": "system", "content": (
+                "This person is using the OLIWA mobile app. For any question "
+                "about how to do something in the app -- a screen, a button, "
+                "a setting, where to find something -- call app_guide_search "
+                "FIRST and give the steps it returns, in order, with the "
+                "app's own labels. If it finds nothing, say the app guide "
+                "does not cover that. Never give steps from another "
+                "application, such as the NAVAS CMS, as if they were steps "
+                "in the app; if only the CMS can do it, say that plainly.")})
 
         # "I have data and training up to October 2023" was a real answer to a
         # real customer. Waswa is a NAVAS assistant, not a chatbot discussing
