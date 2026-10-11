@@ -226,6 +226,51 @@ def test_chunks_are_mobile_scoped_and_the_filter_finds_only_the_guide():
             assert scope == 'mobile', (item.get('source'), scope)
 
 
+def test_whole_articles_rank_by_what_names_the_task():
+    """Article-level search (app_guide_search). The Edit article's body says
+    "create a new one", which used to outrank the Create article on chunk
+    proximity; the title and asked_as phrasings must decide instead."""
+    from endpoints import waswa_knowledge as wk
+    articles = _articles()
+    articles.append({
+        'slug': 'edit-thing', 'title': 'Edit a thing',
+        'asked_as': ['rename a thing'],
+        'body': '## Steps\n\n1. Open **Things**.\n2. Tap **Edit**.\n\n'
+                'To change its shape, create a new thing and delete this one.'})
+    articles[0]['asked_as'] = ['add a thing', 'make a new thing']
+    with _Tx() as t:
+        _sync(t, t.admin, articles, publish=True)
+
+        def top(query):
+            rows = wk._article_search(t.cur, query, APP, 3, 'everyone')
+            return rows[0][1].split(': ', 1)[-1] if rows else None
+
+        assert top('create a new thing') == 'Create a thing', top('create a new thing')
+        assert top('how do I add a thing') == 'Create a thing'
+        assert top('rename my thing') == 'Edit a thing'
+        assert top('delete a thing') == 'Delete a thing'
+        # Off-topic, or one shared word only: nothing, not a wrong article.
+        assert top('recipe for chapati') is None
+        assert top('fix my thing engine') is None
+        # A stop word must not block a match ("now" can never match).
+        assert top('delete a thing now') == 'Delete a thing'
+        rows = wk._article_search(t.cur, 'create a new thing', APP, 3, 'everyone')
+        # The upload pipeline strips Markdown emphasis; the words remain.
+        body = rows[0][9]
+        assert 'Tap New' in body and 'tap Create' in body, \
+            'the whole article, every step, is returned'
+
+
+def test_rendered_sections_carry_the_task():
+    from endpoints import waswa_app_guide as ag
+    _setup()
+    text = ag.render(APP, 'Create a thing', 'Intro.\n\n## Steps\n\n1. Tap **New**.',
+                     COMMIT_1, 'Make one.', ['add a thing'])
+    assert '## Create a thing: Steps\n\n1. Tap **New**.' in text, text
+    assert 'Also asked as: add a thing.' in text
+    assert 'Make one.' in text
+
+
 def test_routes_need_review_permission():
     app, *_ = _setup()
     client = app.test_client()

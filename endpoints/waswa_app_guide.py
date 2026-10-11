@@ -80,16 +80,37 @@ def _hash(body):
     return hashlib.sha256(normal.encode('utf-8')).hexdigest()
 
 
-def render(app, title, body, commit):
+# Bump when render() changes what is stored, so the next sync re-uploads
+# every article even though no article text changed.
+RENDER_VERSION = 2
+
+_H2 = re.compile(r'^## +(.+?)[ 	]*$', re.M)
+
+
+def render(app, title, body, commit, summary=None, asked_as=None):
     """The document as stored. The header names the app and the commit, so
     an answer built from it can be traced to a version of the app; the commit
     also makes each version's bytes distinct, which the upload's duplicate
-    check needs when a later version reverts to earlier wording."""
+    check needs when a later version reverts to earlier wording.
+
+    Each section heading is prefixed with the task ("Create a geofence:
+    Steps"). The chunker keeps only the section heading on a chunk, and the
+    search weights headings highest, so without the task every article's
+    steps were headed just "Steps" -- and "create a new geofence" ranked the
+    Edit article, whose body happens to contain that phrase, above the
+    Create article. The summary and the phrasings people use ("add a
+    geofence") are included for the same reason: they are how people ask.
+    """
     spec = APPS[app]
-    return (f"# {spec['prefix']}: {title}\n\n"
-            f"Applies to {spec['applies_to']}. Checked against app version "
-            f"{commit[:12]} on {date.today().isoformat()}.\n\n"
-            f"{body.strip()}\n")
+    parts = [f"# {spec['prefix']}: {title}",
+             f"Applies to {spec['applies_to']}. Checked against app version "
+             f"{commit[:12]} on {date.today().isoformat()}."]
+    if summary:
+        parts.append(summary.strip())
+    if asked_as:
+        parts.append('Also asked as: ' + '; '.join(asked_as) + '.')
+    parts.append(_H2.sub(lambda m: f'## {title}: {m.group(1)}', body.strip()))
+    return '\n\n'.join(parts) + '\n'
 
 
 def _validate(app, payload):
@@ -122,9 +143,21 @@ def _validate(app, payload):
         if not body.strip() or len(body) > MAX_BODY_CHARS:
             raise wa.RuleError(f"'{slug}': body is required "
                                f"({MAX_BODY_CHARS} chars max).")
+        summary = re.sub(r'\s+', ' ', str(item.get('summary') or '')).strip()
+        if len(summary) > 400:
+            raise wa.RuleError(f"'{slug}': summary is longer than 400 chars.")
+        asked_as = item.get('asked_as') or []
+        if (not isinstance(asked_as, list) or len(asked_as) > 12
+                or any(not isinstance(a, str) or not a.strip() or len(a) > 100
+                       for a in asked_as)):
+            raise wa.RuleError(f"'{slug}': asked_as must be a list of up to "
+                               f"12 short phrases.")
+        asked_as = [re.sub(r'\s+', ' ', a).strip() for a in asked_as]
         seen.add(slug)
         clean.append({'slug': slug, 'title': title, 'body': body,
-                      'hash': _hash(f'{title}\n{body}')})
+                      'summary': summary, 'asked_as': asked_as,
+                      'hash': _hash(f'v{RENDER_VERSION}\n{title}\n{summary}\n'
+                                    f'{"; ".join(asked_as)}\n{body}')})
     return commit, clean
 
 
@@ -205,7 +238,8 @@ def sync(cur, who, app, payload):
             row = mapped.get(slug)
             if row:
                 base = _superseded_pending(cur, who, row['source_uid'])
-            markdown = render(app, article['title'], article['body'], commit)
+            markdown = render(app, article['title'], article['body'], commit,
+                              article['summary'], article['asked_as'])
             doc = wd.upload(cur, who, f'{slug}.md', markdown.encode('utf-8'), {
                 'title': f"{spec['prefix']}: {article['title']}",
                 'document_type': DOCUMENT_TYPE,
