@@ -113,6 +113,7 @@ STAFF_ONLY_PREFIXES = (
     '/billing/revenue/',
     '/billing/subscriptions/',
     '/resources/admin/',
+    '/referrals/admin/',
 )
 STAFF_ONLY_RULES = frozenset({
     # whole-platform numbers (the per-client versions stay available)

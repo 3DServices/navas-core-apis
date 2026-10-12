@@ -82,6 +82,11 @@ AUTO_RENEW_LIVE = os.environ.get("AUTO_RENEW_LIVE", "false").lower() == "true"
 AUTO_RENEW_INTERVAL_MINUTES = int(
     os.environ.get("AUTO_RENEW_INTERVAL_MINUTES", "15"))
 
+# Refer & Earn: the token_id (dll_tokens_registry) of a 24-hour token. One
+# pack of it is added to a referrer's wallet when a company they referred
+# makes its first paid top-up. Unset, rewards are held as 'qualified'.
+REFERRAL_REWARD_TOKEN_ID = os.environ.get("REFERRAL_REWARD_TOKEN_ID", "").strip()
+
 # CORS — allowed origins for credential-bearing requests
 
 CORS_ORIGINS = [

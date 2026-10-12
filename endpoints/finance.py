@@ -275,6 +275,12 @@ def TransactionUpdate():
                                 _TokenBillingUID = str(uuid.uuid4())
                                 cursor.execute("INSERT INTO dll_user_token_accounts (client_uid, token_balance, token_status, token_hours_used, token_hours_left, token_billing_uid) VALUES(%s, %s, %s, %s, %s, %s)", (_ClientUID, _TokenUID, 'active', 0, _TokenValidity, _TokenBillingUID))
 
+                            # Refer & Earn: the referrer of a company making
+                            # its first paid top-up gets their reward. Only a
+                            # 'pending' referral pays, once; it never raises.
+                            from .referrals import on_paid_top_up
+                            on_paid_top_up(cursor, _ClientUID, External_Referance)
+
                     return "Processed-OK", 200
         else:
             pass

@@ -1,0 +1,867 @@
+openapi: 3.0.3
+info:
+  title: NAVAS core APIs — endpoints added October 2026
+  version: 2026-10-12
+  description: |
+    Endpoints added or changed for the OLIWA app in October 2026: fleet summary,
+    alert acknowledgement and severity, geofence categories, profile editing,
+    daily token usage and Refer & Earn.
+
+    Every response uses the standard envelope
+    `{ "status": "success" | "error", "message": "...", "data": <payload> }`,
+    with the HTTP status code matching. On errors `data` is `""`.
+
+    503 means the feature's migration has not been run on that server yet
+    (047 acknowledgement, 048 geofence categories, 049 token usage, 050
+    referrals).
+servers:
+  - url: '{baseUrl}'
+    variables:
+      baseUrl:
+        default: https://api.example.com
+security:
+  - bearerAuth: []
+tags:
+  - name: Fleet
+  - name: Alerts
+  - name: Geofences
+  - name: Users
+  - name: Tokens
+  - name: Referrals
+  - name: Referrals (staff)
+
+paths:
+  /fleet/{client_uid}/summary:
+    get:
+      tags: [Fleet]
+      summary: Fleet status and geofence presence for the dashboard
+      description: |
+        Worked out on the server from every unit's latest report. `zones` is
+        null when geofences could not be read (a note says so).
+      parameters:
+        - $ref: '#/components/parameters/ClientUid'
+      responses:
+        '200':
+          description: Fleet summary
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/FleetSummary' }
+              example:
+                status: success
+                message: Fleet summary
+                data:
+                  client_uid: TWpBek5qQXhNVGcz
+                  generated_at: '2026-10-12 09:41:07'
+                  silent_after_minutes: 60
+                  units_registered: 42
+                  fleet:
+                    counts: { moving: 12, idling: 3, parked: 18, no_position: 1, silent: 7, unread: 1 }
+                    silent_ages: { under_day: 2, up_to_week: 3, over_week: 1, never: 1 }
+                    weak_gps: 2
+                    reporting_now: 34
+                    total: 42
+                  zones:
+                    zone_count: 6
+                    inside: 15
+                    outside: 21
+                    not_placed: 6
+                    top_zones: [{ name: Main Depot, units: 9 }]
+                    entries_today: 14
+                    exits_today: 12
+                    by_category:
+                      general: { zones: 2, units_inside: 3 }
+                      depot: { zones: 2, units_inside: 9 }
+                      customer: { zones: 1, units_inside: 2 }
+                      restricted: { zones: 1, units_inside: 1 }
+                    restricted_inside:
+                      count: 1
+                      units: [{ unit: UBA 123X, zone: Quarry }]
+                    restricted_entries_today: 2
+                    dwell_today:
+                      visits: 8
+                      median_minutes: 37
+                      longest: { unit: UBA 123X, zone: Main Depot, minutes: 212 }
+                  notes: []
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503':
+          description: The unit register or live positions are temporarily unavailable; retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /notifications/{owner_uid}/list:
+    get:
+      tags: [Alerts]
+      summary: Alert history (existing route — response gained fields)
+      description: |
+        Existing route. Each alert now also has `acknowledged_at`,
+        `acknowledged_by`, `acknowledge_note` (empty strings when not
+        acknowledged) and `severity` (critical / warning / info, worked out
+        from the alert, not stored).
+      parameters:
+        - name: owner_uid
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Alerts, most recent first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Alert' }
+
+  /notifications/{notification_uid}/acknowledge:
+    put:
+      tags: [Alerts]
+      summary: Acknowledge an alert
+      description: |
+        Also marks the alert read. The first acknowledgement stands: calling
+        again changes nothing and returns who acknowledged it
+        (`already_acknowledged: true`). Needs migration 047.
+      parameters:
+        - name: notification_uid
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                data:
+                  type: object
+                  properties:
+                    note:
+                      type: string
+                      maxLength: 500
+                      description: Optional. Trimmed; longer text is cut at 500.
+            example: { data: { note: Called the driver } }
+      responses:
+        '200':
+          description: Acknowledged (or already was)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          notification_uid: { type: string }
+                          acknowledged_at: { type: string, example: '2026-10-12 09:41:07' }
+                          acknowledged_by: { type: string, description: account_uid }
+                          acknowledge_note: { type: string }
+                          already_acknowledged: { type: boolean }
+              example:
+                status: success
+                message: Alert acknowledged
+                data:
+                  notification_uid: 5f0c…
+                  acknowledged_at: '2026-10-12 09:41:07'
+                  acknowledged_by: TWpBek5qQXhNVGcz
+                  acknowledge_note: Called the driver
+                  already_acknowledged: false
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/NotEnabled' }
+
+  /geozones/{geozone_id}/category:
+    put:
+      tags: [Geofences]
+      summary: Set what a geofence is for
+      description: |
+        general, depot, customer or restricted. Entering a restricted zone
+        makes the alert critical. Needs migration 048. The geofence list
+        (existing route) now also returns `geozone_category`.
+      parameters:
+        - name: geozone_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data:
+                  type: object
+                  required: [geozone_category]
+                  properties:
+                    geozone_category: { $ref: '#/components/schemas/GeozoneCategory' }
+            example: { data: { geozone_category: restricted } }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          geozone_uid: { type: string }
+                          geozone_category: { $ref: '#/components/schemas/GeozoneCategory' }
+              example:
+                status: success
+                message: Geofence category updated
+                data: { geozone_uid: gz-1, geozone_category: restricted }
+        '400':
+          description: 'geozone_category must be one of: general, depot, customer, restricted.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/NotEnabled' }
+
+  /users/{user_uid}/profile:
+    put:
+      tags: [Users]
+      summary: Edit profile (existing route — now also name and email)
+      description: |
+        Only the fields sent are changed. Users may edit only their own
+        profile (platform admins any). Changing your OWN email needs
+        `current_password`. An email used by another active account is
+        refused (409). `date_of_birth` "" clears it. Returns the saved value
+        of each field that was sent.
+      parameters:
+        - name: user_uid
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data:
+                  type: object
+                  properties:
+                    display_name: { type: string, minLength: 2, maxLength: 80 }
+                    email: { type: string, format: email, maxLength: 120 }
+                    current_password:
+                      type: string
+                      description: Required with a new email on your own account.
+                    date_of_birth:
+                      type: string
+                      description: YYYY-MM-DD, not in the future; "" clears it.
+            example:
+              data:
+                display_name: Jane Achieng
+                email: jane@example.com
+                current_password: your-current-password
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        additionalProperties: { type: string }
+              example:
+                status: success
+                message: Profile updated
+                data: { display_name: Jane Achieng, email: jane@example.com }
+        '400':
+          description: |
+            Invalid field, "Nothing to update.", "Enter your current password
+            to change your email." or "Your current password is not right."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: You can only edit your own profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Another account already uses that email address.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '500': { $ref: '#/components/responses/Error' }
+
+  /tokens/{client_uid}/usage/daily:
+    get:
+      tags: [Tokens]
+      summary: Daily token usage per service
+      description: |
+        Permission tokens.view_balance. Records today's reading for this
+        wallet first, so today is current. A day that cannot be worked out
+        (first day, a missing reading, a total that went down) is counted in
+        `unknown`, never as 0. Amounts in different units are never added
+        together. Needs migration 049.
+      parameters:
+        - $ref: '#/components/parameters/ClientUid'
+        - name: days
+          in: query
+          required: false
+          schema: { type: integer, default: 14, minimum: 1, maximum: 90 }
+      responses:
+        '200':
+          description: Daily usage
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/TokenUsageDaily' }
+              example:
+                status: success
+                message: Daily token usage
+                data:
+                  client_uid: TWpBek5qQXhNVGcz
+                  today: '2026-10-12'
+                  history_since: '2026-10-01'
+                  days:
+                    - { day: '2026-10-11', by_service: { Live Tracking: 182.5 }, unknown: 0 }
+                    - { day: '2026-10-12', by_service: { Live Tracking: 61.0 }, unknown: 1 }
+                  services:
+                    - { service: Live Tracking, unit: hour, total: 243.5, average_per_day: 121.75, known_days: 2 }
+                  units: { hour: 243.5 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/NotEnabled' }
+
+  /tokens/usage/snapshot/run:
+    post:
+      tags: [Tokens]
+      summary: Record today's reading for every wallet (staff / scheduler)
+      description: |
+        Staff only. Schedule once a day close to midnight, Africa/Kampala.
+        No body.
+      responses:
+        '200':
+          description: Recorded
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          day: { type: string, format: date }
+                          accounts: { type: integer, description: Token accounts recorded }
+              example:
+                status: success
+                message: Token usage recorded
+                data: { day: '2026-10-12', accounts: 318 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/NotEnabled' }
+
+  /referrals/me:
+    get:
+      tags: [Referrals]
+      summary: Your referral code, friends who joined, hours earned
+      description: |
+        For the signed-in user's company. The code is created on the first
+        call. `can_enter_code` is true while this account has not used a code
+        and has not made a paid top-up. Needs migration 050.
+      responses:
+        '200':
+          description: Referral summary
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ReferralSummary' }
+              example:
+                status: success
+                message: Referrals
+                data:
+                  code: OLIWA-7KQ4M
+                  reward_hours: 24
+                  share_text: Track your vehicles with OLIWA. When your account is set up, open Refer & Earn in the app and enter my code OLIWA-7KQ4M before your first top-up.
+                  joined: 3
+                  pending: 1
+                  qualified: 0
+                  rewarded: 2
+                  hours_earned: 48
+                  referrals:
+                    - { name: Kato L., status: rewarded, claimed_at: '2026-10-01T09:00:00', rewarded_at: '2026-10-03T14:12:00' }
+                    - { name: Nakato, status: pending, claimed_at: '2026-10-10T11:30:00', rewarded_at: null }
+                  referred_by: null
+                  can_enter_code: false
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Refer & Earn is for customer accounts (a staff login with no company).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/NotEnabled' }
+
+  /referrals/claim:
+    post:
+      tags: [Referrals]
+      summary: Enter a friend's referral code
+      description: |
+        The new customer enters the referrer's code, once, before their first
+        paid top-up. Accepts "OLIWA-7KQ4M", "oliwa 7kq4m" or "7KQ4M". The
+        referrer gets 24 hours when this company's first paid top-up succeeds.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data:
+                  type: object
+                  required: [code]
+                  properties:
+                    code: { type: string, example: OLIWA-7KQ4M }
+            example: { data: { code: OLIWA-7KQ4M } }
+      responses:
+        '200':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          code: { type: string }
+                          status: { type: string, enum: [pending] }
+              example:
+                status: success
+                message: Code accepted. Your friend gets 24 free hours after your first top-up.
+                data: { code: OLIWA-7KQ4M, status: pending }
+        '400':
+          description: |
+            Not a code, unknown code, your own code, or your account has
+            already topped up.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Refer & Earn is for customer accounts.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '409':
+          description: Your account has already used a referral code.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/NotEnabled' }
+
+  /referrals/admin/list:
+    get:
+      tags: [Referrals (staff)]
+      summary: Every referral (latest 500)
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/ReferralStatus' }
+      responses:
+        '200':
+          description: Referrals
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/ReferralAdminRow' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/NotEnabled' }
+
+  /referrals/admin/{referral_id}/reward:
+    post:
+      tags: [Referrals (staff)]
+      summary: Pay a held ('qualified') referral reward
+      description: |
+        Adds one pack of REFERRAL_REWARD_TOKEN_ID to the referrer's wallet.
+        Ignores the monthly cap (a staff decision). No body.
+      parameters:
+        - $ref: '#/components/parameters/ReferralId'
+      responses:
+        '200':
+          description: Paid
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          id: { type: integer }
+                          reward_token_uid: { type: string, description: The new token_billing_uid }
+              example:
+                status: success
+                message: Reward paid
+                data: { id: 12, reward_token_uid: 3f2a… }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: |
+            Not 'qualified', REFERRAL_REWARD_TOKEN_ID not set, or that token is
+            not in the registry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/NotEnabled' }
+
+  /referrals/admin/{referral_id}/reject:
+    post:
+      tags: [Referrals (staff)]
+      summary: Reject a pending or held referral
+      parameters:
+        - $ref: '#/components/parameters/ReferralId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                data:
+                  type: object
+                  properties:
+                    note: { type: string, maxLength: 500, description: Defaults to "Rejected by staff." }
+            example: { data: { note: Same owner as the referrer } }
+      responses:
+        '200':
+          description: Rejected
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          id: { type: integer }
+              example:
+                status: success
+                message: Referral rejected
+                data: { id: 12 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Already rewarded or rejected.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/NotEnabled' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    ClientUid:
+      name: client_uid
+      in: path
+      required: true
+      schema: { type: string }
+    ReferralId:
+      name: referral_id
+      in: path
+      required: true
+      schema: { type: integer }
+
+  responses:
+    Unauthorized:
+      description: Missing or expired token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Forbidden:
+      description: Not allowed for this account (staff-only, or missing permission)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    NotEnabled:
+      description: The feature's migration has not been run on this server yet
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Error:
+      description: Server error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  schemas:
+    Envelope:
+      type: object
+      properties:
+        status: { type: string, enum: [success, error] }
+        message: { type: string }
+        data: {}
+    ErrorEnvelope:
+      type: object
+      properties:
+        status: { type: string, enum: [error] }
+        message: { type: string }
+        data: { type: string, example: '' }
+
+    GeozoneCategory:
+      type: string
+      enum: [general, depot, customer, restricted]
+
+    Alert:
+      type: object
+      properties:
+        notification_uid: { type: string }
+        event_uid: { type: string }
+        event_name: { type: string }
+        device_imei: { type: string }
+        device_name: { type: string }
+        condition: { type: string }
+        trigger_value: { type: string }
+        geozone_name: { type: string }
+        breach_type: { type: string }
+        alert_channels: { type: string }
+        is_read: { type: boolean }
+        date_triggered: { type: string, example: '2026-10-12 09:41:07' }
+        acknowledged_at: { type: string, description: '"" when not acknowledged' }
+        acknowledged_by: { type: string }
+        acknowledge_note: { type: string }
+        severity: { type: string, enum: [critical, warning, info] }
+
+    FleetSummary:
+      type: object
+      properties:
+        client_uid: { type: string }
+        generated_at: { type: string, example: '2026-10-12 09:41:07' }
+        silent_after_minutes: { type: integer, example: 60 }
+        units_registered: { type: integer }
+        fleet:
+          type: object
+          properties:
+            counts:
+              type: object
+              properties:
+                moving: { type: integer }
+                idling: { type: integer }
+                parked: { type: integer }
+                no_position: { type: integer, description: Reporting, but no live position }
+                silent: { type: integer, description: No report for silent_after_minutes }
+                unread: { type: integer, description: Lookup failed; state unknown }
+            silent_ages:
+              type: object
+              properties:
+                under_day: { type: integer }
+                up_to_week: { type: integer }
+                over_week: { type: integer }
+                never: { type: integer }
+            weak_gps: { type: integer }
+            reporting_now: { type: integer }
+            total: { type: integer }
+        zones:
+          nullable: true
+          type: object
+          properties:
+            zone_count: { type: integer }
+            inside: { type: integer }
+            outside: { type: integer }
+            not_placed: { type: integer, description: No recent position }
+            top_zones:
+              type: array
+              items:
+                type: object
+                properties:
+                  name: { type: string }
+                  units: { type: integer }
+            entries_today: { type: integer }
+            exits_today: { type: integer }
+            by_category:
+              type: object
+              description: One entry per category (general, depot, customer, restricted)
+              additionalProperties:
+                type: object
+                properties:
+                  zones: { type: integer }
+                  units_inside: { type: integer }
+            restricted_inside:
+              type: object
+              properties:
+                count: { type: integer }
+                units:
+                  type: array
+                  description: First 5 only
+                  items:
+                    type: object
+                    properties:
+                      unit: { type: string }
+                      zone: { type: string }
+            restricted_entries_today: { type: integer }
+            dwell_today:
+              type: object
+              properties:
+                visits: { type: integer }
+                median_minutes: { type: integer, nullable: true }
+                longest:
+                  nullable: true
+                  type: object
+                  properties:
+                    unit: { type: string }
+                    zone: { type: string }
+                    minutes: { type: integer }
+        notes:
+          type: array
+          items: { type: string }
+
+    TokenUsageDaily:
+      type: object
+      properties:
+        client_uid: { type: string }
+        today: { type: string, format: date }
+        history_since: { type: string, format: date, nullable: true }
+        days:
+          type: array
+          items:
+            type: object
+            properties:
+              day: { type: string, format: date }
+              by_service:
+                type: object
+                additionalProperties: { type: number }
+              unknown: { type: integer, description: Token accounts whose use that day is not known }
+        services:
+          type: array
+          items:
+            type: object
+            properties:
+              service: { type: string }
+              unit: { type: string, example: hour }
+              total: { type: number }
+              average_per_day: { type: number }
+              known_days: { type: integer }
+        units:
+          type: object
+          description: Total per billing unit
+          additionalProperties: { type: number }
+
+    ReferralStatus:
+      type: string
+      enum: [pending, qualified, rewarded, rejected]
+      description: |
+        pending — waiting for the referred company's first paid top-up;
+        qualified — they paid but the reward is held (cap or no reward token);
+        rewarded — hours added; rejected — by staff.
+
+    ReferralSummary:
+      type: object
+      properties:
+        code: { type: string, example: OLIWA-7KQ4M }
+        reward_hours: { type: integer, example: 24 }
+        share_text: { type: string }
+        joined: { type: integer }
+        pending: { type: integer }
+        qualified: { type: integer }
+        rewarded: { type: integer }
+        hours_earned: { type: integer }
+        referrals:
+          type: array
+          description: Latest 50, rejected ones left out
+          items:
+            type: object
+            properties:
+              name: { type: string, example: Kato L. }
+              status: { $ref: '#/components/schemas/ReferralStatus' }
+              claimed_at: { type: string, nullable: true }
+              rewarded_at: { type: string, nullable: true }
+        referred_by:
+          nullable: true
+          type: object
+          properties:
+            code: { type: string }
+            status: { $ref: '#/components/schemas/ReferralStatus' }
+        can_enter_code: { type: boolean }
+
+    ReferralAdminRow:
+      type: object
+      properties:
+        id: { type: integer }
+        referrer_client_uid: { type: string }
+        referrer_name: { type: string, nullable: true }
+        referee_client_uid: { type: string }
+        referee_name: { type: string, nullable: true }
+        code: { type: string }
+        status: { $ref: '#/components/schemas/ReferralStatus' }
+        note: { type: string, nullable: true }
+        qualifying_payment: { type: string, nullable: true }
+        reward_token_uid: { type: string, nullable: true }
+        claimed_at: { type: string, nullable: true }
+        qualified_at: { type: string, nullable: true }
+        rewarded_at: { type: string, nullable: true }
