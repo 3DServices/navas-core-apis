@@ -31,6 +31,7 @@ from .pause import pause_bp
 from .team import team_bp
 from .alert_engine import alerts_bp
 from .resources import resources_bp
+from .fleet import fleet_bp
 from .access_guard import register_access_guard
 
 def Sentinel_Fleet():
@@ -68,6 +69,7 @@ def Sentinel_Fleet():
     app.register_blueprint(team_bp)
     app.register_blueprint(alerts_bp)
     app.register_blueprint(resources_bp)
+    app.register_blueprint(fleet_bp)
 
     # Register metrics middleware
     register_metrics_middleware(app)
