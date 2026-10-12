@@ -141,18 +141,94 @@ def fleet_status(readings, now):
     }
 
 
-def zone_presence(readings, zones, now, contains, crossings=()):
+CATEGORIES = ('general', 'depot', 'customer', 'restricted')
+
+# Units named inside a restricted zone right now; the count is always whole.
+RESTRICTED_NAMED = 5
+
+
+def category_of(zone):
+    value = str(zone.get('category') or '').strip().lower()
+    return value if value in CATEGORIES else 'general'
+
+
+def _is_exit(crossing):
+    return str(crossing.get('type') or '').strip().lower() == 'exit'
+
+
+def zone_visits(crossings):
+    """Entry -> exit pairs per unit and zone: [{imei, zone, entered, left}].
+
+    crossings  [{'imei', 'zone', 'type', 'at'}], any order. An exit with no
+               entry before it (the entry was before the window) is not a
+               visit; nor is an entry not yet left. A second entry without an
+               exit between them restarts the visit, as the exit was missed.
+    """
+    open_at = {}
+    visits = []
+    for c in sorted(crossings, key=lambda c: c['at']):
+        key = (c.get('imei'), str(c.get('zone') or '').strip().lower())
+        if _is_exit(c):
+            entered = open_at.pop(key, None)
+            if entered is not None:
+                visits.append({'imei': key[0], 'zone': c.get('zone'),
+                               'entered': entered, 'left': c['at']})
+        else:
+            open_at[key] = c['at']
+    return visits
+
+
+def _median(values):
+    ordered = sorted(values)
+    if not ordered:
+        return None
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def dwell(crossings, since, names=None):
+    """Visits that ENDED at or after `since` (usually midnight): how many, the
+    median and the longest, in whole minutes. names maps imei -> unit name."""
+    names = names or {}
+    done = [v for v in zone_visits(crossings) if v['left'] >= since]
+    if not done:
+        return {'visits': 0, 'median_minutes': None, 'longest': None}
+    minutes = [(v['left'] - v['entered']).total_seconds() / 60 for v in done]
+    longest = max(range(len(done)), key=lambda i: minutes[i])
+    return {
+        'visits': len(done),
+        'median_minutes': int(round(_median(minutes))),
+        'longest': {'unit': names.get(done[longest]['imei']) or done[longest]['imei'],
+                    'zone': done[longest]['zone'],
+                    'minutes': int(round(minutes[longest]))},
+    }
+
+
+def zone_presence(readings, zones, now, contains, crossings=(), since=None):
     """Units inside / outside the account's geofences right now.
 
-    zones      [{'name', 'ring', 'shape'}]; corridors (shape 'line') count
-               toward zone_count but are not areas a unit is "inside", as in
-               the app
+    zones      [{'name', 'ring', 'shape', 'category'}]; corridors (shape
+               'line') count toward zone_count but are not areas a unit is
+               "inside", as in the app
     contains   contains(lat, lng, ring) -> bool (alert_engine.point_in_ring)
-    crossings  today's geofence alerts' breach_type values; 'exit' is an
-               exit, anything else an entry, as the app counts them
+    crossings  recent geofence alerts, [{'imei', 'zone', 'type', 'at'}];
+               'exit' is an exit, anything else an entry, as the app counts
+               them. Those at or after `since` are today's.
+    since      start of today; defaults to now's midnight
     """
+    if since is None:
+        since = now.replace(hour=0, minute=0, second=0, microsecond=0)
     areas = [z for z in zones if z.get('ring') and z.get('shape') != 'line']
+    by_category = {c: {'zones': 0, 'units_inside': 0} for c in CATEGORIES}
+    for zone in zones:
+        by_category[category_of(zone)]['zones'] += 1
+    zone_category = {str(z.get('name') or '').strip().lower(): category_of(z)
+                     for z in zones}
+
     per_zone = {}
+    restricted = []
     inside = outside = unplaced = 0
     for reading in readings:
         seen = reading.get('seen')
@@ -160,18 +236,28 @@ def zone_presence(readings, zones, now, contains, crossings=()):
         if fix is None or seen is None or now - seen > ZONE_POSITION_MAX_AGE:
             unplaced += 1
             continue
-        hit = False
+        hit = set()
         for zone in areas:
             if contains(fix[0], fix[1], zone['ring']):
-                hit = True
+                hit.add(category_of(zone))
                 per_zone[zone['name']] = per_zone.get(zone['name'], 0) + 1
+                if category_of(zone) == 'restricted':
+                    restricted.append({'unit': reading.get('name') or reading.get('imei'),
+                                       'zone': zone['name']})
+        for category in hit:
+            by_category[category]['units_inside'] += 1
         if hit:
             inside += 1
         else:
             outside += 1
 
     busiest = sorted(per_zone.items(), key=lambda item: (-item[1], item[0]))
-    exits = sum(1 for c in crossings if str(c or '').strip().lower() == 'exit')
+    today = [c for c in crossings if c.get('at') and c['at'] >= since]
+    exits = sum(1 for c in today if _is_exit(c))
+    restricted_entries = sum(
+        1 for c in today if not _is_exit(c)
+        and zone_category.get(str(c.get('zone') or '').strip().lower()) == 'restricted')
+    names = {r.get('imei'): r.get('name') for r in readings}
     return {
         'zone_count': len(zones),
         'inside': inside,
@@ -179,6 +265,11 @@ def zone_presence(readings, zones, now, contains, crossings=()):
         'not_placed': unplaced,
         'top_zones': [{'name': name, 'units': units}
                       for name, units in busiest[:TOP_ZONES]],
-        'entries_today': len(crossings) - exits,
+        'entries_today': len(today) - exits,
         'exits_today': exits,
+        'by_category': by_category,
+        'restricted_inside': {'count': len(restricted),
+                              'units': restricted[:RESTRICTED_NAMED]},
+        'restricted_entries_today': restricted_entries,
+        'dwell_today': dwell(crossings, since, names),
     }

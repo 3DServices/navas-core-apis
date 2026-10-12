@@ -9,6 +9,7 @@ module existed -- and nothing that writes alerts has to change.
     critical  somebody or something may be in danger, or the unit is being
               interfered with: SOS / panic, tamper, power cut, theft, crash,
               towing, jamming
+              -- and entering a geofence marked restricted (migration 048)
     warning   needs attention: speeding and harsh driving, geofence breaches,
               fuel, offline units, low battery, low token balance, a failed
               top-up -- and any rule this module does not recognise
@@ -50,13 +51,18 @@ def _text(*parts):
     return re.sub(r'[_\-]+', ' ', joined)
 
 
-def severity_of(event_name='', condition='', trigger_value='', breach_type=''):
+def severity_of(event_name='', condition='', trigger_value='', breach_type='',
+                zone_category=''):
     """One of SEVERITIES for a dll_event_notifications row.
 
     A geofence alert's trigger_value is 'entry:<zone name>', and a zone
     called "Tow yard" must not make a crossing critical: when breach_type is
-    set, the trigger is left out."""
+    set, the trigger is left out. zone_category is the crossed geofence's
+    category: entering a restricted zone is critical."""
     crossing = bool(str(breach_type or '').strip())
+    if (crossing and str(zone_category or '').strip().lower() == 'restricted'
+            and str(breach_type).strip().lower() != 'exit'):
+        return 'critical'
     text = _text(event_name, condition, '' if crossing else trigger_value)
     for level, patterns in _COMPILED:
         if any(p.search(text) for p in patterns):

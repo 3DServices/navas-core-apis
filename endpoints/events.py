@@ -121,6 +121,16 @@ def get_notifications(owner_uid):
         """, (owner_uid,))
 
         rows = cur.fetchall()
+
+        # Geofence categories (migration 048), for the severity of crossings.
+        # Read through to_jsonb like the acknowledgement columns, so a
+        # database without them reads every zone as general.
+        cur.execute("""
+            SELECT LOWER(geozone_name), to_jsonb(z) ->> 'geozone_category'
+            FROM dll_geozones z
+            WHERE geozone_owner = %s
+        """, (owner_uid,))
+        zone_categories = {name: category for name, category in cur.fetchall()}
         cur.close()
         dbconnect.close()
 
@@ -143,7 +153,9 @@ def get_notifications(owner_uid):
                 "acknowledged_by": row[13] or "",
                 "acknowledge_note": row[14] or "",
                 # Worked out here, not stored: see alert_severity.py.
-                "severity": severity_of(row[2], row[5], row[6], row[8]),
+                "severity": severity_of(
+                    row[2], row[5], row[6], row[8],
+                    zone_categories.get((row[7] or "").strip().lower(), "")),
             })
 
         return reply("success", 200, "Notifications loaded", notifications)

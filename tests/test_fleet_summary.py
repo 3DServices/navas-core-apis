@@ -40,8 +40,8 @@ def snap(lat=0.3476, lng=32.5825, speed=0, motion='', ignition=None, sats=None):
     return s
 
 
-def reading(snapshot=None, ago=timedelta(minutes=5), unread=False):
-    return {'imei': 'x', 'snapshot': snapshot,
+def reading(snapshot=None, ago=timedelta(minutes=5), unread=False, imei='x', name=None):
+    return {'imei': imei, 'name': name, 'snapshot': snapshot,
             'seen': None if ago is None else NOW - ago, 'unread': unread}
 
 
@@ -102,19 +102,34 @@ def contains(lat, lng, ring):
     return min(xs) <= lng <= max(xs) and min(ys) <= lat <= max(ys)
 
 
+def at(hour, minute=0, day=12):
+    return datetime(2026, 10, day, hour, minute)
+
+
+def cross(imei, zone, kind, when):
+    return {'imei': imei, 'zone': zone, 'type': kind, 'at': when}
+
+
 zones = [
-    {'name': 'Depot', 'ring': SQUARE, 'shape': 'polygon'},
-    {'name': 'Yard', 'ring': SQUARE, 'shape': 'circle'},
+    {'name': 'Depot', 'ring': SQUARE, 'shape': 'polygon', 'category': 'depot'},
+    {'name': 'Yard', 'ring': SQUARE, 'shape': 'circle', 'category': 'restricted'},
     {'name': 'Route', 'ring': SQUARE, 'shape': 'line'},     # corridor: no presence
-    {'name': 'Broken', 'ring': [], 'shape': 'polygon'},
+    {'name': 'Broken', 'ring': [], 'shape': 'polygon', 'category': 'nonsense'},
 ]
 presence = fs.zone_presence([
-    reading(snap(lat=0.5, lng=32.5)),                        # inside two zones
+    reading(snap(lat=0.5, lng=32.5), imei='a', name='UBA 1'),  # inside two zones
     reading(snap(lat=0.5, lng=32.5), ago=timedelta(days=3)), # silent but placed
     reading(snap(lat=5.0, lng=40.0)),                        # outside
     reading(snap(lat=0.5, lng=32.5), ago=timedelta(days=40)),# too old to place
     reading(None),                                           # no position
-], zones, NOW, contains, ['enter', 'exit', 'Exit', None])
+], zones, NOW, contains, [
+    cross('a', 'depot', 'enter', at(8)),         # zone names match any case
+    cross('a', 'Depot', 'exit', at(9, 30)),
+    cross('b', 'Yard', 'Exit', at(10)),
+    cross('c', 'yard', None, at(11)),            # restricted entry
+    cross('d', 'Depot', 'entry', at(22, day=11)),# yesterday's entry...
+    cross('d', 'Depot', 'exit', at(2)),          # ...left today: 4 h visit
+])
 eq('zone count includes every zone', presence['zone_count'], 4)
 eq('inside', presence['inside'], 2)
 eq('outside', presence['outside'], 1)
@@ -122,7 +137,37 @@ eq('not placed', presence['not_placed'], 2)
 eq('top zones skip corridors',
    presence['top_zones'], [{'name': 'Depot', 'units': 2}, {'name': 'Yard', 'units': 2}])
 eq('entries today', presence['entries_today'], 2)
-eq('exits today', presence['exits_today'], 2)
+eq('exits today', presence['exits_today'], 3)
+eq('by category', presence['by_category'], {
+    'general': {'zones': 2, 'units_inside': 0},       # Route, and Broken's bad value
+    'depot': {'zones': 1, 'units_inside': 2},
+    'customer': {'zones': 0, 'units_inside': 0},
+    'restricted': {'zones': 1, 'units_inside': 2}})
+eq('restricted inside now', presence['restricted_inside']['count'], 2)
+eq('restricted units are named', presence['restricted_inside']['units'][0],
+   {'unit': 'UBA 1', 'zone': 'Yard'})
+eq('restricted entries today', presence['restricted_entries_today'], 1)
+eq('dwell: visits ended today', presence['dwell_today']['visits'], 2)
+eq('dwell: median of 90 and 240 min', presence['dwell_today']['median_minutes'], 165)
+eq('dwell: longest', presence['dwell_today']['longest'],
+   {'unit': 'd', 'zone': 'Depot', 'minutes': 240})
+
+# ── visits ────────────────────────────────────────────────────────────────
+eq('exit without entry is no visit', fs.zone_visits([cross('a', 'Z', 'exit', at(9))]), [])
+eq('entry not yet left is no visit', fs.zone_visits([cross('a', 'Z', 'enter', at(9))]), [])
+eq('missed exit restarts the visit',
+   [(v['entered'], v['left']) for v in fs.zone_visits([
+       cross('a', 'Z', 'enter', at(8)), cross('a', 'Z', 'enter', at(9)),
+       cross('a', 'Z', 'exit', at(10))])],
+   [(at(9), at(10))])
+eq('units and zones pair separately', len(fs.zone_visits([
+    cross('a', 'Z', 'enter', at(8)), cross('b', 'Z', 'exit', at(9)),
+    cross('a', 'Y', 'exit', at(9)), cross('a', 'Z', 'exit', at(10))])), 1)
+eq('no visits', fs.dwell([], at(0)),
+   {'visits': 0, 'median_minutes': None, 'longest': None})
+eq('visit ended yesterday is not today',
+   fs.dwell([cross('a', 'Z', 'enter', at(8, day=11)),
+             cross('a', 'Z', 'exit', at(9, day=11))], at(0))['visits'], 0)
 
 
 if __name__ == '__main__':

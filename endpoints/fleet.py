@@ -13,7 +13,9 @@ What it reads, once per request:
     age -- fired together, as fleet_liveness does;
   * the client's geofences, filtered by the caller's resource grants exactly
     as the geofence list is;
-  * today's geofence alerts, for entries and exits.
+  * the last two days' geofence alerts: today's are the entries and exits,
+    and entry -> exit pairs give dwell times (a visit that began yesterday
+    and ended today still counts).
 
 The arithmetic is in fleet_summary.py. The geofence part can fail on its own:
 the fleet status still comes back and `zones` is null with a note.
@@ -21,7 +23,7 @@ the fleet status still comes back and `zones` is null with a note.
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import psycopg2.extras
 from flask import Blueprint
@@ -37,6 +39,9 @@ fleet_bp = Blueprint('fleet', __name__)
 log = logging.getLogger('fleet')
 
 MGET_CHUNK = 500
+
+# How far back crossings are read to pair today's exits with their entries.
+CROSSINGS_LOOKBACK = timedelta(days=2)
 
 # Heartbeat point reads for units the live feed has no snapshot for. A fleet
 # with more such units than this gets the rest counted as unread, and says so.
@@ -154,8 +159,8 @@ def _readings(units):
     return list(readings.values()), notes
 
 
-def _zones_and_crossings(client_uid):
-    """(zones, today's breach types) for the client, as the caller may see
+def _zones_and_crossings(client_uid, since):
+    """(zones, crossings since `since`) for the client, as the caller may see
     them."""
     policy = resource_policy()
     connection = db_pool.connect()
@@ -163,26 +168,32 @@ def _zones_and_crossings(client_uid):
         with connection:
             with connection.cursor(
                     cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
-                # SELECT *: zones made before migration 043 have no
-                # geozone_shape column.
+                # SELECT *: zones made before migrations 043 and 048 have no
+                # geozone_shape or geozone_category column.
                 cursor.execute(
                     "SELECT * FROM dll_geozones "
                     "WHERE geozone_owner = %s OR geozone_uid = ANY(%s)",
                     (str(client_uid), policy.granted_uids('geozone')))
                 rows = [dict(r) for r in cursor.fetchall()]
                 cursor.execute(
-                    "SELECT breach_type FROM dll_event_notifications "
+                    "SELECT device_imei, geozone_name, breach_type, date_triggered "
+                    "FROM dll_event_notifications "
                     "WHERE owner_uid = %s AND COALESCE(geozone_name, '') <> '' "
-                    "AND date_triggered >= date_trunc('day', NOW())",
-                    (str(client_uid),))
-                crossings = [r.get('breach_type') for r in cursor.fetchall()]
+                    "AND date_triggered >= %s",
+                    (str(client_uid), since))
+                crossings = [{'imei': r.get('device_imei'),
+                              'zone': r.get('geozone_name'),
+                              'type': r.get('breach_type'),
+                              'at': r.get('date_triggered')}
+                             for r in cursor.fetchall()]
     finally:
         connection.close()
 
     rows = policy.apply('geozone', rows, 'geozone_uid')
     zones = [{'name': r.get('geozone_name') or 'Zone',
               'ring': _ring(r.get('geozone_points')),
-              'shape': r.get('geozone_shape') or 'polygon'} for r in rows]
+              'shape': r.get('geozone_shape') or 'polygon',
+              'category': r.get('geozone_category')} for r in rows]
     return zones, crossings
 
 
@@ -209,11 +220,13 @@ def fleet_summary_route(client_uid):
         return reply('error', 500, 'Could not build the fleet summary', '')
 
     now = datetime.now()
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     zones = None
     try:
-        zone_rows, crossings = _zones_and_crossings(client_uid)
+        zone_rows, crossings = _zones_and_crossings(
+            client_uid, midnight - CROSSINGS_LOOKBACK)
         zones = fleet_summary.zone_presence(
-            readings, zone_rows, now, point_in_ring, crossings)
+            readings, zone_rows, now, point_in_ring, crossings, since=midnight)
     except Exception as error:          # noqa: BLE001
         log.warning('fleet summary: geofences unavailable: %s', error)
         notes.append('Geofence presence could not be read.')

@@ -47,6 +47,14 @@ eq('top-up failed', severity_of('Top-up failed', 'top_up'), 'warning')
 eq('unknown rule', severity_of('Door opened', 'door'), 'warning')
 eq('empty row', severity_of(), 'warning')
 
+eq('entering a restricted zone',
+   severity_of('Yard watch', 'geofence_breach', 'entry:Yard', 'entry', 'restricted'),
+   'critical')
+eq('leaving a restricted zone', severity_of('Yard watch', 'geofence_breach',
+                                            'exit:Yard', 'exit', 'Restricted'), 'warning')
+eq('restricted only matters for crossings',
+   severity_of('Ignition on', 'ignition', '', '', 'restricted'), 'info')
+
 # ── info ──────────────────────────────────────────────────────────────────
 eq('ignition', severity_of('Ignition on', 'ignition'), 'info')
 eq('top-up preview', severity_of('Auto top-up (preview)', 'top_up'), 'info')
