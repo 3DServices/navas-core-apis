@@ -3,7 +3,7 @@ from endpoints import Sentinel_Fleet
 from flask_cors import CORS, cross_origin
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-from config import DB_LINK, BASE_URL, CORS_ORIGINS
+from config import DB_LINK, WASWA_DB_LINK, BASE_URL, CORS_ORIGINS
 
 app = Sentinel_Fleet()
 
@@ -90,6 +90,7 @@ def _method_not_allowed(error):
     }), 405
 
 app.config['db_link'] = DB_LINK
+app.config['waswa_db_link'] = WASWA_DB_LINK
 
 
 # Close the shared read-only connection (endpoints/globals.py) when the app

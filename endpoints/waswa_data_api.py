@@ -101,7 +101,7 @@ def _conn():
         # appends and single reads, none needing a transaction across
         # statements. It does not block writes, and the pool turns autocommit
         # back off when the connection is returned.
-        conn = db_pool.connect(current_app.config['db_link'], readonly=True)
+        conn = db_pool.connect(current_app.config.get('waswa_db_link') or current_app.config['db_link'], readonly=True)
         g._waswa_data_conn = conn
     return conn
 

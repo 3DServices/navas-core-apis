@@ -79,7 +79,7 @@ _FIELDS = (
 
 
 def _connect():
-    return psycopg2.connect(current_app.config['db_link'])
+    return psycopg2.connect(current_app.config.get('waswa_db_link') or current_app.config['db_link'])
 
 
 _FIELD_COUNT = 15       # _FIELDS above; the score is appended after them

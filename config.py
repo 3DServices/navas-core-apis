@@ -35,6 +35,12 @@ def _require_env(name: str) -> str:
 
 DB_LINK = _require_env("DATABASE_URL")
 
+# Waswa connects as its own least-privilege role (navas_waswa, see
+# database/manual/waswa_readonly_role.sql) when WASWA_DATABASE_URL is set.
+# Unset, it shares DATABASE_URL. Set it only after
+# scripts/waswa_grant_check.py passes against the role.
+WASWA_DB_LINK = os.environ.get("WASWA_DATABASE_URL", "").strip() or DB_LINK
+
 JWT_SECRET = _require_env("JWT_SECRET")
 
 

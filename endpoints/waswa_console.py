@@ -98,7 +98,7 @@ def _gate(permission=None):
 def _run(work, audit=None):
     """Run work(cur, who) in a transaction; map rule errors to replies."""
     who = g.waswa_who
-    conn = psycopg2.connect(current_app.config['db_link'])
+    conn = psycopg2.connect(current_app.config.get('waswa_db_link') or current_app.config['db_link'])
     try:
         with conn:
             with conn.cursor() as cur:
@@ -120,7 +120,7 @@ def _run(work, audit=None):
 
 def _read(work):
     who = g.waswa_who
-    conn = psycopg2.connect(current_app.config['db_link'])
+    conn = psycopg2.connect(current_app.config.get('waswa_db_link') or current_app.config['db_link'])
     conn.autocommit = True
     try:
         with conn.cursor() as cur:

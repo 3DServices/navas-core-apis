@@ -40,7 +40,7 @@ _PRODUCT_COLUMNS = (
 
 
 def _connect():
-    return psycopg2.connect(current_app.config['db_link'])
+    return psycopg2.connect(current_app.config.get('waswa_db_link') or current_app.config['db_link'])
 
 
 def _row_to_product(row):

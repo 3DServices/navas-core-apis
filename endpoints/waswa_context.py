@@ -65,7 +65,7 @@ NO_SOURCE_YET = {
 
 
 def _connect():
-    return psycopg2.connect(current_app.config['db_link'])
+    return psycopg2.connect(current_app.config.get('waswa_db_link') or current_app.config['db_link'])
 
 
 def build_context(account_uid, surface='mobile', conn=None):
