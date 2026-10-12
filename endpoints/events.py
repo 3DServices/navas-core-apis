@@ -17,6 +17,7 @@ from .globals import reply
 import base64
 from .globals import check_device
 from .globals import require_auth, log_audit_event
+from .alert_severity import severity_of
 import uuid
 
 device_eventsbp = Blueprint("Device Events", __name__)
@@ -43,6 +44,8 @@ device_eventsbp = Blueprint("Device Events", __name__)
 #     acknowledged_by    VARCHAR(64),     -- migration 047
 #     acknowledge_note   TEXT             -- migration 047
 # );
+# The list also returns a severity (critical / warning / info), worked out
+# from the row by alert_severity.severity_of -- it is not a column.
 # CREATE INDEX idx_notif_owner ON dll_event_notifications(owner_uid);
 # CREATE INDEX idx_notif_event ON dll_event_notifications(event_uid);
 
@@ -139,6 +142,8 @@ def get_notifications(owner_uid):
                 "acknowledged_at": _json_stamp(row[12]),
                 "acknowledged_by": row[13] or "",
                 "acknowledge_note": row[14] or "",
+                # Worked out here, not stored: see alert_severity.py.
+                "severity": severity_of(row[2], row[5], row[6], row[8]),
             })
 
         return reply("success", 200, "Notifications loaded", notifications)
