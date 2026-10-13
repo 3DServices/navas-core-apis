@@ -122,6 +122,11 @@ CASSANDRA_PORT = int(os.environ.get("CASSANDRA_PORT", "9042"))
 CASSANDRA_USERNAME = os.environ.get("CASSANDRA_USERNAME", "cassandra")
 CASSANDRA_PASSWORD = _require_env("CASSANDRA_PASSWORD")
 CASSANDRA_LOCAL_DC = os.environ.get("CASSANDRA_LOCAL_DC", "datacenter1")
+# Seconds the driver may spend on its first connection, which downloads the
+# schema of every keyspace. The driver's default of 2 s is enough next to the
+# cluster but not from a developer machine ~280 ms away, where every connect
+# failed with OperationTimedOut and all vehicle data was unavailable.
+CASSANDRA_CONTROL_TIMEOUT = float(os.environ.get("CASSANDRA_CONTROL_TIMEOUT", "10"))
 
 
 # ── Payments (Santripe mobile money) ───────────────────────────────────────

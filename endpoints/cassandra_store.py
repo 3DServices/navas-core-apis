@@ -61,6 +61,7 @@ from config import (
     CASSANDRA_USERNAME,
     CASSANDRA_PASSWORD,
     CASSANDRA_LOCAL_DC,
+    CASSANDRA_CONTROL_TIMEOUT,
 )
 
 _cluster = None
@@ -91,6 +92,7 @@ def _build():
             auth_provider=auth_provider,
             protocol_version=4,
             execution_profiles={EXEC_PROFILE_DEFAULT: profile},
+            control_connection_timeout=CASSANDRA_CONTROL_TIMEOUT,
         )
         session = cluster.connect(CASSANDRA_KEYSPACE)
         return cluster, session

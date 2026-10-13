@@ -3,7 +3,11 @@ pandas
 flask
 requests
 flask-cors
-psycopg2-binary
+# Pinned: Windows Smart App Control blocks psycopg2-binary 2.9.12's
+# _psycopg.pyd ("An Application Control policy has blocked this file"),
+# an unsigned file too new to have a reputation; 2.9.10 loads. Check the
+# app still starts on a Windows dev machine before moving this pin.
+psycopg2-binary==2.9.10
 psycopg2
 
 cassandra-driver
