@@ -83,7 +83,7 @@ class FakeConnection:
         self.commits += 1
 
     def cursor(self):
-        return 'a-cursor'
+        return FakeCursor(self)
 
     def __enter__(self):
         self.entered += 1
@@ -96,6 +96,25 @@ class FakeConnection:
         else:
             self.rollback()
         return False
+
+
+class FakeCursor:
+    """Counts the liveness pings; a dead connection's ping raises."""
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql):
+        self.conn.pings = getattr(self.conn, 'pings', 0) + 1
+        if getattr(self.conn, 'dead', False):
+            raise psycopg2.OperationalError(
+                'server closed the connection unexpectedly')
 
 
 class FakePool:
@@ -119,7 +138,11 @@ class FakePool:
             raise psycopg2.pool.PoolError('connection pool exhausted')
         return self.available.pop()
 
-    def putconn(self, conn):
+    def putconn(self, conn, close=False):
+        if close:
+            conn.close()
+            self.discarded = getattr(self, 'discarded', []) + [conn]
+            return
         self.returned.append(conn)
 
 
@@ -175,9 +198,10 @@ class TestTheWholePoint(PoolTestCase):
         seen = {}
 
         class Recorder:
-            def __init__(self, minconn, maxconn, dsn):
+            def __init__(self, minconn, maxconn, dsn, **options):
                 seen['minconn'] = minconn
                 seen['maxconn'] = maxconn
+                seen['options'] = options
 
         with mock.patch.object(psycopg2.pool, 'ThreadedConnectionPool',
                                Recorder):
@@ -257,7 +281,7 @@ class TestProxyBehaviour(PoolTestCase):
         conn = FakeConnection()
         self.install(FakePool([conn]))
         handed = db_pool.connect()
-        self.assertEqual(handed.cursor(), 'a-cursor')
+        self.assertIsInstance(handed.cursor(), FakeCursor)
         self.assertEqual(handed.closed, 0)
         handed.autocommit = True
         self.assertTrue(conn.autocommit,
@@ -472,6 +496,51 @@ class TestReadOnlyConnections(PoolTestCase):
             with handed:
                 raise ValueError('boom')
         self.assertGreaterEqual(conn.rollbacks, 1)
+
+
+class TestDeadConnections(PoolTestCase):
+    """A pooled connection the server dropped must not reach a request."""
+
+    def test_a_dead_idle_connection_is_swapped_for_a_live_one(self):
+        dead, live = FakeConnection(), FakeConnection()
+        dead.dead = True
+        pool = FakePool([live, dead])          # pop() hands out `dead` first
+        self.install(pool)
+        with mock.patch.object(db_pool, '_IDLE_CHECK_SECONDS', 0):
+            handed = db_pool.connect()
+        self.assertIs(handed._conn, live)
+        self.assertEqual(pool.discarded, [dead])
+        self.assertTrue(dead.closed)
+        self.assertFalse(live.autocommit, 'the ping must not leave autocommit on')
+
+    def test_a_recently_used_connection_is_not_pinged(self):
+        conn = FakeConnection()
+        pool = self.install(FakePool([conn]))
+        db_pool.connect().close()
+        pool.available.append(pool.returned.pop())   # back in the pool
+        db_pool.connect()
+        self.assertEqual(getattr(conn, 'pings', 0), 0,
+                         'a ping costs a round trip; only after a quiet spell')
+
+    def test_a_connection_psycopg2_already_closed_is_discarded(self):
+        closed, live = FakeConnection(), FakeConnection()
+        closed.closed = 2
+        pool = FakePool([live, closed])
+        self.install(pool)
+        self.assertIs(db_pool.connect()._conn, live)
+        self.assertEqual(pool.discarded, [closed])
+
+    def test_the_pool_is_built_with_keepalives(self):
+        seen = {}
+
+        class Recorder:
+            def __init__(self, minconn, maxconn, dsn, **options):
+                seen.update(options)
+
+        with mock.patch.object(psycopg2.pool, 'ThreadedConnectionPool',
+                               Recorder):
+            db_pool._build('postgresql://unused/for-tests')
+        self.assertEqual(seen.get('keepalives'), 1)
 
 
 if __name__ == '__main__':

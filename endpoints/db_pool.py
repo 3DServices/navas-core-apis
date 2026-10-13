@@ -86,15 +86,29 @@ WHAT THIS MODULE PROMISES
 
 Read-only outside its own bookkeeping; it holds no application state.
 
+DEAD CONNECTIONS
+
+A warm connection can die while it sits in the pool: the server, or a router
+in between, drops it after a quiet spell. psycopg2 only finds out when the
+next query fails ("server closed the connection unexpectedly"), so every
+request that drew a dead one failed -- observed locally after the server sat
+idle. Two defences: TCP keepalives on pooled connections, so a quiet one is
+not dropped in the first place, and a SELECT 1 before handing out a
+connection that has been idle longer than DB_POOL_IDLE_CHECK seconds. That
+check costs one round trip, and only after a quiet spell; a dead connection
+is discarded and the next one tried.
+
 Configuration (environment, all optional):
-    DB_POOL_SIZE   connections kept warm      default 8
-    DB_POOL_MAX    ceiling on concurrent      default 24
-    DB_POOL        'off' disables pooling entirely (direct connects)
+    DB_POOL_SIZE        connections kept warm            default 8
+    DB_POOL_MAX         ceiling on concurrent            default 24
+    DB_POOL             'off' disables pooling entirely (direct connects)
+    DB_POOL_IDLE_CHECK  seconds idle before a liveness check  default 60
 """
 
 import logging
 import os
 import threading
+import time
 
 import psycopg2
 import psycopg2.pool
@@ -109,6 +123,16 @@ _POOL_SIZE = int(os.environ.get('DB_POOL_SIZE', '8'))
 _POOL_MAX = int(os.environ.get('DB_POOL_MAX', '24'))
 _POOL_ENABLED = os.environ.get('DB_POOL', 'on').strip().lower() not in (
     'off', '0', 'false', 'no')
+_IDLE_CHECK_SECONDS = float(os.environ.get('DB_POOL_IDLE_CHECK', '60'))
+
+# Sent with every pooled connection; see DEAD CONNECTIONS above.
+_KEEPALIVES = dict(keepalives=1, keepalives_idle=30,
+                   keepalives_interval=10, keepalives_count=3)
+
+# id(raw connection) -> time.monotonic() it was last returned to the pool.
+# A connection not in here has been idle since the pool was built.
+_last_used = {}
+_built_at = time.monotonic()
 
 # Where this request's checked-out connections are parked.
 _CHECKED_OUT_KEY = '_navas_pooled_connections'
@@ -133,10 +157,10 @@ def _dsn(explicit=None):
 
 def _build(dsn):
     """Create the pool. Slow (minconn x ~2 s), so never call this inline."""
-    global _pool, _pool_state
+    global _pool, _pool_state, _built_at
     try:
         built = psycopg2.pool.ThreadedConnectionPool(
-            _POOL_SIZE, max(_POOL_MAX, _POOL_SIZE), dsn)
+            _POOL_SIZE, max(_POOL_MAX, _POOL_SIZE), dsn, **_KEEPALIVES)
     except Exception as error:                             # noqa: BLE001
         with _pool_lock:
             _pool_state = 'failed'
@@ -149,6 +173,7 @@ def _build(dsn):
     with _pool_lock:
         _pool = built
         _pool_state = 'ready'
+        _built_at = time.monotonic()
     _LOG.info('db_pool: ready, %d connections warm (ceiling %d)',
               _POOL_SIZE, max(_POOL_MAX, _POOL_SIZE))
 
@@ -240,6 +265,7 @@ class PooledConnection:
         except Exception:                                  # noqa: BLE001
             pass
         try:
+            _last_used[id(conn)] = time.monotonic()
             owner.putconn(conn)
         except Exception:                                  # noqa: BLE001
             try:
@@ -296,6 +322,37 @@ class PooledConnection:
 
 # ---------------------------------------------------------------- handing out
 
+def _alive(raw):
+    """False if this pooled connection is dead. Checks with a query only
+    when it has been idle long enough to have been dropped."""
+    if raw.closed:
+        return False
+    idle = time.monotonic() - _last_used.get(id(raw), _built_at)
+    if idle < _IDLE_CHECK_SECONDS:
+        return True
+    try:
+        # Autocommit so the ping opens no transaction: one round trip.
+        raw.autocommit = True
+        with raw.cursor() as cursor:
+            cursor.execute('SELECT 1')
+        raw.autocommit = False
+        return True
+    except Exception:                                      # noqa: BLE001
+        return False
+
+
+def _checkout(pool):
+    """A live connection from the pool, discarding dead ones on the way."""
+    for _ in range(max(_POOL_MAX, _POOL_SIZE) + 1):
+        raw = pool.getconn()
+        if _alive(raw):
+            return raw
+        _LOG.info('db_pool: discarding a dead connection')
+        _last_used.pop(id(raw), None)
+        pool.putconn(raw, close=True)
+    raise psycopg2.pool.PoolError('no live connection in the pool')
+
+
 def _remember(proxy):
     """Park a checked-out connection on g so teardown can reclaim it."""
     if not has_app_context():
@@ -339,7 +396,7 @@ def connect(dsn=None, readonly=False):
 
     if pool is not None:
         try:
-            raw = pool.getconn()
+            raw = _checkout(pool)
             if readonly:
                 # Client-side only: PostgreSQL has no autocommit setting, it
                 # is purely whether the driver sends BEGIN. So this costs no

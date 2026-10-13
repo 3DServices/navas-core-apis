@@ -453,7 +453,7 @@ def _prefetch_fleet(message, data):
     notes.append(
         "This account's own vehicles, read from the database just now — not "
         "from the screen, and not from your training. Answer from these "
-        "figures:\n" + json.dumps(found, default=str))
+        "figures:\n" + json.dumps(found, default=str, ensure_ascii=False))
 
     # One named vehicle, unambiguous: fetch how it is doing too, since that is
     # what "why is it offline" and "where is it" both need.
@@ -475,7 +475,7 @@ def _prefetch_fleet(message, data):
                     "Its current state, measured just now. last_reported_at and "
                     "last_position.at are LOCAL times. State these figures; if a "
                     "field is null say it could not be read rather than filling "
-                    "the gap:\n" + json.dumps(status, default=str))
+                    "the gap:\n" + json.dumps(status, default=str, ensure_ascii=False))
     elif named and len(units) > 1:
         # Only an ambiguity when they actually named a vehicle. Without the
         # `named` guard this fired on every fleet-wide question too --
@@ -511,7 +511,7 @@ def _prefetch_fleet(message, data):
                 "no others. A unit under could_not_read was not reached and "
                 "must not be called offline. Never describe a unit as "
                 "reporting or online if its hours_since_last_report says "
-                "otherwise:\n" + json.dumps(live, default=str))
+                "otherwise:\n" + json.dumps(live, default=str, ensure_ascii=False))
 
     return notes, evidence
 
@@ -1078,7 +1078,7 @@ def AssistantChat():
                     'role': 'tool',
                     'tool_call_id': call.get('id'),
                     'name': tool_name,
-                    'content': json.dumps(result, default=str),
+                    'content': json.dumps(result, default=str, ensure_ascii=False),
                 })
 
         if not answered:
@@ -1183,4 +1183,7 @@ def AssistantChat():
 
     except Exception as error:
         current_app.logger.exception('[waswa] /assistant/chat failed')
-        return reply("error", 500, str(error), "")
+        # The detail is in the log above. The customer sees plain words, not
+        # a driver message such as "server closed the connection".
+        return reply("error", 500,
+                     "Waswa could not answer just now. Please try again.", "")
