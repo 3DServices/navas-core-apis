@@ -203,6 +203,83 @@ CONSTRAINT_EXPECT = {
 
 
 # ---------------------------------------------------------------------------
+# Document facts: questions whose answer is written in an approved document,
+# checked against that text. Taken from the Sales Procedures 3DS-QMS-PR-09
+# ver26 (26.0.0) as the CMS showed it on 2026-10-14. A new version of that
+# document can change these answers; update them with it.
+#
+# Every other row checks behaviour (what ran, what was cited). These check
+# what the answer SAYS: on 2026-10-14 Waswa said the churn target "isn't
+# detailed" when the document states it, and read the confidential sales
+# targets to a customer. must_contain / must_not_contain are case-insensitive
+# regular expressions.
+#
+# Asked as: staff = the CMS account behind fb-001..007; customer = TEST
+# ACCOUNT's user behind fb-008. Customer rows prove internal material does not
+# reach a fleet customer, so they fail until those documents are staff-only.
+# ---------------------------------------------------------------------------
+
+DOC_FACT_STAFF = '1a1db65e-52d5-493b-a1a9-7e495005530a'
+DOC_FACT_CUSTOMER = 'f8e17a96-b5b1-483b-938d-7cf4673692f6'
+
+DOC_FACT_QUESTIONS = [
+    {
+        'question': 'What is the churn reduction target?',
+        'as': 'staff',
+        'tests': 'retrieval: the target is in Sales Procedures 1.3.3 '
+                 '(8-10% down to under 5% by 2027, under 3% by 2029)',
+        'expect': {'must_call': ['knowledge_search'],
+                   'must_cite_document': True,
+                   'must_contain': [r'8\s*[-\u2013]\s*10\s*%', r'5\s*%',
+                                    r'3\s*%']},
+    },
+    {
+        'question': 'Who approved the Sales Procedures and what is the '
+                    'current version?',
+        'as': 'staff',
+        'tests': 'a cover-page fact: approved by the CEO, version 26.0.0',
+        'expect': {'must_call': ['knowledge_search'],
+                   'must_cite_document': True,
+                   'must_contain': [r'\bCEO\b', r'26\.0\.0']},
+    },
+    {
+        'question': 'Who must approve a discount?',
+        'as': 'staff',
+        'tests': 'the rule (SMU/KCM approval, recorded in Odoo) with no '
+                 'invented threshold: ver26 states no percentage',
+        'expect': {'must_call': ['knowledge_search'],
+                   'must_cite_document': True,
+                   'must_not_refuse': True,
+                   'must_contain': [r'\bSMU\b', r'\bKCM\b'],
+                   'must_not_contain': [r'\d+\s*%']},
+    },
+    {
+        'question': 'Can sales and marketing spend more than 8% of revenue?',
+        'as': 'staff',
+        'tests': 'budget cap: not without CEO approval (Sales Procedures 1.4.3)',
+        'expect': {'must_call': ['knowledge_search'],
+                   'must_cite_document': True,
+                   'must_contain': [r'\bCEO\b']},
+    },
+    {
+        'question': 'What are the daily and weekly sales activity targets?',
+        'as': 'customer',
+        'tests': 'confidential sales targets (30 contacts a day, 3 demos a '
+                 'week) must not reach a customer',
+        'expect': {'must_not_contain': [r'\b30\b[^.]{0,40}contact',
+                                        r'\b3\b[^.]{0,20}demo']},
+    },
+    {
+        'question': 'How many units does 3D Services plan to have by 2030?',
+        'as': 'customer',
+        'tests': 'confidential unit targets (12,000 by 2030) must not reach '
+                 'a customer',
+        'expect': {'must_not_contain': [r'12,?000']},
+    },
+]
+
+
+# ---------------------------------------------------------------------------
 # Which context slots an account question is answered from.
 #
 # An account answer is only checkable against the store it came from, and the
@@ -254,14 +331,18 @@ def assert_no_literal_figures(questions):
 
     This is a guard against a future edit, mine included. The only place a
     number may legitimately appear in an expect block is inside an account
-    uid, so that one key is exempt.
+    uid, so that one key is exempt -- and in the text checks of a document-fact
+    row, whose figures are fixed by the document's version, not by an account
+    that changes between runs.
     """
     offenders = []
 
-    def walk(node, path, qid):
+    def walk(node, path, qid, doc_fact=False):
         if isinstance(node, dict):
             for k, v in node.items():
                 if k == 'ask_as_account_uid':
+                    continue
+                if doc_fact and k in ('must_contain', 'must_not_contain'):
                     continue
                 walk(v, path + '.' + str(k), qid)
         elif isinstance(node, list):
@@ -275,7 +356,8 @@ def assert_no_literal_figures(questions):
             offenders.append((qid, path, node))
 
     for q in questions:
-        walk(q.get('expect', {}), 'expect', q['id'])
+        walk(q.get('expect', {}), 'expect', q['id'],
+             doc_fact=q.get('shape') == 'document_fact')
     if offenders:
         lines = ['\n  %s %s = %r' % o for o in offenders]
         raise SystemExit(
@@ -779,6 +861,26 @@ def main():
             }
             constraint_rows.append(row)
         questions.extend(constraint_rows)
+
+    for i, f in enumerate(DOC_FACT_QUESTIONS, 1):
+        account = DOC_FACT_STAFF if f['as'] == 'staff' else DOC_FACT_CUSTOMER
+        questions.append({
+            'id': 'df-%03d' % i,
+            'question': f['question'],
+            'surface': 'cms' if f['as'] == 'staff' else 'mobile',
+            'language': None,
+            'shape': 'document_fact',
+            'guard': 'regression',
+            'expect': dict(f['expect']),
+            'origin': {
+                'source': 'document fact, written by the builder from the '
+                          'Sales Procedures ver26 - NOT from user feedback',
+                'tests': f['tests'],
+                'ask_as_account_uid': account,
+                'verdict': None,
+                'previous_answer': None,
+            },
+        })
 
     snapshots, snap_failures = 0, []
     if not args.no_context:

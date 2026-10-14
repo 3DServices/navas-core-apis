@@ -35,6 +35,7 @@ Sources, so the next person does not have to go looking:
     positions + speed   Postgres dll_location_registry
 """
 
+import json
 import math
 import re
 from datetime import datetime, timedelta
@@ -42,6 +43,8 @@ from datetime import datetime, timedelta
 import psycopg2
 import requests
 from flask import current_app
+
+from .alert_severity import severity_of
 
 # ── Budgets ─────────────────────────────────────────────────────────────────
 # A trip is thousands of GPS fixes and Places Nearby Search is billed per
@@ -1094,7 +1097,309 @@ TOOL_SPECS = [
             },
         },
     },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'alerts_recent',
+            'description': (
+                'The account\'s alerts, newest first: what triggered, which '
+                'vehicle and geofence, severity (critical, warning, info), '
+                'when, and whether each was read and acknowledged. Use for '
+                '"what was my last alert", "any critical alerts", "has it '
+                'been acknowledged", "how many alerts today".'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'days': {'type': 'integer',
+                             'description': 'How far back, 1-365. Default 30.'},
+                    'limit': {'type': 'integer',
+                              'description': 'How many, 1-50. Default 10.'},
+                    'client_uid': {'type': 'string', 'description': 'Staff only.'},
+                },
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'geofences_list',
+            'description': (
+                'The account\'s geofences: name, category (general, depot, '
+                'customer, restricted), shape and size (a circle\'s radius, a '
+                'route\'s width), and which vehicles are inside each one '
+                'right now. Use for "what geofences do I have", "which '
+                'vehicles are in Head Office", "is anything in a restricted '
+                'zone". Name the vehicles; if positions_note says they could '
+                'not be checked, say so instead of calling a zone empty.'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'client_uid': {'type': 'string', 'description': 'Staff only.'},
+                },
+            },
+        },
+    },
 ]
+
+# ── Alerts ──────────────────────────────────────────────────────────────────
+
+_ALERT_LIMIT_MAX = 50
+
+
+def summarise_alerts(rows, zone_categories, since):
+    """Alert rows in the shape the model reads, newest first, with counts.
+
+    rows: (event_name, device_name, condition, trigger_value, geozone_name,
+    breach_type, is_read, date_triggered, acknowledged_at, acknowledged_by,
+    acknowledge_note). Severity is worked out exactly as the Alerts screen
+    does (alert_severity.severity_of), so Waswa and the app cannot disagree
+    about which alert is critical.
+    """
+    alerts = []
+    counts = {'critical': 0, 'warning': 0, 'info': 0}
+    unread = unacknowledged = 0
+    for (event_name, device_name, condition, trigger_value, zone, breach,
+         is_read, triggered, ack_at, ack_by, ack_note) in rows:
+        severity = severity_of(
+            event_name, condition, trigger_value, breach,
+            zone_categories.get((zone or '').strip().lower(), ''))
+        counts[severity] = counts.get(severity, 0) + 1
+        if not is_read:
+            unread += 1
+        if not ack_at:
+            unacknowledged += 1
+        alerts.append({
+            'alert': event_name or '',
+            'vehicle': device_name or '',
+            'geofence': zone or None,
+            'crossing': breach or None,
+            'severity': severity,
+            'when': triggered.strftime('%Y-%m-%d %H:%M') if triggered else None,
+            'read': bool(is_read),
+            'acknowledged': bool(ack_at),
+            'acknowledged_at': str(ack_at)[:16].replace('T', ' ') if ack_at else None,
+            'acknowledge_note': ack_note or None,
+        })
+    return {
+        'since': since.strftime('%Y-%m-%d') if since else None,
+        'count': len(alerts),
+        'by_severity': counts,
+        'unread': unread,
+        'unacknowledged': unacknowledged,
+        'alerts': alerts,
+    }
+
+
+def alerts_recent(days=None, limit=None, client_uid=None, scope=None):
+    """The account's alerts: newest first, with severity and whether each was
+    read and acknowledged -- what the app's Alerts screen lists.
+
+    Asked "what was my most recent alert, is it acknowledged?" from that very
+    screen, Waswa said it could not find anything: it had no way to read
+    alerts at all.
+    """
+    target = _target_client(scope, client_uid)
+    if not target:
+        return {'found': False,
+                'reason': 'No account to read alerts for. Staff must name a '
+                          'client_uid.'}
+    try:
+        days = max(1, min(int(days or 30), 365))
+    except (TypeError, ValueError):
+        days = 30
+    try:
+        limit = max(1, min(int(limit or 10), _ALERT_LIMIT_MAX))
+    except (TypeError, ValueError):
+        limit = 10
+    since = datetime.now() - timedelta(days=days)
+
+    conn = None
+    try:
+        conn = _pg()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            # Acknowledgement columns read through to_jsonb, as the Alerts
+            # route does, so this works before migration 047 has run.
+            cur.execute("""
+                SELECT event_name, device_name, "condition", trigger_value,
+                       geozone_name, breach_type, is_read, date_triggered,
+                       to_jsonb(n) ->> 'acknowledged_at',
+                       to_jsonb(n) ->> 'acknowledged_by',
+                       to_jsonb(n) ->> 'acknowledge_note'
+                  FROM dll_event_notifications n
+                 WHERE owner_uid = %s AND date_triggered >= %s
+                 ORDER BY date_triggered DESC
+                 LIMIT %s""", (target, since, limit))
+            rows = cur.fetchall()
+            cur.execute("""
+                SELECT LOWER(geozone_name), to_jsonb(z) ->> 'geozone_category'
+                  FROM dll_geozones z WHERE geozone_owner = %s""", (target,))
+            zones = {name: category for name, category in cur.fetchall()}
+            older = False
+            if not rows:
+                # "What was my most recent alert?" was answered "none in the
+                # last 30 days" while the Alerts screen showed one from June.
+                # The newest alerts are the answer whatever their age, so
+                # fall back to them and say they are older than the window.
+                cur.execute("""
+                    SELECT event_name, device_name, "condition", trigger_value,
+                           geozone_name, breach_type, is_read, date_triggered,
+                           to_jsonb(n) ->> 'acknowledged_at',
+                           to_jsonb(n) ->> 'acknowledged_by',
+                           to_jsonb(n) ->> 'acknowledge_note'
+                      FROM dll_event_notifications n
+                     WHERE owner_uid = %s
+                     ORDER BY date_triggered DESC
+                     LIMIT %s""", (target, limit))
+                rows = cur.fetchall()
+                older = bool(rows)
+    except psycopg2.Error as error:
+        _warn('alerts unreadable: %s', error)
+        return {'found': False, 'unavailable': True,
+                'reason': 'Alerts could not be read just now. Say you cannot '
+                          'check them at the moment; do not say there are '
+                          'none.'}
+    finally:
+        if conn:
+            conn.close()
+
+    result = summarise_alerts(rows, zones, None if older else since)
+    result['found'] = True
+    result['days'] = days
+    if older:
+        result['note'] = (f'No alerts in the last {days} days. These are the '
+                          'most recent ones, all older than that: give their '
+                          'dates.')
+    elif not rows:
+        result['note'] = 'This account has never had an alert.'
+    return result
+
+
+# ── Geofences ───────────────────────────────────────────────────────────────
+
+def describe_zone_shape(shape, params):
+    """A geofence's shape in words a customer recognises from the app."""
+    shape = str(shape or 'polygon').strip().lower()
+    params = params if isinstance(params, dict) else {}
+    if shape == 'circle':
+        radius = params.get('radius_m')
+        try:
+            radius = float(radius)
+        except (TypeError, ValueError):
+            return {'shape': 'circle'}
+        size = (f'{radius / 1000:g} km' if radius >= 1000 else f'{radius:g} m')
+        return {'shape': 'circle', 'radius': size}
+    if shape == 'line':
+        width = params.get('width_m')
+        out = {'shape': 'line (a route)',
+               'route_points': len(params.get('points') or [])}
+        try:
+            out['width'] = f'{float(width):g} m'
+        except (TypeError, ValueError):
+            pass
+        return out
+    corners = len(params.get('points') or [])
+    return {'shape': 'polygon', 'corners': corners} if corners else {'shape': 'polygon'}
+
+
+def geofences_list(client_uid=None, scope=None):
+    """The account's geofences -- name, category, shape and size -- and which
+    vehicles are inside each one right now.
+
+    Asked "what geofences do I have and which vehicles are inside them?" on
+    the Geofences screen, Waswa gave steps for finding out, because it had no
+    way to look. Membership is worked out as the dashboard does
+    (fleet_summary): from each unit's live position, against the zone's ring.
+    When positions cannot be read the zones are still listed and the result
+    says so -- a zone list is not wrong because the live store is down.
+    """
+    target = _target_client(scope, client_uid)
+    if not target:
+        return {'found': False,
+                'reason': 'No account to read geofences for. Staff must name '
+                          'a client_uid.'}
+    from .alert_engine import _ring, point_in_ring
+    from . import fleet_summary
+
+    conn = None
+    try:
+        conn = _pg()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            # SELECT *: zones from before migrations 043 and 048 have no
+            # shape or category column.
+            cur.execute("SELECT * FROM dll_geozones WHERE geozone_owner = %s "
+                        "ORDER BY geozone_name", (target,))
+            columns = [c[0] for c in cur.description]
+            rows = [dict(zip(columns, r)) for r in cur.fetchall()]
+    except psycopg2.Error as error:
+        _warn('geofences unreadable: %s', error)
+        return {'found': False, 'unavailable': True,
+                'reason': 'Geofences could not be read just now. Say you '
+                          'cannot check them at the moment; do not say there '
+                          'are none.'}
+    finally:
+        if conn:
+            conn.close()
+
+    zones = []
+    for row in rows:
+        params = row.get('geozone_shape_params')
+        if isinstance(params, str):
+            try:
+                params = json.loads(params) if params.strip() else None
+            except ValueError:
+                params = None
+        zones.append({
+            'name': row.get('geozone_name') or 'Zone',
+            'description': row.get('geozone_description') or None,
+            'category': fleet_summary.category_of(
+                {'category': row.get('geozone_category')}),
+            'shape': str(row.get('geozone_shape') or 'polygon').lower(),
+            'params': params,
+            'ring': _ring(row.get('geozone_points')),
+        })
+
+    result = {'found': True, 'count': len(zones), 'geofences': []}
+    if not zones:
+        result['note'] = 'This account has no geofences.'
+        return result
+
+    presence, positions_note = None, None
+    try:
+        from .fleet import _readings
+        readings, notes = _readings(_units_of(target))
+        presence = fleet_summary.units_by_zone(
+            readings, zones, datetime.now(), point_in_ring)
+        positions_note = '; '.join(notes) or None
+    except FleetUnavailable as error:
+        _warn('geofence presence: register unreachable: %s', error)
+        positions_note = ('Which vehicles are inside could not be checked: '
+                          'the vehicle register could not be read just now.')
+    except Exception as error:      # noqa: BLE001 - the live store, mostly
+        _warn('geofence presence unavailable: %s', error)
+        positions_note = ('Which vehicles are inside could not be checked: '
+                          'live positions could not be read just now. Do not '
+                          'say a zone is empty.')
+
+    for zone in zones:
+        entry = {'name': zone['name'], 'category': zone['category'],
+                 'description': zone['description']}
+        entry.update(describe_zone_shape(zone['shape'], zone['params']))
+        if presence is not None:
+            members = presence['zones'][zone['name']]
+            if zone['shape'] == 'line':
+                entry['vehicles_on_route'] = members['on_route']
+            else:
+                entry['vehicles_inside'] = members['inside']
+        result['geofences'].append(entry)
+    if presence is not None:
+        result['vehicles_outside_all_zones'] = presence['outside']
+        result['vehicles_without_a_recent_position'] = presence['not_placed']
+    if positions_note:
+        result['positions_note'] = positions_note
+    return result
+
 
 _DISPATCH = {
     'unit_find': unit_find,
@@ -1103,6 +1408,8 @@ _DISPATCH = {
     'unit_route_probe': unit_route_probe,
     'fleet_activity': fleet_activity,
     'fleet_liveness': fleet_liveness,
+    'alerts_recent': alerts_recent,
+    'geofences_list': geofences_list,
 }
 
 

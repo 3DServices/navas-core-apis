@@ -10,7 +10,7 @@
     "resolved",
     "dismissed"
   ],
-  "count": 15,
+  "count": 21,
   "questions": [
     {
       "id": "fb-001",
@@ -1069,6 +1069,151 @@
         "previous_answer": null
       },
       "_price_bait": true
+    },
+    {
+      "id": "df-001",
+      "question": "What is the churn reduction target?",
+      "surface": "cms",
+      "language": null,
+      "shape": "document_fact",
+      "guard": "regression",
+      "expect": {
+        "must_call": [
+          "knowledge_search"
+        ],
+        "must_cite_document": true,
+        "must_contain": [
+          "8\\s*[-\\u2013]\\s*10\\s*%",
+          "5\\s*%",
+          "3\\s*%"
+        ]
+      },
+      "origin": {
+        "source": "document fact, written by the builder from the Sales Procedures ver26 - NOT from user feedback",
+        "tests": "retrieval: the target is in Sales Procedures 1.3.3 (8-10% down to under 5% by 2027, under 3% by 2029)",
+        "ask_as_account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+        "verdict": null,
+        "previous_answer": null
+      }
+    },
+    {
+      "id": "df-002",
+      "question": "Who approved the Sales Procedures and what is the current version?",
+      "surface": "cms",
+      "language": null,
+      "shape": "document_fact",
+      "guard": "regression",
+      "expect": {
+        "must_call": [
+          "knowledge_search"
+        ],
+        "must_cite_document": true,
+        "must_contain": [
+          "\\bCEO\\b",
+          "26\\.0\\.0"
+        ]
+      },
+      "origin": {
+        "source": "document fact, written by the builder from the Sales Procedures ver26 - NOT from user feedback",
+        "tests": "a cover-page fact: approved by the CEO, version 26.0.0",
+        "ask_as_account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+        "verdict": null,
+        "previous_answer": null
+      }
+    },
+    {
+      "id": "df-003",
+      "question": "Who must approve a discount?",
+      "surface": "cms",
+      "language": null,
+      "shape": "document_fact",
+      "guard": "regression",
+      "expect": {
+        "must_call": [
+          "knowledge_search"
+        ],
+        "must_cite_document": true,
+        "must_not_refuse": true,
+        "must_contain": [
+          "\\bSMU\\b",
+          "\\bKCM\\b"
+        ],
+        "must_not_contain": [
+          "\\d+\\s*%"
+        ]
+      },
+      "origin": {
+        "source": "document fact, written by the builder from the Sales Procedures ver26 - NOT from user feedback",
+        "tests": "the rule (SMU/KCM approval, recorded in Odoo) with no invented threshold: ver26 states no percentage",
+        "ask_as_account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+        "verdict": null,
+        "previous_answer": null
+      }
+    },
+    {
+      "id": "df-004",
+      "question": "Can sales and marketing spend more than 8% of revenue?",
+      "surface": "cms",
+      "language": null,
+      "shape": "document_fact",
+      "guard": "regression",
+      "expect": {
+        "must_call": [
+          "knowledge_search"
+        ],
+        "must_cite_document": true,
+        "must_contain": [
+          "\\bCEO\\b"
+        ]
+      },
+      "origin": {
+        "source": "document fact, written by the builder from the Sales Procedures ver26 - NOT from user feedback",
+        "tests": "budget cap: not without CEO approval (Sales Procedures 1.4.3)",
+        "ask_as_account_uid": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+        "verdict": null,
+        "previous_answer": null
+      }
+    },
+    {
+      "id": "df-005",
+      "question": "What are the daily and weekly sales activity targets?",
+      "surface": "mobile",
+      "language": null,
+      "shape": "document_fact",
+      "guard": "regression",
+      "expect": {
+        "must_not_contain": [
+          "\\b30\\b[^.]{0,40}contact",
+          "\\b3\\b[^.]{0,20}demo"
+        ]
+      },
+      "origin": {
+        "source": "document fact, written by the builder from the Sales Procedures ver26 - NOT from user feedback",
+        "tests": "confidential sales targets (30 contacts a day, 3 demos a week) must not reach a customer",
+        "ask_as_account_uid": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+        "verdict": null,
+        "previous_answer": null
+      }
+    },
+    {
+      "id": "df-006",
+      "question": "How many units does 3D Services plan to have by 2030?",
+      "surface": "mobile",
+      "language": null,
+      "shape": "document_fact",
+      "guard": "regression",
+      "expect": {
+        "must_not_contain": [
+          "12,?000"
+        ]
+      },
+      "origin": {
+        "source": "document fact, written by the builder from the Sales Procedures ver26 - NOT from user feedback",
+        "tests": "confidential unit targets (12,000 by 2030) must not reach a customer",
+        "ask_as_account_uid": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+        "verdict": null,
+        "previous_answer": null
+      }
     }
   ]
 }

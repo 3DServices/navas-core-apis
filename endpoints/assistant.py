@@ -152,11 +152,36 @@ _OWN_CHARGES_PATTERNS = (
 )
 
 
-def _is_pricing_enquiry(text):
+# How discounts are governed -- who approves one, what the policy says -- as
+# opposed to how big a discount someone can have. The Sales Procedures answer
+# the first ("no discount without SMU/KCM approval"), and staff need it; the
+# blanket "discount" pattern above sent "what is the maximum discount a
+# salesperson can give without approval?" to the canned pricing reply.
+_DISCOUNT_POLICY_PATTERNS = (
+    r'\b(?:approv\w*|authori[sz]\w*|sign(?:s|ed)? off|polic(?:y|ies)|rules?|'
+    r'process|procedure|who (?:can|may))\b',
+)
+
+# Asking for an amount stays pricing even when the words above appear.
+_PRICE_AMOUNT_PATTERNS = tuple(
+    p for p in _PRICING_PATTERNS if 'discount' not in p)
+
+
+def _is_pricing_enquiry(text, audience='everyone'):
+    """True when the question asks what something costs.
+
+    A customer asking about discounts at all is routed to sales: how far a
+    salesperson may go is not something to hand a buyer. Staff asking how
+    discounts are approved get an answer from the documents.
+    """
     lowered = (text or '').lower()
     for pattern in _OWN_CHARGES_PATTERNS:
         if re.search(pattern, lowered):
             return False
+    if (audience == 'staff'
+            and any(re.search(p, lowered) for p in _DISCOUNT_POLICY_PATTERNS)
+            and not any(re.search(p, lowered) for p in _PRICE_AMOUNT_PATTERNS)):
+        return False
     for pattern in _PRICING_PATTERNS:
         if re.search(pattern, lowered):
             return True
@@ -797,8 +822,19 @@ def AssistantChat():
 
         _record_turn(store, conversation_uid, 'user', user_message)
 
+        # Who this is decides what Waswa may read to them: staff-only
+        # documents and corrections reach staff, never a fleet customer. The
+        # data API applies the same audience to every search and correction
+        # itself; here it shapes the wording and the pricing check below.
+        try:
+            audience = store.audience()
+        except DataApiError as error:
+            # The narrower audience: unable to tell, treat as a customer.
+            _log('audience not read, treating as customer: %s', error)
+            audience = 'everyone'
+
         # Pricing never reaches a model.
-        if _is_pricing_enquiry(user_message):
+        if _is_pricing_enquiry(user_message, audience):
             message_uid = _record_turn(
                 store, conversation_uid, 'assistant', _PRICING_ROUTED_REPLY,
                 intent='pricing_enquiry', router_tier=1,
@@ -828,17 +864,6 @@ def AssistantChat():
             )
 
         prompt_body, prompt_version = _active_prompt(store)
-
-        # Who this is decides what Waswa may read to them: staff-only
-        # documents and corrections reach staff, never a fleet customer. The
-        # data API applies the same audience to every search and correction
-        # itself; here it only shapes the wording.
-        try:
-            audience = store.audience()
-        except DataApiError as error:
-            # The narrower audience: unable to tell, treat as a customer.
-            _log('audience not read, treating as customer: %s', error)
-            audience = 'everyone'
 
         # What the fleet tools may read is no longer decided here. The data
         # API builds that scope from the token's account on every tool call,
@@ -899,6 +924,31 @@ def AssistantChat():
             "actually does is worse for the customer than no answer. If the "
             "search returns nothing, say you could not find it and offer to "
             "put them in touch with someone who can help.")})
+
+        # "My drivers waste a lot of fuel" is a sales conversation: there are
+        # products for exactly that. Waswa answered "I couldn't find a fuel
+        # telematics product" and offered a technician, because nothing told
+        # it recommending was its job. Equally, a customer who finds it too
+        # costly should leave with a cheaper way to keep using the service,
+        # not with nothing. Neither may involve a price.
+        messages.append({"role": "system", "content": (
+            "Help people get the right amount of NAVAS for their needs. "
+            "UPSELL: when someone describes a problem or goal a product could "
+            "solve -- fuel loss, driver behaviour, theft, idle or misused "
+            "vehicles, compliance, maintenance -- call product_search with "
+            "their own words and recommend at most two products whose "
+            "description fits, saying what each does about their problem and, "
+            "where the account context shows it, why it suits their fleet. "
+            "DOWNSELL: when someone says it costs too much or wants to spend "
+            "less, help them keep the service for less: look up, with "
+            "app_guide_search and knowledge_search, the ways the app offers -- "
+            "pausing tracking on vehicles that are not in use, turning "
+            "auto-renew off, listing idle vehicles on VEBA so they earn -- and "
+            "suggest the ones that fit what they told you. In both cases: only "
+            "recommend what a tool returned, never invent a product or a "
+            "feature, never quote or compare prices (offer sales for those), "
+            "and do not push -- one clear suggestion with the reason beats a "
+            "list.")})
 
         # Asked from the app, "how do I create a geofence?" was answered from
         # the CMS manual or not at all. The app now has its own guide, kept in

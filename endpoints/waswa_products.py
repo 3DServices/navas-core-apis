@@ -23,6 +23,7 @@ Design rules these functions keep:
 """
 
 import difflib
+import re
 
 import psycopg2
 from flask import current_app
@@ -275,10 +276,134 @@ def product_lookup(name, include_detail=True):
             conn.close()
 
 
+# Words that say nothing about which product is meant.
+_SEARCH_STOPWORDS = {
+    'the', 'and', 'for', 'with', 'that', 'this', 'what', 'which', 'how', 'can',
+    'help', 'helps', 'need', 'want', 'my', 'our', 'their', 'your', 'from',
+    'into', 'about', 'product', 'products', 'solution', 'solutions', 'service',
+    'services', 'system', 'systems', 'option', 'options', 'something', 'thing',
+    'lot', 'lots', 'more', 'less', 'better', 'management', 'monitor',
+    'monitoring', 'telematics', 'tracking', 'too', 'much', 'many', 'very',
+    'some', 'keep', 'keeps', 'getting', 'get', 'got', 'add', 'every', 'still',
+    'always', 'all', 'any', 'have', 'has', 'are', 'was', 'were', 'been',
+}
+
+# A customer names the problem; the catalogue names the remedy. "My vehicles
+# keep getting stolen" found nothing because no description says "stolen".
+# These add the words a remedy is described with. They only widen the search:
+# Waswa still recommends nothing whose description does not fit.
+_PROBLEM_WORDS = {
+    'stolen': ('security', 'alarm', 'immobil', 'recovery', 'camera'),
+    'theft': ('security', 'alarm', 'immobil', 'recovery', 'camera'),
+    'steal': ('security', 'alarm', 'immobil', 'recovery', 'camera'),
+    'robbery': ('security', 'alarm', 'camera', 'panic'),
+    'hijack': ('security', 'panic', 'immobil', 'camera'),
+    'waste': ('consumption', 'level', 'sensor'),
+    'accident': ('camera', 'video', 'behaviour', 'behavior'),
+    'speeding': ('behaviour', 'behavior', 'speed'),
+    'reckless': ('behaviour', 'behavior', 'camera'),
+    'breakdown': ('maintenance', 'workshop', 'diagnostic'),
+}
+
+# Every column a customer's word could be found in.
+_LOOSE_HAYSTACK = (
+    "coalesce(p.product_name,'') || ' ' || coalesce(p.customer_facing_name,'') "
+    "|| ' ' || coalesce(p.product_description,'') || ' ' || "
+    "coalesce(p.outcomes,'') || ' ' || coalesce(p.service_type,'') || ' ' || "
+    "coalesce(p.product_family,'') || ' ' || coalesce(p.asset_types,'')"
+)
+
+
+def search_words(*criteria):
+    """The distinctive words in whatever the model passed, singular-ish."""
+    words = []
+    for value in criteria:
+        for word in re.findall(r"[a-z0-9]{3,}", str(value or '').lower()):
+            if word in _SEARCH_STOPWORDS:
+                continue
+            # "drivers" finds "driver", "vehicles" finds "vehicle".
+            if len(word) > 4 and word.endswith('s') and not word.endswith('ss'):
+                word = word[:-1]
+            if word not in words:
+                words.append(word)
+    for word in list(words):
+        for extra in _PROBLEM_WORDS.get(word, ()):
+            if extra not in words:
+                words.append(extra)
+    return words[:12]
+
+
+def loose_match_sql(words):
+    """(score expression, params) counting how many words a product matches,
+    in any of its text or its capabilities."""
+    parts, params = [], []
+    for word in words:
+        parts.append(
+            f"(({_LOOSE_HAYSTACK}) ILIKE %s OR EXISTS (SELECT 1 FROM "
+            "abi_product_capabilities c WHERE c.product_uid = p.product_uid "
+            "AND c.capability ILIKE %s))::int")
+        params.extend([f'%{word}%', f'%{word}%'])
+    return ' + '.join(parts), params
+
+
 def product_search(capability=None, service_type=None, asset_type=None,
                    text=None, limit=10):
     """Find products by what they do, for when a customer describes a problem
-    rather than naming a product."""
+    rather than naming a product.
+
+    Exact first: every criterion given must match. A customer's words rarely
+    match the catalogue's -- "my drivers waste fuel" searched as service type
+    "Fuel Telematics" found nothing, and Waswa told the customer there was no
+    such product. So when the exact search is empty it tries again on the
+    individual words, against every field, best match first, and says so.
+    """
+    exact = _product_search_exact(capability, service_type, asset_type, text,
+                                  limit)
+    if exact['count'] or 'catalogue unavailable' in str(exact.get('note')):
+        return exact
+
+    words = search_words(text, capability, service_type, asset_type)
+    if not words:
+        return exact
+    score, params = loose_match_sql(words)
+    conn = None
+    try:
+        conn = _connect()
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT {_PRODUCT_COLUMNS}, ({score}) AS matched "
+                    "FROM abi_products_manager p "
+                    "WHERE (p.lifecycle_status = 'active' OR p.lifecycle_status IS NULL) "
+                    f"  AND ({score}) > 0 "
+                    "ORDER BY matched DESC, p.product_name LIMIT %s",
+                    params + params + [int(limit)],
+                )
+                rows = cur.fetchall() if cur.rowcount > 0 else []
+                products = [_row_to_product(r[:-1]) for r in rows]
+    except psycopg2.Error as error:
+        return {'count': 0, 'products': [],
+                'note': f'catalogue unavailable: {error}'}
+    finally:
+        if conn:
+            conn.close()
+
+    exact['criteria']['words'] = words
+    if not products:
+        return exact
+    return {
+        'count': len(products),
+        'products': products,
+        'criteria': exact['criteria'],
+        'note': ('No product matched every criterion exactly; these match '
+                 'some of the words %s, best first. Recommend only those '
+                 'whose description fits what the customer described.'
+                 % ', '.join(words)),
+    }
+
+
+def _product_search_exact(capability=None, service_type=None, asset_type=None,
+                          text=None, limit=10):
     clauses, params = ["(p.lifecycle_status = 'active' OR p.lifecycle_status IS NULL)"], []
 
     if service_type:

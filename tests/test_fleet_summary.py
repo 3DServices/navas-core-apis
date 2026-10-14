@@ -170,6 +170,43 @@ eq('visit ended yesterday is not today',
              cross('a', 'Z', 'exit', at(9, day=11))], at(0))['visits'], 0)
 
 
+# -- units_by_zone: which vehicle is in which geofence, by name (Waswa) ------
+
+def box(lat0, lng0, lat1, lng1):
+    """A ring the test 'contains' reads as a box: [[lng, lat] corners]."""
+    return [[lng0, lat0], [lng1, lat0], [lng1, lat1], [lng0, lat1]]
+
+
+def in_box(lat, lng, ring):
+    lngs = [p[0] for p in ring]
+    lats = [p[1] for p in ring]
+    return min(lats) <= lat <= max(lats) and min(lngs) <= lng <= max(lngs)
+
+
+ZONES = [
+    {'name': 'Head Office', 'ring': box(0.30, 32.50, 0.40, 32.60),
+     'shape': 'circle', 'category': 'depot'},
+    {'name': 'Quarry', 'ring': box(1.00, 33.00, 1.10, 33.10),
+     'shape': 'polygon', 'category': 'restricted'},
+    {'name': 'Jinja Road', 'ring': box(0.30, 32.50, 0.40, 32.60),
+     'shape': 'line', 'category': 'general'},
+]
+placed = fs.units_by_zone([
+    reading(snap(0.35, 32.55), name='UBJ 916W'),
+    reading(snap(1.05, 33.05), name='UAJ 712X'),
+    reading(snap(0.90, 31.00), name='UBF 364U'),
+    reading(None, ago=None, name='UAY 114Z'),
+    reading(snap(0.35, 32.55), ago=timedelta(days=40), name='UAX 391Z'),
+], ZONES, NOW, in_box)
+eq('a unit in a circle is inside it', placed['zones']['Head Office']['inside'], ['UBJ 916W'])
+eq('a unit in a restricted zone is named', placed['zones']['Quarry']['inside'], ['UAJ 712X'])
+eq('a route is "on route", never "inside"', placed['zones']['Jinja Road'],
+   {'inside': [], 'on_route': ['UBJ 916W']})
+eq('a unit in no zone is outside', placed['outside'], ['UBF 364U'])
+eq('no position, or a month-old one, is not placed',
+   placed['not_placed'], ['UAY 114Z', 'UAX 391Z'])
+
+
 if __name__ == '__main__':
     failed = [r for r in RESULTS if not r[1]]
     for name, ok, detail in RESULTS:

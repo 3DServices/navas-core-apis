@@ -233,6 +233,35 @@ def _client_row(cur, client_uid):
     return {'client_name': row[0], 'customer_class': row[1]}
 
 
+def tracking_time_left(units):
+    """How long the balance lasts, worded as the app words it.
+
+    1 GPS token is 1 hour of tracking (lib/services/fleet_service.dart), and
+    the dashboard's "Tracking left" card shows floor(hours / 24) days. Under a
+    day -- a customer who bought tokens for a day -- the card can only say
+    "< 1 day", so hours and minutes are given instead.
+    """
+    try:
+        hours = max(float(units), 0.0)
+    except (TypeError, ValueError):
+        return None
+    days = int(hours // 24)
+    total_minutes = int(round(hours * 60))
+    whole_hours, minutes = divmod(total_minutes, 60)
+    if days >= 1:
+        says = f'{days} day{"s" if days != 1 else ""} ({hours:g} hours)'
+    elif whole_hours and minutes:
+        says = (f'{whole_hours} hour{"s" if whole_hours != 1 else ""} '
+                f'{minutes} minute{"s" if minutes != 1 else ""}')
+    elif whole_hours:
+        says = f'{whole_hours} hour{"s" if whole_hours != 1 else ""}'
+    else:
+        says = f'{minutes} minute{"s" if minutes != 1 else ""}'
+    return {'hours_left': round(hours, 2), 'days_left': days,
+            'hours_and_minutes_left': f'{whole_hours}h {minutes:02d}m',
+            'say': says}
+
+
 def _token_position(cur, client_uid):
     """Units left, units used and how many token packs are held.
 
@@ -273,7 +302,15 @@ def _token_position(cur, client_uid):
         "       " + total.format(col='token_used_units') + ", "
         "       " + numeric.format(col='token_used_units') + ", "
         "       " + pending.format(col='token_units_left') + ", "
-        "       COUNT(*) FILTER (WHERE token_units_left IS NULL) "
+        "       COUNT(*) FILTER (WHERE token_units_left IS NULL), "
+        # What the wallet and the dashboard count as the balance: readable
+        # units on packs that have not expired.
+        "       COALESCE(SUM(CASE WHEN token_units_left ~ %(re)s "
+        "                     AND COALESCE(LOWER(token_status), '') NOT LIKE '%%expired%%' "
+        "                THEN REPLACE(TRIM(token_units_left), ',', '')::numeric "
+        "                ELSE 0 END), 0), "
+        "       COUNT(*) FILTER (WHERE token_units_left ~ %(re)s "
+        "                     AND COALESCE(LOWER(token_status), '') NOT LIKE '%%expired%%') "
         "FROM dll_user_token_accounts WHERE client_uid = ANY(%(uids)s)",
         {'re': number, 'sent': sentinel, 'uids': owner_uids},
     )
@@ -282,16 +319,42 @@ def _token_position(cur, client_uid):
         return None, _NO_TOKEN_ROWS.format(client_uid)
 
     (packs, active_packs, statuses, units_left, numeric_left,
-     units_used, numeric_used, awaiting, null_left) = row
+     units_used, numeric_used, awaiting, null_left,
+     wallet_units, wallet_numeric) = row
+
+    # The Token Wallet's "N Token Packages subscribed": distinct tokens among
+    # the active packs, leaving out tokens deleted from the registry
+    # (lib/screens/token_wallet_screen.dart _packages). token_packs counts
+    # every purchase record -- 234 against the wallet's 1 for one customer --
+    # and quoting it made Waswa contradict the screen.
+    cur.execute(
+        "SELECT COUNT(DISTINCT a.token_balance) "
+        "FROM dll_user_token_accounts a "
+        "LEFT JOIN dll_tokens_registry r ON r.token_id::text = a.token_balance::text "
+        "WHERE a.client_uid = ANY(%(uids)s) AND LOWER(a.token_status) = 'active' "
+        "  AND COALESCE(LOWER(r.token_name), '') NOT LIKE '%%deleted%%'",
+        {'uids': owner_uids})
+    found = cur.fetchone()
+    packages = int(found[0] or 0) if found else 0
 
     position = {
+        'packages_subscribed': packages,
         'token_packs': int(packs),
         'active_token_packs': int(active_packs or 0),
         'pack_statuses': statuses,
         # Burn rate needs a time series; Phase 6 computes it from consumption
         # history. Saying so beats reporting a number we have not measured.
         'burn_rate': 'not measured yet',
+        'how_to_say_it': (
+            'Say "packages_subscribed token package(s)", as the Token Wallet '
+            'does; token_packs and active_token_packs count purchase records '
+            'and are not for customers. For how long tracking lasts use '
+            'tracking_time_left.say -- the same figure as the dashboard\'s '
+            '"Tracking left" card. 1 token is 1 hour of tracking.'),
     }
+    if wallet_numeric:
+        position['wallet_tokens_left'] = float(wallet_units or 0)
+        position['tracking_time_left'] = tracking_time_left(wallet_units)
 
     # A number is only reported when at least one row actually held one.
     # Summing zero parseable values would report 0 as a measurement.

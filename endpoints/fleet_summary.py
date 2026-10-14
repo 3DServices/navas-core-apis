@@ -273,3 +273,39 @@ def zone_presence(readings, zones, now, contains, crossings=(), since=None):
         'restricted_entries_today': restricted_entries,
         'dwell_today': dwell(crossings, since, names),
     }
+
+
+def units_by_zone(readings, zones, now, contains):
+    """Which unit is in which geofence right now, by name.
+
+    zone_presence counts; this names, for Waswa ("which of my vehicles are
+    inside Head Office?"). Same rules as the dashboard: a unit is placed only
+    from a live fix no older than ZONE_POSITION_MAX_AGE. A corridor (shape
+    'line') is a route, not an area -- a unit in its ring is "on route", kept
+    apart from "inside" exactly as zone_presence leaves corridors out of it.
+
+    zones  [{'name', 'ring', 'shape', 'category'}]
+    Returns {'zones': {name: {'inside': [...], 'on_route': [...]}},
+             'outside': [...], 'not_placed': [...]}.
+    """
+    per_zone = {z['name']: {'inside': [], 'on_route': []} for z in zones}
+    outside, unplaced = [], []
+    for reading in readings:
+        label = reading.get('name') or reading.get('imei')
+        seen = reading.get('seen')
+        fix = position(reading.get('snapshot'))
+        if fix is None or seen is None or now - seen > ZONE_POSITION_MAX_AGE:
+            unplaced.append(label)
+            continue
+        placed = False
+        for zone in zones:
+            if not zone.get('ring') or not contains(fix[0], fix[1], zone['ring']):
+                continue
+            if zone.get('shape') == 'line':
+                per_zone[zone['name']]['on_route'].append(label)
+            else:
+                per_zone[zone['name']]['inside'].append(label)
+                placed = True
+        if not placed:
+            outside.append(label)
+    return {'zones': per_zone, 'outside': outside, 'not_placed': unplaced}
