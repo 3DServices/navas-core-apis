@@ -27,6 +27,22 @@ except ImportError:                     # imported directly, by the tests
 
 MAX_DAYS = 90
 
+# When the nightly reading is taken, Africa/Kampala: close to midnight, so each
+# reading closes its own day even for wallets nobody opened that day.
+SNAPSHOT_AT = (23, 55)
+
+
+def snapshot_at(raw):
+    """(hour, minute) from "HH:MM" (TOKEN_USAGE_SNAPSHOT_AT); SNAPSHOT_AT
+    when it is empty or not a time of day."""
+    try:
+        hour, minute = (int(part) for part in str(raw or '').strip().split(':'))
+    except ValueError:
+        return SNAPSHOT_AT
+    if 0 <= hour <= 23 and 0 <= minute <= 59:
+        return hour, minute
+    return SNAPSHOT_AT
+
 
 def reading(row):
     """(used, left) of a dll_user_token_accounts row as numbers, or

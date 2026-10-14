@@ -5,9 +5,10 @@ Daily token usage (migration 049).
        usage per day and per service for one wallet. Takes that wallet's
        reading for today first, so today is always current.
   POST /tokens/usage/snapshot/run
-       takes today's reading for every wallet. Staff only. Schedule it once a
-       day close to midnight (Africa/Kampala), so each day's reading is taken
-       at its end even for wallets nobody looked at.
+       takes today's reading for every wallet. The service key or a staff
+       login. The API runs it itself every night (usage_scheduler.py); this
+       route is for a manual run, or an external cron when the scheduler is
+       off.
 
 The arithmetic is in token_usage.py.
 """
@@ -20,7 +21,8 @@ import psycopg2.errors
 from flask import Blueprint, request
 
 from . import db_pool, token_usage
-from .globals import reply, require_permission, require_staff, resolve_wallet_owner
+from .globals import (reply, require_permission, require_service_or_staff,
+                      resolve_wallet_owner)
 
 token_usage_bp = Blueprint('token_usage', __name__)
 log = logging.getLogger('token_usage')
@@ -131,21 +133,27 @@ def daily_usage(client_uid):
     })
 
 
+def snapshot_all():
+    """Today's reading for every wallet: {'day', 'accounts'}. Safe to run
+    more than once a day; the last reading of a day stands."""
+    connection = db_pool.connect()
+    try:
+        with connection:
+            with connection.cursor() as cursor:
+                written = _snapshot(cursor)
+    finally:
+        connection.close()
+    return {'day': _today().isoformat(), 'accounts': written}
+
+
 @token_usage_bp.route('/tokens/usage/snapshot/run', methods=['POST'])
-@require_staff()
+@require_service_or_staff
 def snapshot_run():
     try:
-        connection = db_pool.connect()
-        try:
-            with connection:
-                with connection.cursor() as cursor:
-                    written = _snapshot(cursor)
-        finally:
-            connection.close()
+        result = snapshot_all()
     except psycopg2.errors.UndefinedTable:
         return reply('error', 503, _NOT_ENABLED, '')
     except Exception as error:
         log.exception('token usage snapshot failed: %s', error)
         return reply('error', 500, 'Could not record token usage', '')
-    return reply('success', 200, 'Token usage recorded',
-                 {'day': _today().isoformat(), 'accounts': written})
+    return reply('success', 200, 'Token usage recorded', result)

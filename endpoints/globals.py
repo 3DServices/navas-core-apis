@@ -604,6 +604,40 @@ def require_auth(f):
     return decorated_function
 
 
+def require_signed_in(f):
+    """
+    Refuses an anonymous caller whatever AUTH_GATE_MODE says.
+
+    access_guard only blocks a request with no valid sign-in when the mode is
+    "enforce"; in "report" (the default) it logs and lets it through. A route
+    that hands out a customer's data must not depend on that switch. This
+    reuses what access_guard already established, so a signed-in request is
+    not looked up twice: its g.current_user, or g.service_call for an internal
+    caller with X-Service-Key. Without either (an app that runs no guard),
+    it falls back to require_auth.
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if getattr(g, 'service_call', False) or getattr(g, 'current_user', None):
+            return f(*args, **kwargs)
+        return require_auth(f)(*args, **kwargs)
+    return decorated_function
+
+
+def require_service_or_staff(f):
+    """
+    For machine-to-machine routes (access_guard.INTERNAL_RULES): an internal
+    caller with X-Service-Key, or a staff login. Never a customer, and never
+    anonymous, whatever AUTH_GATE_MODE says.
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if getattr(g, 'service_call', False):
+            return f(*args, **kwargs)
+        return require_staff()(f)(*args, **kwargs)
+    return decorated_function
+
+
 def config_element_data(element, device_imei):
 
     dbconnect = db_pool.connect()

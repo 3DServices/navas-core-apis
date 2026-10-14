@@ -17,7 +17,9 @@ from .globals import reply
 import base64
 from .globals import check_device
 from .globals import require_auth, log_audit_event
+from .globals import require_service_or_staff, require_signed_in
 from .alert_severity import severity_of
+from .notification_window import BadSince, window as notification_window
 import uuid
 
 device_eventsbp = Blueprint("Device Events", __name__)
@@ -51,6 +53,9 @@ device_eventsbp = Blueprint("Device Events", __name__)
 
 
 @device_eventsbp.route("/notifications/log", methods=["POST"])
+# Machine-to-machine (access_guard.INTERNAL_RULES): anyone else could write
+# alerts into a customer's feed.
+@require_service_or_staff
 def log_notification():
     """Log a triggered event notification."""
     try:
@@ -98,8 +103,20 @@ def log_notification():
 
 
 @device_eventsbp.route("/notifications/<owner_uid>/list", methods=["GET"])
+@require_signed_in
 def get_notifications(owner_uid):
-    """Fetch notification history for an owner, most recent first."""
+    """Fetch notification history for an owner, most recent first.
+
+    ?since=YYYY-MM-DD (or a date and time) returns every alert from then on,
+    up to notification_window.SINCE_CAP, instead of the latest 200; see
+    notification_window.py. X-Truncated: true says the cap was hit.
+    """
+    try:
+        since, limit = notification_window(request.args.get("since"))
+    except BadSince:
+        return reply("error", 400,
+                     "since must be a date (YYYY-MM-DD) or a date and time "
+                     "(YYYY-MM-DD HH:MM:SS)", "")
     try:
         dbconnect = psycopg2.connect(current_app.config['db_link'])
         cur = dbconnect.cursor()
@@ -116,9 +133,10 @@ def get_notifications(owner_uid):
                    to_jsonb(n) ->> 'acknowledge_note'
             FROM dll_event_notifications n
             WHERE owner_uid = %s
+              AND (%s::timestamp IS NULL OR date_triggered >= %s::timestamp)
             ORDER BY date_triggered DESC
-            LIMIT 200
-        """, (owner_uid,))
+            LIMIT %s
+        """, (owner_uid, since, since, limit))
 
         rows = cur.fetchall()
 
@@ -158,13 +176,17 @@ def get_notifications(owner_uid):
                     zone_categories.get((row[7] or "").strip().lower(), "")),
             })
 
-        return reply("success", 200, "Notifications loaded", notifications)
+        response, status = reply("success", 200, "Notifications loaded", notifications)
+        if since is not None and len(rows) >= limit:
+            response.headers["X-Truncated"] = "true"
+        return response, status
 
     except Exception as e:
         return reply("error", 500, f"Error fetching notifications: {str(e)}", "")
 
 
 @device_eventsbp.route("/notifications/<notification_uid>/read", methods=["PUT"])
+@require_signed_in
 def mark_notification_read(notification_uid):
     """Mark a single notification as read."""
     try:
@@ -258,6 +280,7 @@ def acknowledge_notification(notification_uid):
 
 
 @device_eventsbp.route("/notifications/<owner_uid>/mark-all-read", methods=["PUT"])
+@require_signed_in
 def mark_all_notifications_read(owner_uid):
     """Mark all notifications as read for an owner."""
     try:
@@ -281,6 +304,7 @@ def mark_all_notifications_read(owner_uid):
 
 
 @device_eventsbp.route("/notifications/<owner_uid>/unread-count", methods=["GET"])
+@require_signed_in
 def get_unread_count(owner_uid):
     """Get the count of unread notifications for an owner."""
     try:

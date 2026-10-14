@@ -95,6 +95,7 @@ INTERNAL_RULES = frozenset({
     '/devices/sync-client-devices',
     '/subscriptions/auto-renew/run',
     '/alerts/run',
+    '/tokens/usage/snapshot/run',
 })
 
 # The Waswa data API (waswa_data_api.PREFIX): authenticated by its own token.

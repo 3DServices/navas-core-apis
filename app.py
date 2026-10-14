@@ -202,6 +202,13 @@ def _start_alert_scheduler():
 _start_auto_renew_scheduler()
 _start_alert_scheduler()
 
+# Nightly daily-token-usage reading (on by default; see usage_scheduler.py).
+try:
+    from endpoints.usage_scheduler import start_nightly_snapshot
+    start_nightly_snapshot(app)
+except Exception as _usage_error:      # noqa: BLE001 — never blocks startup
+    print(f"[usage] nightly reading not scheduled: {_usage_error}")
+
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", debug=True)
