@@ -24,8 +24,8 @@ def run_migration():
         cur.execute("SELECT to_regclass('dll_token_usage_daily')")
         present = cur.fetchone()[0] is not None
         print(f"   {'ok   ' if present else 'CHECK'} dll_token_usage_daily")
-        print("\nRestart the API, then schedule a daily call (close to midnight,")
-        print("Africa/Kampala) to POST /tokens/usage/snapshot/run with a staff token.")
+        print("\nRestart the API: it takes a reading of every wallet nightly at")
+        print("23:55 Africa/Kampala (endpoints/usage_scheduler.py).")
         cur.close()
     except Exception as error:
         if conn:
