@@ -290,6 +290,20 @@ def knowledge_search(query, product=None, document_type=None, limit=None,
                         f"nothing of type '{document_type}' matched, so these "
                         f"results come from other document types")
 
+            # Same failure, product side: "ivms" with product="Ivms" found
+            # nothing, because none of the 49 approved chunks about iVMS is
+            # tagged with a product_uid -- the manual covers products without
+            # being filed under one. Narrowing to a product must not hide the
+            # documents that describe it, so widen once here too.
+            if not rows and filters.get('product_uid'):
+                widened = dict(filters, product_uid=None, document_type=None)
+                rows, how = _search(cur, query, widened, limit,
+                                    include_unapproved, audience)
+                if rows:
+                    notes.append(
+                        f"no document is filed under '{product}', so these "
+                        f"results are passages that mention it")
+
             if not rows:
                 total, approved, visible = _corpus_state(cur, audience)
                 if not total:

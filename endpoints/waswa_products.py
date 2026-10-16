@@ -208,6 +208,16 @@ def product_lookup(name, include_detail=True):
                 if wanted in names:
                     matched_uids, matched_via = names[wanted], 'exact'
 
+                # "Ivms Product" is iVMS, not the closest-spelled row: the
+                # filler word dragged the real name (0.50) under the fuzzy
+                # cutoff and left "Ivms Sdk" (0.60) as the only match. Try the
+                # name without filler words before guessing by spelling.
+                if not matched_uids:
+                    trimmed = ' '.join(
+                        w for w in wanted.split() if w not in _SEARCH_STOPWORDS)
+                    if trimmed and trimmed != wanted and trimmed in names:
+                        matched_uids, matched_via = names[trimmed], 'exact'
+
                 if not matched_uids:
                     close = difflib.get_close_matches(
                         wanted, list(names), n=_MAX_CANDIDATES,
@@ -258,7 +268,10 @@ def product_lookup(name, include_detail=True):
                     if not product['attributes_loaded']:
                         notes.append(
                             'Capability and hardware detail has not been loaded '
-                            'for this product yet. Say so rather than implying '
+                            'for this product yet. Call knowledge_search with '
+                            'the product name and answer from the approved '
+                            'documents. Only if that also finds nothing, say '
+                            'the detail is not available rather than implying '
                             'it has no capabilities.')
                     if not product['service_type']:
                         notes.append(

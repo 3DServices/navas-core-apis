@@ -1033,6 +1033,16 @@ def AssistantChat():
                                       module=module)
         _v2_rejected = 0
         must_look_up = _needs_lookup(user_message)
+        # "What is the Ivms Product?" was answered from a product row with no
+        # detail loaded -- "I can't say what it solves" -- while the approved
+        # manual described it at length. Forcing applies to round 0 only and
+        # any tool satisfies it, so nothing made the model read the documents.
+        # A product lookup that came back empty or thin now earns one forced
+        # document search before the answer is accepted.
+        searched_docs = False
+        product_gap = False
+        docs_nudged = False
+        force_next = False
 
         # Looked up here rather than left to the model. See _prefetch_fleet:
         # asking the model to call a tool is a request that can be declined
@@ -1046,9 +1056,9 @@ def AssistantChat():
             evidence.extend(fleet_evidence)
 
         for _round in range(_MAX_TOOL_ROUNDS):
-            outcome = _call_model(
-                messages,
-                force_tools=(_round == 0 and must_look_up))
+            forced = (_round == 0 and must_look_up) or force_next
+            force_next = False
+            outcome = _call_model(messages, force_tools=forced)
             if outcome['status'] != 'ok':
                 # The conversation is open and the user turn is recorded by
                 # now. Without its uid the caller cannot continue or close it,
@@ -1065,9 +1075,22 @@ def AssistantChat():
                  ': ' + ', '.join(
                      (c.get('function') or {}).get('name', '?')
                      for c in tool_calls) if tool_calls else '',
-                 finish_reason, _round, (_round == 0 and must_look_up))
+                 finish_reason, _round, forced)
 
             if not tool_calls:
+                if product_gap and not searched_docs and not docs_nudged:
+                    _log('product lookup was empty or thin and no document '
+                         'was searched; forcing knowledge_search '
+                         '(conversation=%s)', conversation_uid)
+                    docs_nudged = True
+                    force_next = True
+                    messages.append({"role": "system", "content": (
+                        "Do not answer yet. The product catalogue had no "
+                        "usable detail for this, and you have not searched "
+                        "the approved documents. Call knowledge_search now "
+                        "with the product or term the person asked about, "
+                        "and answer from what it returns.")})
+                    continue
                 text = (assistant_message.get('content') or '').strip()
                 answered = True
                 break
@@ -1089,6 +1112,13 @@ def AssistantChat():
                 try:
                     ran = store.tool(tool_name, arguments)
                     owner, result = ran.get('owner'), ran.get('result')
+                    if tool_name in ('knowledge_search', 'app_guide_search'):
+                        searched_docs = True
+                    elif tool_name == 'product_lookup':
+                        found = isinstance(result, dict) and result.get('found')
+                        loaded = found and (result.get('product') or {}).get(
+                            'attributes_loaded')
+                        product_gap = product_gap or not loaded
                 except DataApiError as error:
                     _log('tool %s failed in the data API: %s', tool_name, error)
                     owner = None
