@@ -1,0 +1,226 @@
+{
+  "_what_this_is": "one run of the Waswa eval set. The ids under \"created\" are the rows this run added to your database; scripts/waswa_eval_cleanup.py removes exactly those and nothing else.",
+  "started_at": "2026-10-09T00:41:10",
+  "transport": "app.test_client()",
+  "crashed": null,
+  "rows": 4,
+  "created": {
+    "conversations": [
+      "454935b7-b030-4e88-8081-012eed4c5e60",
+      "8933183b-ee46-4fe5-b39b-0ac3c1513061",
+      "fb0a5b16-5941-47af-95e0-24df050433f8",
+      "f07c8b4c-e0e5-42fc-af9b-57d568378936"
+    ],
+    "messages": [
+      "86c2db7f-2c5a-4a8c-9216-cc36bb3c69e2",
+      "18fb3244-4ae5-49cc-b918-1da1fb794bae",
+      "d66fe70b-a87d-4f33-91de-b38d798bc450",
+      "20d3f2d3-89ee-4060-bf44-670a7bfbe3fd"
+    ]
+  },
+  "results": [
+    {
+      "id": "fb-008",
+      "question": "How many tokens do I have?",
+      "shape": "account",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+      "http_status": 200,
+      "seconds": 26.86,
+      "answer": "You have 120 token units remaining across the 3 packs currently in use. \n\nAdditionally, you have 231 packs awaiting first use. These packs don't have their units set until they are first used, so they are not counted in the current balance and are not empty.",
+      "tools_used": [
+        "waswa_context",
+        "knowledge_search(token balance)"
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "conversation_uid": "454935b7-b030-4e88-8081-012eed4c5e60",
+      "message_uid": "86c2db7f-2c5a-4a8c-9216-cc36bb3c69e2",
+      "checks": [
+        {
+          "check": "must_use_account_context",
+          "result": true,
+          "detail": "account context present"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        },
+        {
+          "check": "no_unsourced_numbers",
+          "result": true,
+          "detail": "every figure traced to context"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "fb-009",
+      "question": "How many vehicles are online?",
+      "shape": "account",
+      "guard": "regression",
+      "blocked_on": null,
+      "asked_as": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+      "http_status": 200,
+      "seconds": 52.69,
+      "answer": "Currently, 1 vehicle is actively reporting data. Here are the details:\n\n- **UBJ 916W (Fuso Fuso)**: Last reported just 0.1 hours ago and is actively reporting today.\n\nThe other vehicles are either not reporting or have never reported data.",
+      "tools_used": [
+        "waswa_context",
+        "unit_find(all, prefetched)",
+        "unit_status(imei=862846042593213)",
+        "unit_status(imei=867556044716374)",
+        "unit_status(imei=867556044727322)",
+        "unit_status(imei=862846042650328)",
+        "unit_status(imei=350317173603857)"
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "conversation_uid": "8933183b-ee46-4fe5-b39b-0ac3c1513061",
+      "message_uid": "18fb3244-4ae5-49cc-b918-1da1fb794bae",
+      "checks": [
+        {
+          "check": "must_use_account_context",
+          "result": true,
+          "detail": "account context present"
+        },
+        {
+          "check": "must_not_claim_live_when_stale",
+          "result": true,
+          "detail": "no contradiction between liveness and stated age"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        },
+        {
+          "check": "no_unsourced_numbers",
+          "result": null,
+          "detail": "cannot decide - 0.1 may come from unit_find(all, prefetched), unit_status(imei=862846042593213), unit_status(imei=867556044716374), unit_status(imei=867556044727322), unit_status(imei=862846042650328), unit_status(imei=350317173603857) (ignored 916: inside a name)"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 1
+    },
+    {
+      "id": "fb-011",
+      "question": "How many tokens do I have?",
+      "shape": "account",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "3f20c477-4446-4070-ad96-79aaa6877bd9",
+      "http_status": 200,
+      "seconds": 26.41,
+      "answer": "Your account doesn't have any token packs yet, so there are no tokens available at this time.",
+      "tools_used": [
+        "waswa_context",
+        "knowledge_search(token balance)"
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "conversation_uid": "fb0a5b16-5941-47af-95e0-24df050433f8",
+      "message_uid": "d66fe70b-a87d-4f33-91de-b38d798bc450",
+      "checks": [
+        {
+          "check": "must_use_account_context",
+          "result": true,
+          "detail": "account context present"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        },
+        {
+          "check": "no_unsourced_numbers",
+          "result": true,
+          "detail": "every figure traced to context"
+        }
+      ],
+      "not_scored": [
+        {
+          "check": "must_not_dead_end",
+          "why": "needs a judgement about whether the answer offers a useful next step. No mechanical test for this; a reviewer or a model as judge has to read it.",
+          "hint_offers_handoff": false
+        }
+      ],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "fb-012",
+      "question": "how many units are in my oliwa account?",
+      "shape": "account",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "3f20c477-4446-4070-ad96-79aaa6877bd9",
+      "http_status": 200,
+      "seconds": 23.89,
+      "answer": "Your account currently has no subscribed units. If you have any questions or need further assistance, feel free to ask.",
+      "tools_used": [
+        "waswa_context",
+        "unit_find(all, prefetched)",
+        "unit_find(oliwa)"
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "conversation_uid": "f07c8b4c-e0e5-42fc-af9b-57d568378936",
+      "message_uid": "20d3f2d3-89ee-4060-bf44-670a7bfbe3fd",
+      "checks": [
+        {
+          "check": "must_use_account_context",
+          "result": true,
+          "detail": "account context present"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        },
+        {
+          "check": "no_unsourced_numbers",
+          "result": true,
+          "detail": "every figure traced to context"
+        }
+      ],
+      "not_scored": [
+        {
+          "check": "must_not_dead_end",
+          "why": "needs a judgement about whether the answer offers a useful next step. No mechanical test for this; a reviewer or a model as judge has to read it.",
+          "hint_offers_handoff": false
+        }
+      ],
+      "passed": true,
+      "undecided": 0
+    }
+  ]
+}

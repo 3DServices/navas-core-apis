@@ -37,7 +37,10 @@ def parse_channels(raw):
 
 
 def _deliver_in_app(cur, owner_uid, title, body, category):
-    """Insert an in-app notification into dll_event_notifications."""
+    """Insert an in-app notification into dll_event_notifications, filed
+    under the client (account_root) the console and the app read."""
+    from .owner_root import client_root
+    owner_uid = client_root(cur, owner_uid)
     cur.execute(
         """
         INSERT INTO dll_event_notifications

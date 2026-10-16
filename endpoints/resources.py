@@ -22,6 +22,7 @@ Tables: migration 045.
 import uuid
 
 import psycopg2
+from . import db_pool
 from flask import Blueprint, request, g, current_app
 
 from .globals import (reply, require_auth, require_staff, log_audit_event,
@@ -55,7 +56,7 @@ def is_account_admin(role):
 
 
 def _db():
-    return psycopg2.connect(current_app.config['db_link'])
+    return db_pool.connect()
 
 
 def _ip():

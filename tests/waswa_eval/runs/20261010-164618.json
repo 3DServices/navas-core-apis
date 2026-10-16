@@ -1,0 +1,148 @@
+{
+  "_what_this_is": "one run of the Waswa eval set. The ids under \"created\" are the rows this run added to your database; scripts/waswa_eval_cleanup.py removes exactly those and nothing else.",
+  "started_at": "2026-10-10T16:46:18",
+  "transport": "app.test_client()",
+  "checks_fingerprint": "022ec39a0845",
+  "crashed": null,
+  "rows": 2,
+  "created": {
+    "conversations": [
+      "14d7c628-b77d-47f3-8514-1fe66dd8d3fc",
+      "fb1c805c-c90b-4bce-bc1c-c19e70406d14"
+    ],
+    "messages": [
+      "c9542dd9-d0a1-40ec-bff4-3880eb54e656",
+      "cca25ee5-63bb-42d0-9200-75b50baea3d1"
+    ]
+  },
+  "results": [
+    {
+      "id": "fb-001",
+      "question": "What happens when a SIM goes offline?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 200,
+      "seconds": 26.2,
+      "answer": "I couldn't find any approved documents in NAVAS that cover what happens when a SIM goes offline. If you need more detailed information, I can connect you with someone who can help.",
+      "tools_used": [
+        "waswa_context",
+        "unit_find(all, prefetched)",
+        "knowledge_search(SIM goes offline)"
+      ],
+      "evidence": [
+        {
+          "authority_level": 3,
+          "source_kind": "account_context",
+          "source_ref": "waswa_context"
+        },
+        {
+          "authority_level": 1,
+          "source_kind": "fleet",
+          "source_ref": "unit_find(all, prefetched)"
+        },
+        {
+          "authority_level": null,
+          "source_kind": "document",
+          "source_ref": "knowledge_search(SIM goes offline)"
+        }
+      ],
+      "context_numbers": null,
+      "cited_authorities": [
+        null
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "conversation_uid": "14d7c628-b77d-47f3-8514-1fe66dd8d3fc",
+      "message_uid": "c9542dd9-d0a1-40ec-bff4-3880eb54e656",
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": true,
+          "detail": "tools used: waswa_context, unit_find(all, prefetched), knowledge_search(SIM goes offline)"
+        },
+        {
+          "check": "must_cite_document",
+          "result": false,
+          "detail": "retrieval ran and returned nothing - 1 document row(s), every authority_level None"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": false,
+          "detail": "refusal wording found"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": false,
+      "undecided": 0
+    },
+    {
+      "id": "fb-003",
+      "question": "How are devices registered?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 200,
+      "seconds": 22.28,
+      "answer": "I couldn't find information about the device registration process in the approved documents. If you need detailed guidance on how to register devices, I can connect you with someone who can help.",
+      "tools_used": [
+        "waswa_context",
+        "knowledge_search(device registration process)"
+      ],
+      "evidence": [
+        {
+          "authority_level": 3,
+          "source_kind": "account_context",
+          "source_ref": "waswa_context"
+        },
+        {
+          "authority_level": null,
+          "source_kind": "document",
+          "source_ref": "knowledge_search(device registration process)"
+        }
+      ],
+      "context_numbers": null,
+      "cited_authorities": [
+        null
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "conversation_uid": "fb1c805c-c90b-4bce-bc1c-c19e70406d14",
+      "message_uid": "cca25ee5-63bb-42d0-9200-75b50baea3d1",
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": true,
+          "detail": "tools used: waswa_context, knowledge_search(device registration process)"
+        },
+        {
+          "check": "must_cite_document",
+          "result": false,
+          "detail": "retrieval ran and returned nothing - 1 document row(s), every authority_level None"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": false,
+          "detail": "refusal wording found"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": false,
+      "undecided": 0
+    }
+  ]
+}

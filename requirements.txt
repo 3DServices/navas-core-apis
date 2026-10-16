@@ -3,7 +3,11 @@ pandas
 flask
 requests
 flask-cors
-psycopg2-binary
+# Pinned: Windows Smart App Control blocks psycopg2-binary 2.9.12's
+# _psycopg.pyd ("An Application Control policy has blocked this file"),
+# an unsigned file too new to have a reputation; 2.9.10 loads. Check the
+# app still starts on a Windows dev machine before moving this pin.
+psycopg2-binary==2.9.10
 psycopg2
 
 cassandra-driver
@@ -15,6 +19,13 @@ pytz
 # Metrics and monitoring
 psutil
 kafka-python
+
+# Live device snapshots (endpoints/device_listing.py). Imported at MODULE
+# level, so the application will not start without it -- a clean deploy or a
+# fresh checkout dies at `from endpoints import ...` with ModuleNotFoundError.
+# The server itself is optional: live_snapshots() catches the connection
+# failure and degrades to no live data.
+redis
 
 # Auth
 PyJWT

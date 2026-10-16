@@ -1,0 +1,709 @@
+{
+  "_what_this_is": "one run of the Waswa eval set. The ids under \"created\" are the rows this run added to your database; scripts/waswa_eval_cleanup.py removes exactly those and nothing else.",
+  "started_at": "2026-10-10T15:53:34",
+  "transport": "app.test_client()",
+  "checks_fingerprint": "022ec39a0845",
+  "crashed": null,
+  "rows": 15,
+  "created": {
+    "conversations": [
+      "ac07eb31-670f-474f-9bf9-59e97df6297d",
+      "9e0e5376-7ea4-42fc-9128-809fd7fe0221",
+      "038ddb2c-731e-4a92-92be-6487e353941b"
+    ],
+    "messages": [
+      "9261af1a-2f84-48c7-8d55-4d6f43611416",
+      "91c98a29-ce70-4b87-82a3-a772c5d60349",
+      "ba627d5c-fdc5-415c-a7cc-0136f5924cc8"
+    ]
+  },
+  "results": [
+    {
+      "id": "fb-001",
+      "question": "What happens when a SIM goes offline?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 502,
+      "seconds": 20.33,
+      "answer": "",
+      "tools_used": [],
+      "evidence": [],
+      "context_numbers": null,
+      "cited_authorities": [],
+      "intent": null,
+      "router_tier": null,
+      "prompt_version": null,
+      "conversation_uid": null,
+      "message_uid": null,
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": false,
+          "detail": "tools used: none"
+        },
+        {
+          "check": "must_cite_document",
+          "result": false,
+          "detail": "no document evidence at all"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": false,
+      "undecided": 0
+    },
+    {
+      "id": "fb-002",
+      "question": "How are SIM bundles managed?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 502,
+      "seconds": 14.03,
+      "answer": "",
+      "tools_used": [],
+      "evidence": [],
+      "context_numbers": null,
+      "cited_authorities": [],
+      "intent": null,
+      "router_tier": null,
+      "prompt_version": null,
+      "conversation_uid": null,
+      "message_uid": null,
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": false,
+          "detail": "tools used: none"
+        },
+        {
+          "check": "must_cite_document",
+          "result": false,
+          "detail": "no document evidence at all"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": false,
+      "undecided": 0
+    },
+    {
+      "id": "fb-003",
+      "question": "How are devices registered?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 502,
+      "seconds": 13.61,
+      "answer": "",
+      "tools_used": [],
+      "evidence": [],
+      "context_numbers": null,
+      "cited_authorities": [],
+      "intent": null,
+      "router_tier": null,
+      "prompt_version": null,
+      "conversation_uid": null,
+      "message_uid": null,
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": false,
+          "detail": "tools used: none"
+        },
+        {
+          "check": "must_cite_document",
+          "result": false,
+          "detail": "no document evidence at all"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": false,
+      "undecided": 0
+    },
+    {
+      "id": "fb-004",
+      "question": "What is IVMS?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 502,
+      "seconds": 13.26,
+      "answer": "",
+      "tools_used": [],
+      "evidence": [],
+      "context_numbers": null,
+      "cited_authorities": [],
+      "intent": null,
+      "router_tier": null,
+      "prompt_version": null,
+      "conversation_uid": null,
+      "message_uid": null,
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": false,
+          "detail": "tools used: none"
+        },
+        {
+          "check": "must_cite_document",
+          "result": false,
+          "detail": "no document evidence at all"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": false,
+      "undecided": 0
+    },
+    {
+      "id": "fb-005",
+      "question": "How do tracking tokens work?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 502,
+      "seconds": 13.61,
+      "answer": "",
+      "tools_used": [],
+      "evidence": [],
+      "context_numbers": null,
+      "cited_authorities": [],
+      "intent": null,
+      "router_tier": null,
+      "prompt_version": null,
+      "conversation_uid": null,
+      "message_uid": null,
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": false,
+          "detail": "tools used: none"
+        },
+        {
+          "check": "must_cite_document",
+          "result": false,
+          "detail": "no document evidence at all"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": false,
+      "undecided": 0
+    },
+    {
+      "id": "fb-006",
+      "question": "What is VEBA escrow?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 502,
+      "seconds": 13.49,
+      "answer": "",
+      "tools_used": [],
+      "evidence": [],
+      "context_numbers": null,
+      "cited_authorities": [],
+      "intent": null,
+      "router_tier": null,
+      "prompt_version": null,
+      "conversation_uid": null,
+      "message_uid": null,
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": false,
+          "detail": "tools used: none"
+        },
+        {
+          "check": "must_cite_document",
+          "result": false,
+          "detail": "no document evidence at all"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": false,
+      "undecided": 0
+    },
+    {
+      "id": "fb-007",
+      "question": "what is veba?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+      "http_status": 502,
+      "seconds": 12.89,
+      "answer": "",
+      "tools_used": [],
+      "evidence": [],
+      "context_numbers": null,
+      "cited_authorities": [],
+      "intent": null,
+      "router_tier": null,
+      "prompt_version": null,
+      "conversation_uid": null,
+      "message_uid": null,
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": false,
+          "detail": "tools used: none"
+        },
+        {
+          "check": "must_cite_document",
+          "result": false,
+          "detail": "no document evidence at all"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": false,
+      "undecided": 0
+    },
+    {
+      "id": "fb-008",
+      "question": "How many tokens do I have?",
+      "shape": "account",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+      "http_status": 502,
+      "seconds": 12.98,
+      "answer": "",
+      "tools_used": [],
+      "evidence": [],
+      "context_numbers": [
+        3.0,
+        10.0,
+        120.0,
+        231.0,
+        234.0,
+        780.0
+      ],
+      "cited_authorities": [],
+      "intent": null,
+      "router_tier": null,
+      "prompt_version": null,
+      "conversation_uid": null,
+      "message_uid": null,
+      "checks": [
+        {
+          "check": "must_use_account_context",
+          "result": false,
+          "detail": "NO account_context evidence - build_context failed"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        },
+        {
+          "check": "no_unsourced_numbers",
+          "result": true,
+          "detail": "every figure traced to context"
+        }
+      ],
+      "not_scored": [],
+      "passed": false,
+      "undecided": 0
+    },
+    {
+      "id": "fb-009",
+      "question": "How many vehicles are online?",
+      "shape": "account",
+      "guard": "regression",
+      "blocked_on": null,
+      "asked_as": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+      "http_status": 502,
+      "seconds": 15.39,
+      "answer": "",
+      "tools_used": [],
+      "evidence": [],
+      "context_numbers": [
+        1.0,
+        3.0,
+        4.0
+      ],
+      "cited_authorities": [],
+      "intent": null,
+      "router_tier": null,
+      "prompt_version": null,
+      "conversation_uid": null,
+      "message_uid": null,
+      "checks": [
+        {
+          "check": "must_use_account_context",
+          "result": false,
+          "detail": "NO account_context evidence - build_context failed"
+        },
+        {
+          "check": "must_not_claim_live_when_stale",
+          "result": true,
+          "detail": "no liveness claim to check"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        },
+        {
+          "check": "no_unsourced_numbers",
+          "result": true,
+          "detail": "every figure traced to context"
+        }
+      ],
+      "not_scored": [],
+      "passed": false,
+      "undecided": 0
+    },
+    {
+      "id": "fb-010",
+      "question": "how do I created a new geofence",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": "oliwa-ui-corpus",
+      "asked_as": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+      "http_status": 502,
+      "seconds": 13.51,
+      "answer": "",
+      "tools_used": [],
+      "evidence": [],
+      "context_numbers": null,
+      "cited_authorities": [],
+      "intent": null,
+      "router_tier": null,
+      "prompt_version": null,
+      "conversation_uid": null,
+      "message_uid": null,
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": false,
+          "detail": "tools used: none"
+        },
+        {
+          "check": "must_cite_document",
+          "result": false,
+          "detail": "no document evidence at all"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": false,
+      "undecided": 0
+    },
+    {
+      "id": "fb-011",
+      "question": "How many tokens do I have?",
+      "shape": "account",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "3f20c477-4446-4070-ad96-79aaa6877bd9",
+      "http_status": 502,
+      "seconds": 13.34,
+      "answer": "",
+      "tools_used": [],
+      "evidence": [],
+      "context_numbers": [
+        0.0,
+        1.0,
+        2.0,
+        2500.0,
+        4500.0,
+        7000.0
+      ],
+      "cited_authorities": [],
+      "intent": null,
+      "router_tier": null,
+      "prompt_version": null,
+      "conversation_uid": null,
+      "message_uid": null,
+      "checks": [
+        {
+          "check": "must_use_account_context",
+          "result": false,
+          "detail": "NO account_context evidence - build_context failed"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        },
+        {
+          "check": "no_unsourced_numbers",
+          "result": true,
+          "detail": "every figure traced to context"
+        }
+      ],
+      "not_scored": [
+        {
+          "check": "must_not_dead_end",
+          "why": "needs a judgement about whether the answer offers a useful next step. No mechanical test for this; a reviewer or a model as judge has to read it.",
+          "hint_offers_handoff": false
+        }
+      ],
+      "passed": false,
+      "undecided": 0
+    },
+    {
+      "id": "fb-012",
+      "question": "how many units are in my oliwa account?",
+      "shape": "account",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "3f20c477-4446-4070-ad96-79aaa6877bd9",
+      "http_status": 502,
+      "seconds": 13.72,
+      "answer": "",
+      "tools_used": [],
+      "evidence": [],
+      "context_numbers": [
+        0.0,
+        1.0,
+        2.0,
+        2500.0,
+        4500.0,
+        7000.0
+      ],
+      "cited_authorities": [],
+      "intent": null,
+      "router_tier": null,
+      "prompt_version": null,
+      "conversation_uid": null,
+      "message_uid": null,
+      "checks": [
+        {
+          "check": "must_use_account_context",
+          "result": false,
+          "detail": "NO account_context evidence - build_context failed"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        },
+        {
+          "check": "no_unsourced_numbers",
+          "result": true,
+          "detail": "every figure traced to context"
+        }
+      ],
+      "not_scored": [
+        {
+          "check": "must_not_dead_end",
+          "why": "needs a judgement about whether the answer offers a useful next step. No mechanical test for this; a reviewer or a model as judge has to read it.",
+          "hint_offers_handoff": false
+        }
+      ],
+      "passed": false,
+      "undecided": 0
+    },
+    {
+      "id": "ct-001",
+      "question": "How much does a VEBA pack cost?",
+      "shape": "constraint",
+      "guard": "constraint",
+      "blocked_on": null,
+      "asked_as": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+      "http_status": 200,
+      "seconds": 9.67,
+      "answer": "I'm not able to quote prices. Pricing depends on your country, currency and account, and it has to come from our sales team rather than from me.\n\nI can pass your requirement to them with the details you've given me, or answer anything about how your current tokens and charges work. Which would you like?",
+      "tools_used": [],
+      "evidence": [],
+      "context_numbers": null,
+      "cited_authorities": [],
+      "intent": "pricing_enquiry",
+      "router_tier": 1,
+      "prompt_version": null,
+      "conversation_uid": "ac07eb31-670f-474f-9bf9-59e97df6297d",
+      "message_uid": "9261af1a-2f84-48c7-8d55-4d6f43611416",
+      "checks": [
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "routed to sales before the model"
+        },
+        {
+          "check": "must_redirect_to_human",
+          "result": true,
+          "detail": "handoff wording present"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "ct-002",
+      "question": "What is the price of a tracking unit?",
+      "shape": "constraint",
+      "guard": "constraint",
+      "blocked_on": null,
+      "asked_as": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+      "http_status": 200,
+      "seconds": 9.73,
+      "answer": "I'm not able to quote prices. Pricing depends on your country, currency and account, and it has to come from our sales team rather than from me.\n\nI can pass your requirement to them with the details you've given me, or answer anything about how your current tokens and charges work. Which would you like?",
+      "tools_used": [],
+      "evidence": [],
+      "context_numbers": null,
+      "cited_authorities": [],
+      "intent": "pricing_enquiry",
+      "router_tier": 1,
+      "prompt_version": null,
+      "conversation_uid": "9e0e5376-7ea4-42fc-9128-809fd7fe0221",
+      "message_uid": "91c98a29-ce70-4b87-82a3-a772c5d60349",
+      "checks": [
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "routed to sales before the model"
+        },
+        {
+          "check": "must_redirect_to_human",
+          "result": true,
+          "detail": "handoff wording present"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "ct-003",
+      "question": "Can you give me a quote for 50 devices?",
+      "shape": "constraint",
+      "guard": "constraint",
+      "blocked_on": null,
+      "asked_as": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+      "http_status": 200,
+      "seconds": 9.46,
+      "answer": "I'm not able to quote prices. Pricing depends on your country, currency and account, and it has to come from our sales team rather than from me.\n\nI can pass your requirement to them with the details you've given me, or answer anything about how your current tokens and charges work. Which would you like?",
+      "tools_used": [],
+      "evidence": [],
+      "context_numbers": null,
+      "cited_authorities": [],
+      "intent": "pricing_enquiry",
+      "router_tier": 1,
+      "prompt_version": null,
+      "conversation_uid": "038ddb2c-731e-4a92-92be-6487e353941b",
+      "message_uid": "ba627d5c-fdc5-415c-a7cc-0136f5924cc8",
+      "checks": [
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "routed to sales before the model"
+        },
+        {
+          "check": "must_redirect_to_human",
+          "result": true,
+          "detail": "handoff wording present"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    }
+  ]
+}
