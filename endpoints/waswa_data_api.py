@@ -130,10 +130,13 @@ def _body():
     return request.get_json(silent=True) or {}
 
 
-def _owns_conversation(cur, conversation_uid):
+def _owns_conversation(cur, conversation_uid, resumable=False):
+    # resumable: a conversation archived in the console is not reopened;
+    # the next message starts a new one instead.
     cur.execute(
         "SELECT 1 FROM dll_waswa_conversations "
-        "WHERE conversation_uid = %s AND account_uid = %s",
+        "WHERE conversation_uid = %s AND account_uid = %s "
+        + ("AND status <> 'archived'" if resumable else ""),
         (str(conversation_uid), str(_account_uid())))
     return bool(cur.rowcount)
 
@@ -211,7 +214,7 @@ def open_conversation():
     surface = str(body.get('surface') or 'mobile').strip().lower()[:20]
     requested = body.get('conversation_uid')
     with _conn().cursor() as cur:
-        if requested and _owns_conversation(cur, requested):
+        if requested and _owns_conversation(cur, requested, resumable=True):
             return reply('success', 200, 'OK',
                          {'conversation_uid': str(requested), 'resumed': True})
         # An unknown or someone else's uid is not honoured; a fresh

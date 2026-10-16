@@ -17,6 +17,7 @@ waswa.review (see and fix):
     POST /assistant/console/answers/<uid>             edit (an approved one -> new version)
     POST /assistant/console/answers/<uid>/submit      send for approval
     POST /assistant/console/answers/<uid>/retire
+    POST /assistant/console/answers/<uid>/delete      an unsubmitted draft, for good
     POST /assistant/console/feedback/<uid>/resolve    close a flag
     GET  /assistant/console/sources                   documents and their state
     GET  /assistant/console/sources/<uid>             one document, its passages, versions
@@ -32,6 +33,8 @@ waswa.approve (sign off):
     POST /assistant/console/sources/<uid>/remove      stop using it (reversible)
     POST /assistant/console/sources/<uid>/restore     undo a removal
     POST /assistant/console/sources/<uid>/details     title, type, authority level, version
+    POST /assistant/console/conversations/<uid>/archive   hide from the list (kept)
+    POST /assistant/console/conversations/<uid>/restore   undo an archive
 
 Every write runs in one transaction with its transparency-log entry, and is
 also written to the hash-chained audit log (domain AI) after it commits.
@@ -205,6 +208,24 @@ def summary():
     return _read(work)
 
 
+def _add_owners(cur, items):
+    """item['owner']: who wrote the correction or uploaded the document, so the
+    console offers Approve only to someone the server would let approve it."""
+    answers = [i['item_uid'] for i in items if i['item_kind'] in ('approval', 'recheck')]
+    documents = [i['item_uid'] for i in items if i['item_kind'] == 'document']
+    owners = {}
+    if answers:
+        cur.execute("SELECT answer_uid, authored_by FROM dll_waswa_answers "
+                    "WHERE answer_uid = ANY(%s)", (answers,))
+        owners.update(cur.fetchall() if cur.rowcount > 0 else [])
+    if documents:
+        cur.execute("SELECT source_uid, ingested_by FROM dll_waswa_sources "
+                    "WHERE source_uid = ANY(%s)", (documents,))
+        owners.update(cur.fetchall() if cur.rowcount > 0 else [])
+    for item in items:
+        item['owner'] = owners.get(item['item_uid'])
+
+
 @_gate(wa.PERM_REVIEW)
 def queue():
     kind = request.args.get('kind')
@@ -242,6 +263,7 @@ def queue():
                         'document': 'Document awaiting review'}[item['item_kind']],
             }
             items.append(item)
+        _add_owners(cur, items)
         return {'items': items, 'count': len(items),
                 'limit': limit, 'offset': offset}
     return _read(work)
@@ -251,11 +273,14 @@ def queue():
 def conversations():
     surface = request.args.get('surface')
     flagged = str(request.args.get('flagged', '')).lower() in ('1', 'true', 'yes')
+    archived = str(request.args.get('archived', '')).lower() in ('1', 'true', 'yes')
     limit = _int_arg('limit', 30, 100)
     offset = _int_arg('offset', 0, 100000)
 
     def work(cur, who):
-        where, params = [], []
+        # Archived conversations are listed only when asked for, and then alone.
+        where = ["c.status = 'archived'" if archived else "c.status <> 'archived'"]
+        params = []
         if surface:
             where.append("c.surface = %s")
             params.append(surface)
@@ -373,6 +398,28 @@ def answer_retire(answer_uid):
     return _run(lambda cur, who: wa.retire_answer(cur, who, answer_uid,
                                                   data.get('reason')),
                 audit=('RETIRE', f'Waswa correction retired: {answer_uid}'))
+
+
+@_gate(wa.PERM_REVIEW)
+def answer_delete(answer_uid):
+    return _run(lambda cur, who: wa.delete_answer(cur, who, answer_uid),
+                audit=lambda r: ('DELETE', f"Waswa draft correction deleted: "
+                                           f"{r['question'][:80]}"))
+
+
+@_gate(wa.PERM_APPROVE)
+def conversation_archive(conversation_uid):
+    data = _body()
+    return _run(lambda cur, who: wa.set_conversation_archived(
+        cur, who, conversation_uid, True, data.get('reason')),
+        audit=('ARCHIVE', f'Waswa conversation archived: {conversation_uid}'))
+
+
+@_gate(wa.PERM_APPROVE)
+def conversation_restore(conversation_uid):
+    return _run(lambda cur, who: wa.set_conversation_archived(
+        cur, who, conversation_uid, False),
+        audit=('RESTORE', f'Waswa conversation restored: {conversation_uid}'))
 
 
 @_gate(wa.PERM_APPROVE)
@@ -522,6 +569,9 @@ _ROUTES = [
     ('/assistant/console/answers/<answer_uid>', answer, ['GET', 'POST']),
     ('/assistant/console/answers/<answer_uid>/submit', answer_submit, ['POST']),
     ('/assistant/console/answers/<answer_uid>/retire', answer_retire, ['POST']),
+    ('/assistant/console/answers/<answer_uid>/delete', answer_delete, ['POST']),
+    ('/assistant/console/conversations/<conversation_uid>/archive', conversation_archive, ['POST']),
+    ('/assistant/console/conversations/<conversation_uid>/restore', conversation_restore, ['POST']),
     ('/assistant/console/answers/<answer_uid>/decide', answer_decide, ['POST']),
     ('/assistant/console/answers/<answer_uid>/confirm', answer_confirm, ['POST']),
     ('/assistant/console/feedback/<feedback_uid>/resolve', feedback_resolve, ['POST']),
