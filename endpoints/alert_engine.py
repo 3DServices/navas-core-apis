@@ -40,6 +40,7 @@ from flask import Blueprint, current_app, g, request
 
 from .globals import reply, require_staff, log_audit_event
 from .notifier import parse_channels
+from .owner_root import client_root
 
 alerts_bp = Blueprint('alerts', __name__)
 
@@ -244,7 +245,9 @@ def save_presence(cur, imei, zone_uid, inside, position_ref):
 
 
 def write_alert(cur, rule, unit, zone_name, crossing):
-    """One row in the alerts list the console and the app read."""
+    """One row in the alerts list the console and the app read — filed under
+    the client (account_root), which is what they ask for, not under the
+    user who created the rule."""
     cur.execute(
         """
         INSERT INTO dll_event_notifications
@@ -258,7 +261,7 @@ def write_alert(cur, rule, unit, zone_name, crossing):
             unit['imei'], unit['name'], GEOFENCE_CONDITION,
             f"{crossing}:{zone_name}", zone_name, crossing,
             json.dumps(rule['channels']),
-            rule['owner_uid'] or unit['client'],
+            client_root(cur, rule['owner_uid'] or unit['client']),
         ),
     )
 

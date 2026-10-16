@@ -18,6 +18,7 @@ import base64
 import uuid
 import re
 from . import geozone_shapes
+from .owner_root import client_root
 from .resources import resource_policy
 
 
@@ -121,6 +122,11 @@ def CreateGezone():
 
         with _dbconnect:
             with _dbconnect.cursor() as cursor:
+                # Filed under the client (account_root): the zone lists, the
+                # fleet summary and the alert engine all read by client, so a
+                # zone saved under one login's account_uid was invisible.
+                _GeoZoneOwner = client_root(cursor, _GeoZoneOwner)
+
                 # Scoped to the owner: two clients may each have a "main
                 # depot", and a clash across clients used to tell one of
                 # them that the other had a zone by that name.

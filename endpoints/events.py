@@ -6,6 +6,7 @@ import logging
 import psycopg2
 import psycopg2.errors
 from . import db_pool
+from .owner_root import client_root
 from flask import json
 from flask import jsonify
 import datetime
@@ -80,6 +81,10 @@ def log_notification():
 
         dbconnect = psycopg2.connect(current_app.config['db_link'])
         cur = dbconnect.cursor()
+
+        # Filed under the client the console and the app read, whichever of
+        # its logins the caller named (usually the rule owner's account_uid).
+        owner_uid = client_root(cur, owner_uid)
 
         cur.execute("""
             INSERT INTO dll_event_notifications
