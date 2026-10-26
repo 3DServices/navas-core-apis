@@ -764,23 +764,47 @@ def close_read_connection(_exception=None):
 
 
 def check_device(device_imei):
+    """A unit's billing status from the unit register: 'running', 'blocked'
+    (or whatever else the register holds), 'not-found' when the unit is not
+    registered, or 'unavailable' when the register cannot be read.
 
-    dbconnect = _read_connection()
+    The register is dll_device_basic_data in Cassandra. Units are registered
+    there (device_configs), billing is blocked and unblocked there (devices),
+    and the access guard reads owners there. This read the Postgres copy,
+    which stopped being written when the device listener moved to Cassandra:
+    a unit registered since was "Routing Failed, Device Cant be found" -- UBK
+    415T, with 42 trips in its week's report, had no trip playback -- and a
+    billing change since was ignored either way.
 
-    with dbconnect:
-        with dbconnect.cursor() as cursor:
-            cursor.execute("SELECT device_billing_status FROM dll_device_basic_data WHERE device_imei=%s;", (str(device_imei),))
+    'unavailable' rather than falling back to that copy: its answer is stale
+    in both directions, and every caller's final arm already refuses a status
+    it does not recognise.
+    """
+    try:
+        from .cassandra_store import get_cassandra_session
+        session = get_cassandra_session()
+    except Exception:                                   # noqa: BLE001
+        session = None
+    return billing_status(session, device_imei)
 
-            if(cursor.rowcount == 1):
 
-                Device_BillingObject = cursor.fetchone()
-                BillingStatus = Device_BillingObject[0]
+def billing_status(session, device_imei):
+    """check_device's read, given a Cassandra session (None when the store
+    could not be reached). Separate so it can be tested without one."""
+    if session is None:
+        return 'unavailable'
+    try:
+        stmt = session.prepare(
+            "SELECT device_billing_status FROM dll_device_basic_data "
+            "WHERE device_imei = ?")
+        row = session.execute(stmt, (str(device_imei).strip(),)).one()
+    except Exception as error:                          # noqa: BLE001
+        logging.warning('check_device: unit register unreadable: %s', error)
+        return 'unavailable'
+    if row is None:
+        return 'not-found'
+    return str(row.device_billing_status or '').strip()
 
-                return BillingStatus
-
-            elif(cursor.rowcount == 0):
-                return 'not-found'
-            
 
 def CheckHardware(device_imei):
 

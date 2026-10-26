@@ -147,11 +147,18 @@ def get_devices():
         page_rows, pagination = paginate(rows, page, page_size)
 
         page_imeis = [row.device_imei for row in page_rows]
-        billing = pg_lookup("SELECT device_imei, device_billing_status FROM dll_device_basic_data WHERE device_imei = ANY(%s)",
-                            page_imeis)
-        owners = {row.device_imei: row.device_client for row in cassandra_in(
-            _cassandra_session, "SELECT device_imei, device_client FROM dll_device_basic_data WHERE device_imei IN ?",
-            page_imeis)}
+        # Billing comes from the Cassandra register with the owner. It was read
+        # from the Postgres copy, which stopped being written when the device
+        # listener moved: units registered since read "not-found", and billing
+        # changes since (written to Cassandra) never showed.
+        register = cassandra_in(
+            _cassandra_session,
+            "SELECT device_imei, device_client, device_billing_status FROM dll_device_basic_data "
+            "WHERE device_imei IN ?", page_imeis)
+        owners, billing = {}, {}
+        for reg in register:
+            owners[reg.device_imei] = reg.device_client
+            billing[str(reg.device_imei)] = reg.device_billing_status
         client_names = pg_lookup("SELECT client_uid, client_name FROM dll_client_accounts WHERE client_uid = ANY(%s)",
                                  set(owners.values()))
 

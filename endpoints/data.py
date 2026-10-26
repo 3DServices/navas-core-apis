@@ -34,6 +34,7 @@ from .globals import CheckHardware2
 from . import location_store
 from . import io_events_store
 from . import stops
+from . import geofence_report
 from math import radians, sin, cos, sqrt, atan2
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib.pagesizes import landscape
@@ -1666,6 +1667,16 @@ def trips_history_replay():
                                              'from_date and to_date did not '
                                              'parse as dates', '')
 
+                        # Optional "dedupe": "false" keeps every fix. The
+                        # dedupe keeps one fix per distinct (lon, lat), the
+                        # latest, so a parked vehicle's hour at one spot
+                        # becomes a single fix that the app's trip playback
+                        # cannot show in time, and a spot visited twice keeps
+                        # only the later visit. Default unchanged for every
+                        # other caller.
+                        _keep_all = str(payload_data['data'].get(
+                            'dedupe', 'true')).strip().lower() in (
+                                'false', '0', 'no')
                         try:
                             _replay_fixes, _replay_truncated = \
                                 location_store.fixes(
@@ -1673,7 +1684,8 @@ def trips_history_replay():
                                     FromDate, ToDate,
                                     limit=Record_Count, offset=Offset_Record,
                                     datetime_from=_span_from,
-                                    datetime_to=_span_to)
+                                    datetime_to=_span_to,
+                                    dedupe_coordinates=not _keep_all)
                         except location_store.PositionsUnavailable as error:
                             logging.warning(
                                 'trips_history_replay: position store '
@@ -2741,7 +2753,11 @@ def state_report_data():
                         AND state = %s
                         AND end_time != 'Incoming'
                         AND date_logged BETWEEN %s AND %s
+                        ORDER BY date_logged DESC, start_time DESC
                     """, (device_imei, report_state, start_iso, end_iso))
+                    # Newest first, as the trips report is. Without an ORDER BY
+                    # Postgres returned rows in storage order: a parking report
+                    # opened on today's stop, then ran 19th -> 25th upwards.
 
                     print(f"[state_report_data] device={device_imei}, state={report_state}, rowcount={cursor.rowcount}")
 
@@ -2898,8 +2914,10 @@ def geozone_report_data():
             return reply('error', 400, 'Invalid date format. Use DD-MM-YYYY', '')
         if start_dt > end_dt:
             start_dt, end_dt = end_dt, start_dt
-        start_ddmmyyyy = start_dt.strftime("%d-%m-%Y")
-        end_ddmmyyyy = end_dt.strftime("%d-%m-%Y")
+        # Optional: 'entry' or 'exit' for the app's Geofence Entry / Geofence
+        # Exit reports. Absent, both directions come back, as before.
+        breach = payload_data['data'].get('breach')
+        breach_values = geofence_report.breach_values(breach)
         device_names = {}
         try:
             cass_query = _cassandra_session.prepare("SELECT device_imei, device_name FROM dll_device_basic_data WHERE device_imei IN ?")
@@ -2915,42 +2933,38 @@ def geozone_report_data():
             except Exception:
                 for imei in report_devices:
                     device_names[imei] = imei
+        # The crossings the alert engine records, one row each with breach_type
+        # 'enter' / 'exit'. This read dll_triggered_events, which holds no
+        # rows in production, so the report was always empty.
+        sql = """
+            SELECT date_triggered, geozone_name, breach_type, event_name
+            FROM dll_event_notifications
+            WHERE device_imei = %s
+              AND COALESCE(geozone_name, '') <> ''
+              AND date_triggered >= %s AND date_triggered < %s
+        """
+        if breach_values is not None:
+            sql += " AND LOWER(TRIM(breach_type)) = ANY(%s)"
+        sql += " ORDER BY date_triggered DESC"
+        day_after_end = end_dt + timedelta(days=1)
         with dbconnect:
             with dbconnect.cursor() as cursor:
                 all_events = []
                 for device_imei in report_devices:
                     device_name = device_names.get(device_imei, device_imei)
-                    cursor.execute("""
-                        SELECT location_logged, value_from_device, value_triggered,
-                               location_cordinates, date_logged
-                        FROM dll_triggered_events
-                        WHERE event_triggered = %s
-                        AND device_imei = %s
-                        AND TO_TIMESTAMP(date_logged, 'DD-MM-YYYY')
-                            BETWEEN TO_TIMESTAMP(%s, 'DD-MM-YYYY') AND TO_TIMESTAMP(%s, 'DD-MM-YYYY')
-                    """, ('geozone', device_imei, start_ddmmyyyy, end_ddmmyyyy))
-                    print(f"[geozone_report_data] device={device_imei}, rowcount={cursor.rowcount}")
+                    args = [str(device_imei), start_dt, day_after_end]
+                    if breach_values is not None:
+                        args.append(list(breach_values))
+                    cursor.execute(sql, args)
+                    print(f"[geozone_report_data] device={device_imei}, breach={breach}, rowcount={cursor.rowcount}")
                     if cursor.rowcount >= 1:
-                        events_for_device = {device_name: []}
-                        for row in cursor.fetchall():
-                            geozone_id = str(row[1]).replace("inside_", "") if row[1] else ""
-                            geozone_name = "Unknown"
-                            if geozone_id:
-                                cursor.execute("SELECT geozone_name FROM dll_geozones WHERE geozone_uid = %s", (geozone_id,))
-                                gz_info = cursor.fetchone()
-                                geozone_name = gz_info[0] if gz_info else "Deleted Zone"
-                            events_for_device[device_name].append({
-                                "date_logged": str(row[4]) if row[4] else "",
-                                "location_point": str(row[0]) if row[0] else "",
-                                "geozone_name": geozone_name,
-                                "event_triggered": str(row[2]) if row[2] else "",
-                                "gps_coordinates": str(row[3]) if row[3] else ""
-                            })
-                        all_events.append(events_for_device)
+                        all_events.append({device_name: [
+                            geofence_report.row(*r) for r in cursor.fetchall()]})
                 if len(all_events) > 0:
                     return reply('success', 200, 'Found Geozone Events', all_events)
                 else:
-                    return reply('error', 400, 'No Geozone Events Found', '')
+                    return reply('error', 400,
+                                 geofence_report.empty_message(breach), '')
     except Exception as error:
         return reply('error', 500, str(error), '')
 
