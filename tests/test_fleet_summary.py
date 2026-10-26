@@ -40,9 +40,11 @@ def snap(lat=0.3476, lng=32.5825, speed=0, motion='', ignition=None, sats=None):
     return s
 
 
-def reading(snapshot=None, ago=timedelta(minutes=5), unread=False, imei='x', name=None):
+def reading(snapshot=None, ago=timedelta(minutes=5), unread=False, imei='x', name=None,
+            never=False):
     return {'imei': imei, 'name': name, 'snapshot': snapshot,
-            'seen': None if ago is None else NOW - ago, 'unread': unread}
+            'seen': None if ago is None else NOW - ago, 'unread': unread,
+            'never': never}
 
 
 # ── motion ────────────────────────────────────────────────────────────────
@@ -60,16 +62,44 @@ eq('fresh snapshot', fs.classify(reading(snap(speed=40)), NOW), 'moving')
 eq('61 minutes is silent',
    fs.classify(reading(snap(speed=40), ago=timedelta(minutes=61)), NOW), 'silent')
 eq('60 minutes is not', fs.classify(reading(snap(), ago=timedelta(minutes=60)), NOW), 'parked')
-eq('never seen is silent', fs.classify(reading(None, ago=None), NOW), 'silent')
+eq('undated is silent', fs.classify(reading(None, ago=None), NOW), 'silent')
+eq('never reported is apart from silent',
+   fs.classify(reading(None, ago=None, never=True), NOW), 'never_reported')
+eq('a failed read beats never',
+   fs.classify(reading(None, ago=None, never=True, unread=True), NOW), 'unread')
 eq('failed read is unread, not silent',
    fs.classify(reading(None, ago=None, unread=True), NOW), 'unread')
 eq('heartbeat without position', fs.classify(reading(None), NOW), 'no_position')
+
+# ── confirmed parked is trusted while the tracker sleeps ──────────────────
+eq('parked 3 h ago, quiet since: parked',
+   fs.classify(reading(snap(motion='Parked', ignition='OFF'),
+                       ago=timedelta(hours=3)), NOW), 'parked')
+eq('ignition_state OFF, no motion, 3 days: parked',
+   fs.classify(reading({'data_latitude': 1, 'data_longitude': 34,
+                        'speed_log': 0, 'ignition_state': 'OFF'},
+                       ago=timedelta(days=3)), NOW), 'parked')
+eq('parked 8 days ago: silent',
+   fs.classify(reading(snap(motion='Parked'), ago=timedelta(days=8)), NOW),
+   'silent')
+eq('last seen moving, quiet 2 h: silent',
+   fs.classify(reading(snap(motion='Moving', speed=40),
+                       ago=timedelta(hours=2)), NOW), 'silent')
+eq('parked only by guess, quiet 5 h: silent',
+   fs.classify(reading(snap(), ago=timedelta(hours=5)), NOW), 'silent')
+quiet = fs.fleet_status([
+    reading(snap(motion='Parked', sats=2), ago=timedelta(hours=2)),
+    reading(snap(motion='Parked', sats=2), ago=timedelta(days=3)),
+], NOW)
+eq('both parked', quiet['counts']['parked'], 2)
+eq('the one quiet over a day is flagged', quiet['quiet_parked'], 1)
+eq('weak GPS not counted on a flagged unit', quiet['weak_gps'], 1)
 
 # ── silent ages ───────────────────────────────────────────────────────────
 eq('under a day', fs.silent_age(NOW - timedelta(hours=3), NOW), 'under_day')
 eq('three days', fs.silent_age(NOW - timedelta(days=3), NOW), 'up_to_week')
 eq('a month', fs.silent_age(NOW - timedelta(days=30), NOW), 'over_week')
-eq('never', fs.silent_age(None, NOW), 'never')
+eq('undated ages as the oldest', fs.silent_age(None, NOW), 'over_week')
 
 # ── fleet status ──────────────────────────────────────────────────────────
 fleet = fs.fleet_status([
@@ -79,14 +109,16 @@ fleet = fs.fleet_status([
     reading(None),                                          # no_position: weak
     reading(snap(), ago=timedelta(hours=5)),                # silent, under a day
     reading(snap(), ago=timedelta(days=10)),                # silent, over a week
-    reading(None, ago=None),                                # silent, never
+    reading(None, ago=None, never=True),                    # never reported
     reading(None, ago=None, unread=True),                   # unread
 ], NOW)
 eq('counts', fleet['counts'], {'moving': 1, 'idling': 1, 'parked': 1,
-                               'no_position': 1, 'silent': 3, 'unread': 1})
+                               'no_position': 1, 'silent': 2,
+                               'never_reported': 1, 'unread': 1})
 eq('silent ages', fleet['silent_ages'],
-   {'under_day': 1, 'up_to_week': 0, 'over_week': 1, 'never': 1})
-eq('weak gps (missing satellites is not weak)', fleet['weak_gps'], 3)
+   {'under_day': 1, 'up_to_week': 0, 'over_week': 1})
+eq('weak gps (missing satellites is not weak; never reported is not weak)',
+   fleet['weak_gps'], 3)
 eq('reporting now', fleet['reporting_now'], 4)
 eq('total', fleet['total'], 8)
 eq('empty fleet', fs.fleet_status([], NOW)['total'], 0)

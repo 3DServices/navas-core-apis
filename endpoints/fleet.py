@@ -139,7 +139,8 @@ def _readings(units):
         snapshot = snapshots.get(imei)
         seen = _snapshot_seen(snapshot) if snapshot else None
         readings[imei] = {'imei': imei, 'name': unit.get('name'),
-                          'snapshot': snapshot, 'seen': seen, 'unread': False}
+                          'snapshot': snapshot, 'seen': seen, 'unread': False,
+                          'never': False}
         if seen is None:
             need_heartbeat.append(imei)
 
@@ -154,7 +155,11 @@ def _readings(units):
         beat = beats.get(imei, 'unread')
         if beat == 'unread':
             readings[imei]['unread'] = True
-        elif beat != 'never':
+        elif beat == 'never':
+            # No heartbeat row -- and only "never" with no live snapshot
+            # either: a snapshot that could not be dated still reported.
+            readings[imei]['never'] = not readings[imei]['snapshot']
+        else:
             readings[imei]['seen'] = beat
     return list(readings.values()), notes
 

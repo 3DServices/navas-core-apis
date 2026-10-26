@@ -13,7 +13,8 @@ already pulled from the stores:
     {'imei': ..., 'name': ...,
      'seen': datetime | None,     # when the unit last reported, local time
      'snapshot': dict | None,     # its latest live position (Redis), if any
-     'unread': bool}              # the lookup FAILED -- not the same as silent
+     'unread': bool,              # the lookup FAILED -- not the same as silent
+     'never': bool}               # no position and no heartbeat, ever
 
 so tests/test_fleet_summary.py runs without a server.
 
@@ -24,8 +25,21 @@ the dashboard shows the same numbers whichever side computes them.
 from datetime import timedelta
 
 # A unit whose last report is older than this is silent (the app's
-# FleetKpis.silentAfter).
+# FleetKpis.silentAfter) -- unless it was confirmed parked.
 SILENT_AFTER = timedelta(minutes=60)
+
+# How long a confirmed Parked report is trusted once the tracker goes quiet
+# (the app's FleetKpis.parkedHold). A vehicle reported parked -- motion_state
+# Parked, or the ignition off -- cannot move without starting, and starting
+# wakes the tracker; trackers sleep with the ignition off, so their silence
+# is expected. Never applied to a unit last seen moving or idling (engine on,
+# it reports every few seconds), nor to a parked state guessed from a
+# snapshot that says neither.
+PARKED_HOLD = timedelta(days=7)
+
+# A parked unit quiet this long is flagged under device health (quiet_parked)
+# while still counted parked (the app's FleetKpis.quietAfter).
+QUIET_AFTER = timedelta(days=1)
 
 # A position older than this is not used to place a unit inside a zone (the
 # app looked back 30 days for each unit's latest fix).
@@ -35,8 +49,14 @@ MOVING_KMH = 5
 MIN_SATELLITES = 4
 TOP_ZONES = 3
 
-STATES = ('moving', 'idling', 'parked', 'no_position', 'silent', 'unread')
-SILENT_AGES = ('under_day', 'up_to_week', 'over_week', 'never')
+# never_reported is kept apart from silent: a unit that has never sent
+# anything is usually an installation issue (not fitted, not wired, SIM not
+# activated), not a device that stopped -- a different job for a different
+# person. Silent is only a unit that reported and went quiet. (The app's
+# UnitState.noData.)
+STATES = ('moving', 'idling', 'parked', 'no_position', 'silent',
+          'never_reported', 'unread')
+SILENT_AGES = ('under_day', 'up_to_week', 'over_week')
 
 
 def _num(value):
@@ -76,8 +96,33 @@ def motion(snapshot):
         return 'moving'
     if speed > 0:
         return 'idling'
-    ignition = snapshot.get('ignition_status', snapshot.get('iginition'))
-    return 'idling' if _ignition_on(ignition) else 'parked'
+    return 'idling' if _ignition_on(_ignition(snapshot)) else 'parked'
+
+
+def _ignition(snapshot):
+    # The live feed sends ignition_state ("ON"/"OFF").
+    for key in ('ignition_state', 'ignition_status', 'iginition'):
+        if snapshot.get(key) is not None:
+            return snapshot.get(key)
+    return None
+
+
+def says_parked(snapshot):
+    """The snapshot itself says parked: motion_state, or the ignition off.
+    Not a parked state guessed from a snapshot that says neither.
+
+    motion_state text that names no state ("Unknown") is no evidence either
+    way, so the ignition decides, as the app does; only text that says moving
+    or idling rules parked out. (Found by the shared fleet status cases.)"""
+    state = str(snapshot.get('motion_state') or '').lower()
+    if 'park' in state or 'stop' in state:
+        return True
+    if 'idl' in state or 'mov' in state or 'driv' in state:
+        return False
+    if (_num(snapshot.get('speed_log')) or 0.0) > 0:
+        return False
+    return str(_ignition(snapshot) or '').strip().lower() in (
+        '0', 'off', 'false', 'no')
 
 
 def classify(reading, now):
@@ -86,22 +131,31 @@ def classify(reading, now):
     no_position is a unit that IS reporting but whose latest live position
     is missing, so whether it is moving cannot be said. unread is a unit whose
     lookup failed: nothing is known about it, and it is not called silent.
+    never_reported is a unit with no position and no heartbeat, ever.
     """
     if reading.get('unread'):
         return 'unread'
+    if reading.get('never'):
+        return 'never_reported'
     seen = reading.get('seen')
-    if seen is None or now - seen > SILENT_AFTER:
-        return 'silent'
+    if seen is None:
+        return 'silent'  # it reported, but nothing it sent can be dated
     snapshot = reading.get('snapshot')
+    age = now - seen
+    if age > SILENT_AFTER:
+        if snapshot and age <= PARKED_HOLD and says_parked(snapshot):
+            return 'parked'
+        return 'silent'
     if not snapshot:
         return 'no_position'
     return motion(snapshot)
 
 
 def silent_age(seen, now):
-    """Which SILENT_AGES bucket a silent unit falls in."""
+    """Which SILENT_AGES bucket a silent unit falls in. One that cannot be
+    dated is counted the oldest, as the app does."""
     if seen is None:
-        return 'never'
+        return 'over_week'
     age = now - seen
     if age > timedelta(days=7):
         return 'over_week'
@@ -124,17 +178,21 @@ def fleet_status(readings, now):
     counts = {s: 0 for s in STATES}
     ages = {a: 0 for a in SILENT_AGES}
     weak = 0
+    quiet_parked = 0
     for reading in readings:
         state = classify(reading, now)
         counts[state] += 1
-        if state == 'silent':
+        if state == 'parked' and now - reading['seen'] > QUIET_AFTER:
+            quiet_parked += 1  # a device flag; weak GPS not counted on top
+        elif state == 'silent':
             ages[silent_age(reading.get('seen'), now)] += 1
-        elif state != 'unread' and weak_gps(reading):
+        elif state not in ('unread', 'never_reported') and weak_gps(reading):
             weak += 1
     return {
         'counts': counts,
         'silent_ages': ages,
         'weak_gps': weak,
+        'quiet_parked': quiet_parked,
         'reporting_now': sum(counts[s] for s in
                              ('moving', 'idling', 'parked', 'no_position')),
         'total': len(readings),
