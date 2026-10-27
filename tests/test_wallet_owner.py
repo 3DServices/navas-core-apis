@@ -39,10 +39,12 @@ resolve_client_account = _NS['resolve_client_account']
 class FakeCursor:
     """Answers the queries these functions make, from an in-memory database."""
 
-    def __init__(self, relay, clients=None):
+    def __init__(self, relay, clients=None, dicts=False):
         # relay:   {account_uid: account_root}  (dll_access_relay)
         # clients: {client_uid}                 (dll_client_accounts)
+        # dicts:   answer like a RealDictCursor (rows keyed by column name)
         self.relay = relay
+        self.dicts = dicts
         self.clients = set(CLIENTS if clients is None else clients)
         self._rows = []
         self.queries = []
@@ -60,6 +62,9 @@ class FakeCursor:
             self._rows = [(value,)] if value in self.clients else []
         else:                                    # pragma: no cover
             raise AssertionError('unexpected query: ' + sql)
+        if self.dicts:
+            column = sql.split()[1]
+            self._rows = [{column: r[0]} for r in self._rows]
 
     def fetchone(self):
         return self._rows[0] if self._rows else None
@@ -175,6 +180,21 @@ def test_a_deleted_company_is_refused():
 def test_blank_is_refused():
     for value in ('', None, '   '):
         assert resolve_client_account(FakeCursor(RELAY), value) is None
+
+
+# ── RealDictCursor rows (the drivers module opens its cursor that way) ───────
+
+def test_dict_rows_resolve_like_tuple_rows():
+    for uid in ('CLIENT-1', 'USER-2', 'NOBODY', ''):
+        assert (resolve_wallet_owner(FakeCursor(RELAY, dicts=True), uid)
+                == resolve_wallet_owner(FakeCursor(RELAY), uid))
+
+
+def test_dict_rows_client_account():
+    assert resolve_client_account(FakeCursor(RELAY, dicts=True), 'USER-2') == 'CLIENT-1'
+    assert resolve_client_account(FakeCursor(RELAY, dicts=True), 'STAFF-7') is None
+    assert resolve_client_account(
+        FakeCursor({'USER-2': None}, dicts=True), 'USER-2') is None
 
 
 if __name__ == '__main__':

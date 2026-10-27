@@ -396,12 +396,17 @@ def resolve_wallet_owner(cursor, uid):
     """
     uid = str(uid or '').strip()
 
+    # Callers pass plain cursors (tuple rows) and RealDictCursors (dict rows,
+    # the drivers module); read the one selected column either way.
+    def col(row, name):
+        return row.get(name) if isinstance(row, dict) else row[0]
+
     cursor.execute(
         "SELECT account_root FROM dll_access_relay WHERE account_uid=%s",
         (uid,)
     )
     row = cursor.fetchone()
-    root = str(row[0]).strip() if row and row[0] else ''
+    root = str(col(row, 'account_root')).strip() if row and col(row, 'account_root') else ''
     client_uid = root or uid
 
     cursor.execute(
@@ -409,7 +414,8 @@ def resolve_wallet_owner(cursor, uid):
         (client_uid,)
     )
     owners = {client_uid, uid}
-    owners.update(str(r[0]).strip() for r in cursor.fetchall() if r[0])
+    owners.update(str(col(r, 'account_uid')).strip()
+                  for r in cursor.fetchall() if col(r, 'account_uid'))
     owners.discard('')
     return client_uid, sorted(owners)
 
