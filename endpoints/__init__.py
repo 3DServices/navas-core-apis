@@ -35,6 +35,7 @@ from .fleet import fleet_bp
 from .tokens_usage_routes import token_usage_bp
 from .referrals import referrals_bp
 from .driver_registry import driver_registry_bp
+from .fuel_registry import fuel_registry_bp
 from .access_guard import register_access_guard
 
 def Sentinel_Fleet():
@@ -76,6 +77,7 @@ def Sentinel_Fleet():
     app.register_blueprint(token_usage_bp)
     app.register_blueprint(referrals_bp)
     app.register_blueprint(driver_registry_bp)
+    app.register_blueprint(fuel_registry_bp)
 
     # Register metrics middleware
     register_metrics_middleware(app)

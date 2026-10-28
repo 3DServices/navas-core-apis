@@ -1,0 +1,429 @@
+openapi: 3.0.3
+info:
+  title: NAVAS core APIs — FuelMath (fuel issuance)
+  version: "2026-10-28"
+  description: |
+    Fuel issued to drivers for the vehicles they drive, checked against the
+    tracker (endpoints/fuel_registry.py, rules in endpoints/fuel_rules.py,
+    tables in database/migrations/053_fuel.sql — run run_migration_053.py
+    first, after 052).
+
+    Every route works on the signed-in user's own client; an issue of
+    another client answers 404. Bodies are sent as {"data": {...}}. Times
+    are local (EAT) and carry no offset. Money is UGX, whole shillings.
+
+    Each recorded issue is checked when it is saved. A **discrepancy** flag
+    opens a review (review_state "open"); a **notice** says a check could not
+    be done. Flags: over_capacity, more_than_used, not_stopped,
+    odometer_backwards, odometer_mismatch, driver_not_assigned,
+    driver_not_allowed, possible_duplicate, fuel_type_mismatch (discrepancies);
+    no_tracker_data, tracker_unavailable, no_profile, first_full_tank,
+    span_too_long (notices).
+servers:
+  - url: https://narvas.3dservices.co.ug
+  - url: http://127.0.0.1:5000
+security:
+  - bearerAuth: []
+
+paths:
+  /fuel/profiles:
+    get:
+      tags: [FuelMath]
+      summary: The client's vehicle fuel profiles
+      responses:
+        "200":
+          description: Profiles
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - properties:
+                      data: {type: array, items: {$ref: "#/components/schemas/Profile"}}
+        "403": {$ref: "#/components/responses/NoClient"}
+
+  /fuel/profiles/{device_imei}:
+    parameters:
+      - {name: device_imei, in: path, required: true, schema: {type: string}, example: "354002396040196"}
+    get:
+      tags: [FuelMath]
+      summary: One vehicle's fuel profile (data null when none is set)
+      responses:
+        "200":
+          description: Profile or null
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - properties:
+                      data: {allOf: [{$ref: "#/components/schemas/Profile"}], nullable: true}
+    put:
+      tags: [FuelMath]
+      summary: Set what the vehicle should use
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                data:
+                  type: object
+                  required: [fuel_type, tank_capacity_l, baseline_km_per_l]
+                  properties:
+                    fuel_type: {type: string, enum: [petrol, diesel]}
+                    tank_capacity_l: {type: number, minimum: 0, exclusiveMinimum: true, maximum: 2000}
+                    baseline_km_per_l: {type: number, minimum: 0, exclusiveMinimum: true, maximum: 50}
+                    tolerance_pct: {type: integer, minimum: 5, maximum: 50, default: 20}
+            example:
+              data: {fuel_type: diesel, tank_capacity_l: 80, baseline_km_per_l: 9.5, tolerance_pct: 20}
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - properties: {data: {$ref: "#/components/schemas/Profile"}}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "403": {description: The vehicle isn't the client's, or the login has no client}
+        "503": {description: The vehicle register couldn't be read}
+
+  /fuel/issues:
+    get:
+      tags: [FuelMath]
+      summary: Fuel issues, newest first
+      parameters:
+        - {name: device_imei, in: query, schema: {type: string}}
+        - {name: driver_uid, in: query, schema: {type: string}}
+        - {name: from, in: query, schema: {type: string, format: date}, example: "2026-10-01"}
+        - {name: to, in: query, schema: {type: string, format: date}, example: "2026-10-31"}
+        - name: review
+          in: query
+          schema: {type: string, enum: [open, reviewed, explained, confirmed_loss]}
+        - name: voided
+          in: query
+          description: "include: also return voided issues"
+          schema: {type: string, enum: [include]}
+        - {name: limit, in: query, schema: {type: integer, default: 200, maximum: 1000}}
+      responses:
+        "200":
+          description: Issues
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - properties:
+                      data: {type: array, items: {$ref: "#/components/schemas/Issue"}}
+    post:
+      tags: [FuelMath]
+      summary: Record a fuel issue (checked against the tracker when saved)
+      description: |
+        Can take several seconds: the tracker's positions since the previous
+        full tank (at most 21 days) are read to measure the distance.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                data:
+                  type: object
+                  required: [device_imei, driver_uid, issued_at, litres, unit_price,
+                             station_name, payment_method]
+                  properties:
+                    device_imei: {type: string}
+                    driver_uid: {type: string}
+                    issued_at: {type: string, example: "2026-10-28T09:00",
+                                description: "Local time; at most 92 days ago, not in the future"}
+                    litres: {type: number, maximum: 1000}
+                    unit_price: {type: number, minimum: 100, maximum: 50000, description: UGX per litre}
+                    fuel_type: {type: string, enum: [petrol, diesel],
+                                description: "Required when the vehicle has no fuel profile"}
+                    station_name: {type: string, minLength: 2, maxLength: 120}
+                    payment_method: {type: string, enum: [cash, fuel_card, credit, mobile_money]}
+                    full_tank: {type: boolean, default: false}
+                    odometer_km: {type: number, nullable: true}
+                    receipt_number: {type: string, maxLength: 60, nullable: true}
+                    notes: {type: string, maxLength: 1000, nullable: true}
+            example:
+              data:
+                device_imei: "354002396040196"
+                driver_uid: "4f6c2a7e-0d6b-4d0c-9a51-3b2f7d1e9c10"
+                issued_at: "2026-10-28T09:00"
+                litres: 40
+                unit_price: 5150
+                fuel_type: diesel
+                station_name: Shell Jinja Road
+                payment_method: fuel_card
+                full_tank: true
+                odometer_km: 120450
+                receipt_number: R-00123
+      responses:
+        "201":
+          description: Recorded; flags say what the checks found
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - properties: {data: {$ref: "#/components/schemas/Issue"}}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "403": {description: The vehicle isn't the client's, or the login has no client}
+        "409": {description: The receipt number is already recorded}
+        "503": {description: The vehicle register couldn't be read}
+
+  /fuel/issues/{issue_uid}:
+    parameters:
+      - {name: issue_uid, in: path, required: true, schema: {type: string}}
+    get:
+      tags: [FuelMath]
+      summary: One issue
+      responses:
+        "200":
+          description: Issue
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - properties: {data: {$ref: "#/components/schemas/Issue"}}
+        "404": {description: Not found}
+
+  /fuel/issues/{issue_uid}/review:
+    parameters:
+      - {name: issue_uid, in: path, required: true, schema: {type: string}}
+    post:
+      tags: [FuelMath]
+      summary: Close (or change) the review of a flagged issue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                data:
+                  type: object
+                  required: [outcome, note]
+                  properties:
+                    outcome: {type: string, enum: [explained, confirmed_loss]}
+                    note: {type: string, minLength: 3, maxLength: 1000}
+            example:
+              data: {outcome: explained, note: "Receipt time was 40 minutes off; vehicle was at the pump at 08:20."}
+      responses:
+        "200": {description: Review saved; returns the issue}
+        "400": {description: "Nothing to review, voided, unknown outcome, or no note"}
+        "404": {description: Not found}
+
+  /fuel/issues/{issue_uid}/void:
+    parameters:
+      - {name: issue_uid, in: path, required: true, schema: {type: string}}
+    post:
+      tags: [FuelMath]
+      summary: Void a mistaken issue (it stays, uncounted)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                data:
+                  type: object
+                  required: [reason]
+                  properties:
+                    reason: {type: string, minLength: 3, maxLength: 1000}
+            example:
+              data: {reason: Entered twice}
+      responses:
+        "200": {description: Voided; returns the issue}
+        "400": {description: Already voided, or no reason}
+        "404": {description: Not found}
+
+  /fuel/issues/{issue_uid}/receipt:
+    parameters:
+      - {name: issue_uid, in: path, required: true, schema: {type: string}}
+    post:
+      tags: [FuelMath]
+      summary: Upload the receipt photo
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [photo]
+              properties:
+                photo: {type: string, format: binary, description: "JPEG, PNG or WebP, at most 5 MB"}
+      responses:
+        "200": {description: Saved; returns the issue}
+        "400": {description: Missing, too large or not an image}
+        "404": {description: Not found}
+    get:
+      tags: [FuelMath]
+      summary: The receipt photo (same client only)
+      responses:
+        "200":
+          description: The image
+          content:
+            image/jpeg: {schema: {type: string, format: binary}}
+            image/png: {schema: {type: string, format: binary}}
+            image/webp: {schema: {type: string, format: binary}}
+        "404": {description: No receipt}
+
+  /fuel/summary:
+    get:
+      tags: [FuelMath]
+      summary: Totals for a period, per vehicle and per driver
+      parameters:
+        - {name: from, in: query, schema: {type: string, format: date}, description: "Default: the 1st of this month"}
+        - {name: to, in: query, schema: {type: string, format: date}, description: "Default: today. At most a year."}
+      responses:
+        "200":
+          description: Summary
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - properties: {data: {$ref: "#/components/schemas/Summary"}}
+
+  /fuel/stations:
+    get:
+      tags: [FuelMath]
+      summary: Station names used before, most used first (for suggestions)
+      responses:
+        "200":
+          description: Names
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - properties:
+                      data: {type: array, items: {type: string}}
+
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
+  responses:
+    Invalid:
+      description: A field is invalid; data.errors has a message per field
+      content:
+        application/json:
+          example:
+            status: error
+            message: "Enter the litres issued (more than 0, at most 1000)."
+            data: {errors: {litres: "Enter the litres issued (more than 0, at most 1000)."}}
+    NoClient:
+      description: The login has no client account
+  schemas:
+    Envelope:
+      type: object
+      properties:
+        status: {type: string, example: success}
+        message: {type: string}
+        data: {}
+    Profile:
+      type: object
+      properties:
+        device_imei: {type: string}
+        fuel_type: {type: string, enum: [petrol, diesel]}
+        tank_capacity_l: {type: number}
+        baseline_km_per_l: {type: number}
+        tolerance_pct: {type: integer}
+        updated_at: {type: string, format: date-time}
+    Flag:
+      type: object
+      properties:
+        code: {type: string, example: more_than_used}
+        kind: {type: string, enum: [discrepancy, notice]}
+        message: {type: string}
+    Issue:
+      type: object
+      properties:
+        issue_uid: {type: string}
+        device_imei: {type: string}
+        driver_uid: {type: string}
+        driver_name: {type: string, nullable: true}
+        issued_at: {type: string, example: "2026-10-28T09:00:00"}
+        fuel_type: {type: string}
+        litres: {type: number}
+        unit_price: {type: number}
+        total_cost: {type: number, description: "litres x unit_price, UGX"}
+        full_tank: {type: boolean}
+        odometer_km: {type: number, nullable: true}
+        station_name: {type: string}
+        receipt_number: {type: string, nullable: true}
+        payment_method: {type: string}
+        notes: {type: string, nullable: true}
+        has_receipt: {type: boolean}
+        tracker:
+          type: object
+          properties:
+            state: {type: string, enum: [checked, no_data, unavailable, unchecked]}
+            lat: {type: number, nullable: true}
+            lon: {type: number, nullable: true}
+            at: {type: string, nullable: true}
+            place: {type: string, nullable: true}
+        km_since_full: {type: number, nullable: true}
+        litres_since_full: {type: number, nullable: true}
+        km_per_l: {type: number, nullable: true, description: Full tanks only}
+        flags: {type: array, items: {$ref: "#/components/schemas/Flag"}}
+        review_state: {type: string, enum: [none, open, explained, confirmed_loss]}
+        review_note: {type: string, nullable: true}
+        reviewed_by: {type: string, nullable: true}
+        reviewed_at: {type: string, nullable: true}
+        voided: {type: boolean}
+        voided_at: {type: string, nullable: true}
+        void_reason: {type: string, nullable: true}
+        issued_by: {type: string}
+        created_at: {type: string}
+    Summary:
+      type: object
+      properties:
+        from: {type: string, format: date}
+        to: {type: string, format: date}
+        totals:
+          type: object
+          properties:
+            issues: {type: integer}
+            litres: {type: number}
+            cost: {type: number}
+            open_reviews: {type: integer}
+            excess_cost: {type: number, description: UGX above what the measured distance needs}
+        vehicles:
+          type: array
+          items:
+            type: object
+            properties:
+              device_imei: {type: string}
+              issues: {type: integer}
+              litres: {type: number}
+              cost: {type: number}
+              open_reviews: {type: integer}
+              flagged: {type: integer}
+              measured_km: {type: number}
+              measured_litres: {type: number}
+              km_per_l: {type: number, nullable: true}
+              baseline_km_per_l: {type: number, nullable: true}
+              avg_price: {type: number}
+              cost_per_km: {type: number, nullable: true}
+              excess_litres: {type: number, nullable: true}
+              excess_cost: {type: number, nullable: true}
+        drivers:
+          type: array
+          items:
+            type: object
+            properties:
+              driver_uid: {type: string}
+              driver_name: {type: string, nullable: true}
+              issues: {type: integer}
+              litres: {type: number}
+              cost: {type: number}
+              flagged: {type: integer}
