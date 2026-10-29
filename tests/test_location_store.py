@@ -513,6 +513,62 @@ class DatetimeSpan(unittest.TestCase):
         self.assertIsNone(params['datetime_from'].default)
         self.assertIsNone(params['datetime_to'].default)
 
+class AlertEngineReads(unittest.TestCase):
+    """latest_fix and fixes_after: the small reads the alert sweep makes."""
+
+    class Session(object):
+        def __init__(self, rows=(), fail=False):
+            self.rows, self.fail, self.params = list(rows), fail, None
+
+        def prepare(self, cql):
+            self.cql = cql
+            return 'STATEMENT'
+
+        def execute(self, stmt, params):
+            if self.fail:
+                raise RuntimeError('read timeout')
+            self.params = params
+            return list(self.rows)
+
+    def test_latest_fix_skips_unusable_rows(self):
+        session = self.Session([
+            Row(0, 0, datestamp='29-10-2026', timestamp='09:10:00AM',
+                record_timestamp=datetime(2026, 10, 29, 6, 10)),
+            Row(32.58, 0.34, datestamp='29-10-2026', timestamp='09:09:00AM',
+                record_timestamp=datetime(2026, 10, 29, 6, 9)),
+        ])
+        found = ls.latest_fix(session, '1', '29-10-2026')
+        self.assertEqual((found['lat'], found['at_utc']),
+                         (0.34, datetime(2026, 10, 29, 6, 9)))
+        self.assertIn('ORDER BY record_timestamp DESC', session.cql)
+
+    def test_latest_fix_none_on_an_empty_day(self):
+        self.assertIsNone(ls.latest_fix(self.Session(), '1', '29-10-2026'))
+
+    def test_fixes_after_ranges_on_the_clustering_column(self):
+        after = datetime(2026, 10, 29, 6, 0)
+        session = self.Session([
+            Row(32.6, 0.3, datestamp='29-10-2026', timestamp='09:05:00AM',
+                record_timestamp=datetime(2026, 10, 29, 6, 5)),
+            Row(32.6, 0.3, datestamp='29-10-2026', timestamp='09:02:00AM',
+                record_timestamp=datetime(2026, 10, 29, 6, 2)),
+        ])
+        rows = ls.fixes_after(session, '1', '29-10-2026', after)
+        self.assertIn('record_timestamp > ?', session.cql)
+        self.assertEqual(session.params[:3], ('1', '29-10-2026', after))
+        # Oldest first, whatever order the store returned.
+        self.assertEqual([r['at_utc'].minute for r in rows], [2, 5])
+
+    def test_failures_are_not_emptiness(self):
+        with self.assertRaises(ls.PositionsUnavailable):
+            ls.latest_fix(self.Session(fail=True), '1', '29-10-2026')
+        with self.assertRaises(ls.PositionsUnavailable):
+            ls.fixes_after(self.Session(fail=True), '1', '29-10-2026',
+                           datetime(2026, 1, 1))
+        with self.assertRaises(ls.PositionsUnavailable):
+            ls.fixes_after(None, '1', '29-10-2026', datetime(2026, 1, 1))
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
 

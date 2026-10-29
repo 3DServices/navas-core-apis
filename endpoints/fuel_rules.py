@@ -630,3 +630,27 @@ DUPLICATE_FIELDS = {
     'uq_fuel_receipt': ('receipt_number',
                         'This receipt number is already recorded.'),
 }
+
+
+# ── Fuel sensors ─────────────────────────────────────────────────────────────
+# A vehicle has a fuel sensor when its device config names a 'fuel_level'
+# input. Analogue sensors (these IO sources) report millivolts and need the
+# unit's calibration table (dll_calibrated_fuel_data) to become litres, as
+# data.py's fuel calculator does; the others report litres directly.
+CALIBRATED_SOURCES = ('270', '12', '201')
+_NO_SOURCE = ('', '0', 'none', 'null', 'n/a', 'na', '-', 'no', 'false', 'no_data')
+
+
+def sensor_state(source, calibrated):
+    """'none', 'needs_calibration' or 'ready' for one vehicle.
+
+    source      the 'fuel_level' config's data source, or None when the unit
+                has no such config
+    calibrated  the unit has a calibration table
+    """
+    text = str(source if source is not None else '').strip().lower()
+    if text in _NO_SOURCE:
+        return 'none'
+    if text in CALIBRATED_SOURCES and not calibrated:
+        return 'needs_calibration'
+    return 'ready'

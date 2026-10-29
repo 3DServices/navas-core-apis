@@ -1127,6 +1127,47 @@ def _geofence_value_error(condition, value):
     return None
 
 
+def _event_value_error(condition, value):
+    """Why a rule cannot be checked by the alert engine as saved, or None.
+
+    Geofence rules as above. For the rest, alert_conditions.parse_config is
+    what the engine reads the value with, so a value it cannot read is
+    refused here rather than saved as a rule that never fires.
+    """
+    from . import alert_conditions as conditions
+    problem = _geofence_value_error(condition, value)
+    if problem or condition == conditions.GEOFENCE:
+        return problem
+    condition = str(condition or '').strip().lower()
+    if condition in conditions.UNSUPPORTED:
+        return (f'This alert is not available yet: '
+                f'{conditions.UNSUPPORTED[condition]}.')
+    if condition not in conditions.SUPPORTED:
+        return None
+    config = conditions.parse_config(condition, value)
+    if config is not None and condition == conditions.FUEL_FLAGGED and config['flags']:
+        from .fuel_rules import FLAGS
+        unknown = [c for c in config['flags']
+                   if FLAGS.get(c, ('',))[0] != 'discrepancy']
+        if unknown:
+            return ('These are not fuel discrepancies: ' + ', '.join(unknown) + '.')
+    if config is not None:
+        return None
+    if condition == conditions.SPEED:
+        return (f'The speed limit must be a number of km/h between '
+                f'{conditions.SPEED_LIMIT_MIN:g} and {conditions.SPEED_LIMIT_MAX:g}.')
+    if condition == conditions.OFFLINE:
+        return (f'The offline time must be a number of minutes, at least '
+                f'{conditions.OFFLINE_MIN_MINUTES}.')
+    if condition == conditions.FUEL_CONSUMPTION:
+        return ('Send "profile" to use each vehicle\'s tolerance, or a '
+                f'percentage between {conditions.CONSUMPTION_PCT_MIN} and '
+                f'{conditions.CONSUMPTION_PCT_MAX}.')
+    if condition == conditions.FUEL_FLAGGED:
+        return 'Send "all", or the fuel flags to alert on.'
+    return 'The trigger value cannot be read.'
+
+
 @devices_bp.route("/events/create", methods=["POST"])
 def create_new_device_event():
 
@@ -1146,7 +1187,7 @@ def create_new_device_event():
             EventCondition_value = str(payload_data['data']['event_condition_value'])
             EventOwner = str(payload_data['data']['event_owner_uid'])
 
-            problem = _geofence_value_error(EventCondition, EventCondition_value)
+            problem = _event_value_error(EventCondition, EventCondition_value)
             if problem:
                 return reply('error', 400, problem, '')
 
@@ -1186,7 +1227,7 @@ def update_event(event_uid):
             EventCondition_value = str(payload_data['data']['event_condition_value'])
             Event_UID = str(event_uid)
 
-            problem = _geofence_value_error(EventCondition, EventCondition_value)
+            problem = _event_value_error(EventCondition, EventCondition_value)
             if problem:
                 return reply('error', 400, problem, '')
 

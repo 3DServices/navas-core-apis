@@ -7,6 +7,9 @@ checked that any device_imei sent belongs to the caller; recording an issue
 and setting a profile check it again against the unit register.
 
   GET  /fuel/profiles                       the client's vehicle fuel profiles
+  GET  /fuel/capabilities                   per vehicle: has_profile, and
+                                            fuel_sensor none | needs_calibration
+                                            | ready
   GET  /fuel/profiles/<device_imei>         one (data null when none is set)
   PUT  /fuel/profiles/<device_imei>         {data:{fuel_type, tank_capacity_l,
                                             baseline_km_per_l, tolerance_pct}}
@@ -20,6 +23,9 @@ and setting a profile check it again against the unit register.
   POST /fuel/issues/<issue_uid>/receipt     multipart "photo"
   GET  /fuel/issues/<issue_uid>/receipt     the photo, same client only
   GET  /fuel/summary?from=&to=              totals per vehicle and driver
+  POST /data-stream/reports/fuel/<kind>/generate-data
+                                            issuance, consumption or exceptions
+                                            report rows (fuel_report.py)
   GET  /fuel/stations                       station names used before, for
                                             the app's suggestions
 """
@@ -147,6 +153,65 @@ def list_profiles():
     except Exception:                   # noqa: BLE001
         log.exception('fuel profiles list failed')
         return reply('error', 500, 'Could not load the fuel profiles.', '')
+
+
+def _sensor_sources(session, imeis):
+    """{imei: the 'fuel_level' config's data source, or None}, read
+    concurrently: one point read per unit."""
+    from cassandra.concurrent import execute_concurrent_with_args
+    stmt = session.prepare(
+        "SELECT config_param_data_source_uid FROM dll_device_local_configs "
+        "WHERE config_parameter = ? AND local_device_imei = ? ALLOW FILTERING")
+    outcomes = execute_concurrent_with_args(
+        session, stmt, [('fuel_level', imei) for imei in imeis],
+        concurrency=16, raise_on_first_error=True)
+    sources = {}
+    for imei, (ok, result) in zip(imeis, outcomes):
+        rows = list(result) if ok else []
+        # Two configs for one parameter is ambiguous; data.py treats it as
+        # none, and so does this.
+        sources[imei] = (getattr(rows[0], 'config_param_data_source_uid', None)
+                         if len(rows) == 1 else None)
+    return sources
+
+
+@fuel_registry_bp.route('/fuel/capabilities', methods=['GET'])
+@require_auth
+def capabilities():
+    """What fuel features each of the client's vehicles can use:
+    [{device_imei, name, has_profile, fuel_sensor}] where fuel_sensor is
+    'none', 'needs_calibration' or 'ready' (fuel_rules.sensor_state)."""
+    try:
+        with _cursor() as cur:
+            client = _client(cur)
+            if not client:
+                return reply('error', 403, _NO_CLIENT, '')
+            cur.execute("SELECT device_imei FROM dll_fuel_vehicle_profiles "
+                        "WHERE client_uid = %s", (client,))
+            profiled = {r['device_imei'] for r in cur.fetchall()}
+
+            from .devices import get_cassandra_session
+            session = get_cassandra_session()
+            if session is None:
+                return reply('error', 503, _UNIT_UNREACHABLE, '')
+            stmt = session.prepare(
+                "SELECT device_imei, device_name FROM dll_device_basic_data "
+                "WHERE device_client = ? ALLOW FILTERING")
+            units = [(str(r.device_imei), r.device_name or str(r.device_imei))
+                     for r in session.execute(stmt, (client,))]
+            imeis = [imei for imei, _ in units]
+            sources = _sensor_sources(session, imeis) if imeis else {}
+
+            cur.execute("SELECT DISTINCT device_imei FROM dll_calibrated_fuel_data "
+                        "WHERE device_imei = ANY(%s)", (imeis,))
+            calibrated = {r['device_imei'] for r in cur.fetchall()}
+        return reply('success', 200, 'Fuel capabilities', sorted((
+            {'device_imei': imei, 'name': name, 'has_profile': imei in profiled,
+             'fuel_sensor': rules.sensor_state(sources.get(imei), imei in calibrated)}
+            for imei, name in units), key=lambda u: u['name'].lower()))
+    except Exception:                   # noqa: BLE001
+        log.exception('fuel capabilities failed')
+        return reply('error', 500, 'Could not load the fuel capabilities.', '')
 
 
 @fuel_registry_bp.route('/fuel/profiles/<device_imei>', methods=['GET'])
@@ -325,6 +390,20 @@ def _context(cur, client, clean):
                 nearby_issues=nearby)
 
 
+def _send_alerts(cur, issue, profile):
+    """Event-rule alerts for a new issue (fuel_issue_flagged,
+    high_fuel_consumption). A failure here is logged and the issue is still
+    recorded: losing a receipt over an SMS would be the wrong way round."""
+    cur.execute("SAVEPOINT fuel_alerts")
+    try:
+        from .alert_engine import fuel_issue_alerts
+        fuel_issue_alerts(cur, issue, profile)
+        cur.execute("RELEASE SAVEPOINT fuel_alerts")
+    except Exception:                   # noqa: BLE001
+        cur.execute("ROLLBACK TO SAVEPOINT fuel_alerts")
+        log.warning('fuel: alerts for %s failed', issue.get('issue_uid'), exc_info=True)
+
+
 @fuel_registry_bp.route('/fuel/issues', methods=['POST'])
 @require_auth
 def record_issue():
@@ -371,6 +450,7 @@ def record_issue():
                 f"VALUES ({', '.join(['%s'] * len(fields))})",
                 list(fields.values()))
             issue = rules.public_issue(_issue(cur, client, issue_uid))
+            _send_alerts(cur, issue, profile)
         _audit('FUEL_ISSUE', issue_uid, client,
                {'device_imei': imei, 'litres': clean['litres'],
                 'total_cost': clean['total_cost'], 'flags': result['flags']})
@@ -591,3 +671,75 @@ def stations():
     except Exception:                   # noqa: BLE001
         log.exception('fuel stations failed')
         return reply('error', 500, 'Could not load the stations.', '')
+
+
+# ── reports ──────────────────────────────────────────────────────────────────
+
+def _device_names(imeis):
+    """{imei: name} from the unit register; the IMEI itself when unknown."""
+    names = {imei: imei for imei in imeis}
+    try:
+        from .devices import get_cassandra_session
+        session = get_cassandra_session()
+        stmt = session.prepare("SELECT device_imei, device_name FROM "
+                               "dll_device_basic_data WHERE device_imei = ?")
+        for imei in imeis:
+            row = session.execute(stmt, (imei,)).one()
+            if row is not None and row.device_name:
+                names[imei] = row.device_name
+    except Exception:                   # noqa: BLE001 -- names are a nicety
+        log.warning('fuel report: unit names unavailable', exc_info=True)
+    return names
+
+
+@fuel_registry_bp.route('/data-stream/reports/fuel/<kind>/generate-data', methods=['POST'])
+@require_auth
+def fuel_report_data(kind):
+    """The FuelMath reports, in the shape every report route returns:
+    [{device_name: [row, ...]}]. Body {data: {report_devices: [imei, ...],
+    start_date: DD-MM-YYYY, end_date: DD-MM-YYYY}}. kind is issuance,
+    consumption or exceptions (fuel_report.py)."""
+    from . import fuel_report
+    if kind not in fuel_report.KINDS:
+        return reply('error', 404, 'No such fuel report.', '')
+    data = _body()
+    devices = data.get('report_devices') or []
+    if isinstance(devices, str):
+        devices = [devices]
+    imeis = list(dict.fromkeys(''.join(str(d).split()) for d in devices if d))
+    try:
+        start = datetime.strptime(str(data.get('start_date')), '%d-%m-%Y').date()
+        end = datetime.strptime(str(data.get('end_date')), '%d-%m-%Y').date()
+    except ValueError:
+        return reply('error', 400, 'Invalid date format. Use DD-MM-YYYY', '')
+    if not imeis:
+        return reply('error', 400, 'Choose at least one vehicle.', '')
+    if end < start:
+        start, end = end, start
+    if (end - start).days > 366:
+        return reply('error', 400, 'Choose at most a year.', '')
+    try:
+        with _cursor() as cur:
+            client = _client(cur)
+            if not client:
+                return reply('error', 403, _NO_CLIENT, '')
+            cur.execute(
+                _ISSUE_SELECT + """ WHERE f.client_uid = %s AND f.device_imei = ANY(%s)
+                                     AND f.voided_at IS NULL
+                                     AND f.issued_at >= %s AND f.issued_at < %s""",
+                (client, imeis, datetime.combine(start, datetime.min.time()),
+                 datetime.combine(end + timedelta(days=1), datetime.min.time())))
+            issues = [rules.public_issue(r) for r in cur.fetchall()]
+            cur.execute(
+                f"SELECT {_PROFILE_COLUMNS} FROM dll_fuel_vehicle_profiles "
+                "WHERE client_uid = %s AND device_imei = ANY(%s)", (client, imeis))
+            profiles = {r['device_imei']: r for r in cur.fetchall()}
+        rows = fuel_report.rows_for(kind, issues, profiles)
+        if not rows:
+            return reply('error', 400, fuel_report.EMPTY_MESSAGES[kind], '')
+        names = _device_names(list(rows))
+        return reply('success', 200, f'Fuel {kind} report',
+                     [{names[imei]: rows[imei]} for imei in imeis if imei in rows])
+    except Exception:                   # noqa: BLE001
+        log.exception('fuel report failed')
+        return reply('error', 500, 'Could not build the fuel report.', '')

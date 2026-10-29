@@ -297,6 +297,15 @@ eq('totals', s['totals'], {'issues': 3, 'litres': 90.0, 'cost': 456000,
                            'open_reviews': 1, 'excess_cost': 40000})
 eq('empty period', fr.summarise([], {})['totals']['issues'], 0)
 
+# -- fuel sensors --
+eq('no fuel_level config', fr.sensor_state(None, False), 'none')
+eq('blank or zero source', (fr.sensor_state('', True), fr.sensor_state('0', True),
+                             fr.sensor_state('None', True)), ('none',) * 3)
+eq('analogue source without calibration', fr.sensor_state('270', False),
+   'needs_calibration')
+eq('analogue source calibrated', fr.sensor_state(' 270 ', True), 'ready')
+eq('direct source needs no calibration', fr.sensor_state('lls_lvl_add1', False), 'ready')
+
 if __name__ == '__main__':
     failed = [r for r in RESULTS if not r[1]]
     for name, ok_, detail in RESULTS:

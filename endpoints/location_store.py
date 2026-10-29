@@ -338,6 +338,53 @@ def fixes(session, imei, from_date, to_date,
     return rows, truncated
 
 
+# ── Small reads for the alert engine ────────────────────────────────────────
+# The alert sweep runs every few minutes for every watched unit, so it must not
+# read a whole day to learn what changed. Both reads below name the full
+# partition key and range on the clustering column, record_timestamp.
+
+# A sweep that falls this far behind picks up from the newest fixes; the rest
+# are not worth alerting on hours late.
+FIXES_AFTER_LIMIT = 2000
+
+
+def latest_fix(session, imei, day):
+    """The newest usable fix on one local day ('DD-MM-YYYY'), or None."""
+    if session is None:
+        raise PositionsUnavailable('no Cassandra session')
+    try:
+        stmt = session.prepare(
+            f"SELECT {_COLUMNS} FROM dll_location_registry_by_record_ts "
+            f"WHERE data_device_imei = ? AND local_system_datestamp = ? "
+            f"ORDER BY record_timestamp DESC LIMIT 5")
+        found = session.execute(stmt, (str(imei), str(day)))
+    except Exception as error:      # noqa: BLE001
+        raise PositionsUnavailable(f'{day}: {error}') from error
+    for r in found:
+        row = _row(r, None, None)
+        if row is not None:
+            return row
+    return None
+
+
+def fixes_after(session, imei, day, after_utc, limit=FIXES_AFTER_LIMIT):
+    """Fixes on one local day recorded after `after_utc` (record_timestamp,
+    UTC), oldest first. Unusable rows (no coordinates) are dropped."""
+    if session is None:
+        raise PositionsUnavailable('no Cassandra session')
+    try:
+        stmt = session.prepare(
+            f"SELECT {_COLUMNS} FROM dll_location_registry_by_record_ts "
+            f"WHERE data_device_imei = ? AND local_system_datestamp = ? "
+            f"AND record_timestamp > ? ORDER BY record_timestamp DESC LIMIT ?")
+        found = session.execute(stmt, (str(imei), str(day), after_utc, int(limit)))
+    except Exception as error:      # noqa: BLE001
+        raise PositionsUnavailable(f'{day}: {error}') from error
+    rows = [row for row in (_row(r, None, None) for r in found) if row is not None]
+    rows.sort(key=_order_key)
+    return rows
+
+
 # ── Tuple shapes the existing callers unpack ────────────────────────────────
 # data.py indexes these positionally, so the orders below are the contract and
 # must not be reordered. Returning tuples keeps those routes unchanged.

@@ -307,6 +307,85 @@ paths:
                   - $ref: "#/components/schemas/Envelope"
                   - properties:
                       data: {type: array, items: {type: string}}
+  /fuel/capabilities:
+    get:
+      tags: [FuelMath]
+      summary: Which fuel features each of the client's vehicles can use
+      description: >-
+        has_profile is whether a fuel profile is set (needed by the High Fuel
+        Consumption alert). fuel_sensor is "none" (no fuel_level input in the
+        device config), "needs_calibration" (an analogue sensor, IO 270, 12 or
+        201, without a calibration table) or "ready".
+      responses:
+        "200":
+          description: One entry per vehicle, by name
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - properties:
+                      data:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            device_imei: {type: string}
+                            name: {type: string}
+                            has_profile: {type: boolean}
+                            fuel_sensor:
+                              type: string
+                              enum: [none, needs_calibration, ready]
+              example:
+                status: success
+                message: Fuel capabilities
+                data:
+                  - {device_imei: "354002396040196", name: UBK 415T,
+                     has_profile: true, fuel_sensor: none}
+        "403": {$ref: "#/components/responses/NoClient"}
+        "503": {description: The unit register could not be reached}
+  /data-stream/reports/fuel/{kind}/generate-data:
+    post:
+      tags: [FuelMath]
+      summary: FuelMath report rows (issuance, consumption or exceptions)
+      description: >-
+        Same request and reply shape as the other report routes. issuance is
+        every fuel issue; consumption is every full tank that closed a measured
+        span (km, litres, km/L against the expected, excess litres and cost);
+        exceptions is every issue a check flagged, with the review outcome.
+        Voided issues are left out. Nothing in the period answers 400
+        "No ... Found".
+      parameters:
+        - {name: kind, in: path, required: true,
+           schema: {type: string, enum: [issuance, consumption, exceptions]}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              data:
+                report_devices: ["354002396040196"]
+                start_date: "01-10-2026"
+                end_date: "28-10-2026"
+      responses:
+        "200":
+          description: "[{device_name: [row, ...]}], newest first"
+          content:
+            application/json:
+              example:
+                status: success
+                message: Fuel issuance report
+                data:
+                  - UBK 415T:
+                      - {date_logged: "2026-10-28", time_logged: "09:05",
+                         driver: Okello John, fuel_type: Diesel, litres: "40",
+                         unit_price: "5,150", total_cost: "206,000",
+                         payment_method: Fuel card, receipt_number: R-1,
+                         station_name: Shell Jinja Road, full_tank: "Yes",
+                         review: Needs review}
+        "400": {description: Bad dates or no vehicles, or nothing in the period}
+        "403": {$ref: "#/components/responses/NoClient"}
+        "404": {description: Unknown kind}
 
 components:
   securitySchemes:

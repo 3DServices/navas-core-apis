@@ -285,18 +285,33 @@ add("/team/audit", "get", T, "Sign-ins and team changes",
 
 # ── Alerts ───────────────────────────────────────────────────────────────────
 A = "Alerts"
-add("/alerts/run", "post", A, "Run one geofence sweep",
-    "Internal (X-Service-Key) or a staff login. live=false is a dry run.",
+add("/alerts/run", "post", A, "Run one alert sweep",
+    "Internal (X-Service-Key) or a staff login. Checks speed_threshold, "
+    "ignition_change, device_offline and geofence_breach rules; low_battery "
+    "rules are counted under rules_not_checked. live=false is a dry run.",
     req=body({"live": S["bool"]}, example={"live": True}),
     security=[{"bearerAuth": []}, {"serviceKey": []}],
-    responses=ok(example={"rules": 12, "units_checked": 240,
-                          "units_skipped_no_position": 3, "units_skipped_stale": 5,
-                          "units_skipped_unchanged": 180, "first_seen": 0,
-                          "alerts": 2, "live": True, "errors": []}))
+    responses=ok(example={"rules": 14, "rules_by_condition": {
+                              "geofence_breach": 8, "speed_threshold": 4,
+                              "device_offline": 2},
+                          "rules_not_checked": {"low_battery": "1 rule(s): battery "
+                              "readings from the trackers do not reach the server"},
+                          "units_checked": 240, "units_no_new_positions": 31,
+                          "units_without_ignition_input": 0, "first_seen": 0,
+                          "alerts": 3, "alerts_by_condition": {
+                              "speed_threshold": 2, "geofence_breach": 1},
+                          "live": True, "errors": []}))
 add("/alerts/health", "get", A, "What the alert engine knows",
     "Staff only (alarms.view or devices.view).",
-    responses=ok(example={"geofence_rules": 12, "tracked_unit_zones": 480,
-                          "last_sweep": "2026-09-22 14:03:11", "alerts_last_24h": 7}))
+    responses=ok(example={"rules_by_condition": {"geofence_breach": 8,
+                                                 "speed_threshold": 4},
+                          "rules_not_checked": {"low_battery": 1, "invalid_value": 0,
+                                                "unknown_condition": 0},
+                          "geofence_rules": 8, "tracked_unit_zones": 480,
+                          "tracked_units": 230, "migration_054_applied": True,
+                          "last_sweep": "2026-10-29 14:03:11",
+                          "alerts_last_24h": {"speed_threshold": 5,
+                                              "geofence_breach": 2}}))
 
 # ── Geofences (changed) ──────────────────────────────────────────────────────
 G = "Geofences"

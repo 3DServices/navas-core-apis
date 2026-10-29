@@ -165,7 +165,8 @@ def _start_auto_renew_scheduler():
 
 
 def _start_alert_scheduler():
-    """Geofence alerts are decided on the server (endpoints/alert_engine.py).
+    """Event-rule alerts (speed, ignition, offline, geofence) are decided on
+    the server (endpoints/alert_engine.py).
     Off by default; set ALERT_ENGINE_ENABLED=true to sweep on a timer, or call
     POST /alerts/run from cron instead (better with several workers)."""
     import os
@@ -194,7 +195,7 @@ def _start_alert_scheduler():
         scheduler.add_job(_sweep, 'interval', minutes=interval,
                           id='geofence_alert_sweep', replace_existing=True)
         scheduler.start()
-        print(f"[alerts] geofence sweep started (every {interval}m)")
+        print(f"[alerts] alert sweep started (every {interval}m)")
     except Exception as error:
         print(f"[alerts] scheduler failed to start: {error}")
 
