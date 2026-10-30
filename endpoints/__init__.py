@@ -26,10 +26,17 @@ from .product_variant import _products_variant
 from .marketplace import marketplace_bp
 from .events import device_eventsbp
 from .assistant import assistant_bp
+from .waswa_data_api import waswa_data_bp
 from .pause import pause_bp
 from .team import team_bp
 from .alert_engine import alerts_bp
 from .resources import resources_bp
+from .fleet import fleet_bp
+from .tokens_usage_routes import token_usage_bp
+from .referrals import referrals_bp
+from .driver_registry import driver_registry_bp
+from .fuel_registry import fuel_registry_bp
+from .stop_engine import stop_engine_bp
 from .access_guard import register_access_guard
 
 def Sentinel_Fleet():
@@ -62,10 +69,17 @@ def Sentinel_Fleet():
     app.register_blueprint(marketplace_bp)
     app.register_blueprint(device_eventsbp)
     app.register_blueprint(assistant_bp)
+    app.register_blueprint(waswa_data_bp)
     app.register_blueprint(pause_bp)
     app.register_blueprint(team_bp)
     app.register_blueprint(alerts_bp)
     app.register_blueprint(resources_bp)
+    app.register_blueprint(fleet_bp)
+    app.register_blueprint(token_usage_bp)
+    app.register_blueprint(referrals_bp)
+    app.register_blueprint(driver_registry_bp)
+    app.register_blueprint(fuel_registry_bp)
+    app.register_blueprint(stop_engine_bp)
 
     # Register metrics middleware
     register_metrics_middleware(app)

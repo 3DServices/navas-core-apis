@@ -1,0 +1,105 @@
+{
+  "about": [
+    "Fleet status cases shared by the backend and the OLIWA app, so the two",
+    "count a fleet the same way. The master copy is",
+    "navas-core-apis/tests/fixtures/fleet_status_cases.json; the app keeps an",
+    "identical copy at oliwa-mobile/test/fixtures/fleet_status_cases.json.",
+    "",
+    "Run by: navas-core-apis/tests/test_fleet_status_shared.py",
+    "        oliwa-mobile/test/fleet_status_shared_test.dart",
+    "Each also compares its copy with the other repository's, when that is",
+    "checked out beside it. Change a rule: change this file, copy it across,",
+    "and make both suites pass.",
+    "",
+    "A unit is a live-feed frame (the x-location / Redis snapshot fields) and",
+    "how long ago it reported. frame null with never true: no position and no",
+    "heartbeat, ever. unread true: the lookup failed. Heartbeat-only units",
+    "(no frame, but a heartbeat) are backend-only and tested there."
+  ],
+  "now": "2026-10-26T13:00:00",
+  "cases": [
+    {
+      "name": "fresh reports are taken as they are",
+      "units": [
+        {"id": "moving", "minutes_ago": 1, "frame": {"motion_state": "Moving", "speed_log": 40, "ignition_state": "ON", "data_latitude": 0.3376, "data_longitude": 32.7004, "data_connected_satelites": 15}, "expect": "moving"},
+        {"id": "idling (feed spelling)", "minutes_ago": 2, "frame": {"motion_state": "Idiling", "speed_log": 0, "ignition_state": "ON", "data_latitude": 0.4484, "data_longitude": 30.1982, "data_connected_satelites": 12}, "expect": "idling"},
+        {"id": "parked", "minutes_ago": 5, "frame": {"motion_state": "Parked", "speed_log": 0, "ignition_state": "OFF", "data_latitude": 1.0719, "data_longitude": 34.1658, "data_connected_satelites": 14}, "expect": "parked"}
+      ],
+      "expect": {"counts": {"moving": 1, "idling": 1, "parked": 1, "silent": 0, "never_reported": 0, "no_position": 0, "unread": 0}, "silent_ages": {"under_day": 0, "up_to_week": 0, "over_week": 0}, "weak_gps": 0, "quiet_parked": 0, "reporting_now": 3, "total": 3}
+    },
+    {
+      "name": "no motion_state: speed, then ignition",
+      "units": [
+        {"id": "speed 12 moves", "minutes_ago": 3, "frame": {"speed_log": 12, "data_latitude": 0.31, "data_longitude": 32.58, "data_connected_satelites": 9}, "expect": "moving"},
+        {"id": "speed 2 idles", "minutes_ago": 3, "frame": {"speed_log": 2, "data_latitude": 0.31, "data_longitude": 32.58, "data_connected_satelites": 9}, "expect": "idling"},
+        {"id": "still, ignition 1, idles", "minutes_ago": 3, "frame": {"speed_log": 0, "ignition_state": "1", "data_latitude": 0.31, "data_longitude": 32.58, "data_connected_satelites": 9}, "expect": "idling"},
+        {"id": "still, no ignition, parked by guess", "minutes_ago": 3, "frame": {"speed_log": 0, "data_latitude": 0.31, "data_longitude": 32.58, "data_connected_satelites": 9}, "expect": "parked"}
+      ],
+      "expect": {"counts": {"moving": 1, "idling": 2, "parked": 1, "silent": 0, "never_reported": 0, "no_position": 0, "unread": 0}, "silent_ages": {"under_day": 0, "up_to_week": 0, "over_week": 0}, "weak_gps": 0, "quiet_parked": 0, "reporting_now": 4, "total": 4}
+    },
+    {
+      "name": "the 60-minute line, both sides of it",
+      "units": [
+        {"id": "moving 60 min ago", "minutes_ago": 60, "frame": {"motion_state": "Moving", "speed_log": 40, "data_latitude": 0.31, "data_longitude": 32.58, "data_connected_satelites": 9}, "expect": "moving"},
+        {"id": "moving 61 min ago", "minutes_ago": 61, "frame": {"motion_state": "Moving", "speed_log": 40, "data_latitude": 0.31, "data_longitude": 32.58, "data_connected_satelites": 9}, "expect": "silent"},
+        {"id": "idling, quiet 2 days", "minutes_ago": 2880, "frame": {"motion_state": "Idiling", "speed_log": 0, "ignition_state": "ON", "data_latitude": 0.31, "data_longitude": 32.58, "data_connected_satelites": 9}, "expect": "silent"}
+      ],
+      "expect": {"counts": {"moving": 1, "idling": 0, "parked": 0, "silent": 2, "never_reported": 0, "no_position": 0, "unread": 0}, "silent_ages": {"under_day": 1, "up_to_week": 1, "over_week": 0}, "weak_gps": 0, "quiet_parked": 0, "reporting_now": 1, "total": 3}
+    },
+    {
+      "name": "confirmed parked is trusted while the tracker sleeps",
+      "units": [
+        {"id": "UBK 415T: parked, quiet 3 h", "minutes_ago": 180, "frame": {"motion_state": "Parked", "speed_log": 0, "ignition_state": "OFF", "data_latitude": 1.0719, "data_longitude": 34.1658, "data_connected_satelites": 14}, "expect": "parked"},
+        {"id": "ignition OFF, no motion, quiet 5 h", "minutes_ago": 300, "frame": {"speed_log": 0, "ignition_state": "OFF", "data_latitude": 1.07, "data_longitude": 34.16, "data_connected_satelites": 12}, "expect": "parked"},
+        {"id": "parked, quiet 3 days: parked, flagged", "minutes_ago": 4320, "frame": {"motion_state": "Parked", "speed_log": 0, "ignition_state": "OFF", "data_latitude": 1.155, "data_longitude": 33.678, "data_connected_satelites": 12}, "expect": "parked"},
+        {"id": "parked, quiet exactly 7 days", "minutes_ago": 10080, "frame": {"motion_state": "Parked", "speed_log": 0, "data_latitude": 1.155, "data_longitude": 33.678, "data_connected_satelites": 12}, "expect": "parked"},
+        {"id": "parked, quiet 8 days: offline", "minutes_ago": 11520, "frame": {"motion_state": "Parked", "speed_log": 0, "data_latitude": 0.256, "data_longitude": 32.542, "data_connected_satelites": 12}, "expect": "silent"}
+      ],
+      "expect": {"counts": {"moving": 0, "idling": 0, "parked": 4, "silent": 1, "never_reported": 0, "no_position": 0, "unread": 0}, "silent_ages": {"under_day": 0, "up_to_week": 0, "over_week": 1}, "weak_gps": 0, "quiet_parked": 2, "reporting_now": 4, "total": 5}
+    },
+    {
+      "name": "a guessed or contradicted parked state is not held",
+      "units": [
+        {"id": "no motion, no ignition, quiet 5 h", "minutes_ago": 300, "frame": {"speed_log": 0, "data_latitude": 0.31, "data_longitude": 32.58, "data_connected_satelites": 9}, "expect": "silent"},
+        {"id": "unrecognised motion text, ignition OFF, quiet 5 h", "minutes_ago": 300, "frame": {"motion_state": "Unknown", "speed_log": 0, "ignition_state": "OFF", "data_latitude": 0.31, "data_longitude": 32.58, "data_connected_satelites": 9}, "expect": "parked"},
+        {"id": "ignition OFF but crawling, quiet 5 h", "minutes_ago": 300, "frame": {"speed_log": 3, "ignition_state": "OFF", "data_latitude": 0.31, "data_longitude": 32.58, "data_connected_satelites": 9}, "expect": "silent"}
+      ],
+      "expect": {"counts": {"moving": 0, "idling": 0, "parked": 1, "silent": 2, "never_reported": 0, "no_position": 0, "unread": 0}, "silent_ages": {"under_day": 2, "up_to_week": 0, "over_week": 0}, "weak_gps": 0, "quiet_parked": 0, "reporting_now": 1, "total": 3}
+    },
+    {
+      "name": "never reported and not checked are neither silent nor live",
+      "units": [
+        {"id": "never reported", "minutes_ago": null, "frame": null, "never": true, "expect": "never_reported"},
+        {"id": "lookup failed", "minutes_ago": null, "frame": null, "unread": true, "expect": "unread"},
+        {"id": "a failed lookup beats never", "minutes_ago": null, "frame": null, "never": true, "unread": true, "expect": "unread"},
+        {"id": "went quiet 10 days ago", "minutes_ago": 14400, "frame": {"motion_state": "Moving", "speed_log": 30, "data_latitude": 0.35, "data_longitude": 32.59, "data_connected_satelites": 12}, "expect": "silent"}
+      ],
+      "expect": {"counts": {"moving": 0, "idling": 0, "parked": 0, "silent": 1, "never_reported": 1, "no_position": 0, "unread": 2}, "silent_ages": {"under_day": 0, "up_to_week": 0, "over_week": 1}, "weak_gps": 0, "quiet_parked": 0, "reporting_now": 0, "total": 4}
+    },
+    {
+      "name": "device flags never overlap",
+      "units": [
+        {"id": "live, 2 satellites: weak", "minutes_ago": 2, "frame": {"motion_state": "Moving", "speed_log": 30, "data_latitude": 0.35, "data_longitude": 32.59, "data_connected_satelites": 2}, "expect": "moving"},
+        {"id": "live, no fix: weak", "minutes_ago": 2, "frame": {"motion_state": "Parked", "speed_log": 0, "data_latitude": 0, "data_longitude": 0, "data_connected_satelites": 0}, "expect": "parked"},
+        {"id": "live, satellites not sent: not weak", "minutes_ago": 2, "frame": {"motion_state": "Parked", "speed_log": 0, "data_latitude": 0.35, "data_longitude": 32.59}, "expect": "parked"},
+        {"id": "parked, quiet 2 days, 2 satellites: flagged quiet, not weak", "minutes_ago": 2880, "frame": {"motion_state": "Parked", "speed_log": 0, "data_latitude": 0.35, "data_longitude": 32.59, "data_connected_satelites": 2}, "expect": "parked"},
+        {"id": "silent, 2 satellites: not weak", "minutes_ago": 120, "frame": {"motion_state": "Moving", "speed_log": 30, "data_latitude": 0.35, "data_longitude": 32.59, "data_connected_satelites": 2}, "expect": "silent"},
+        {"id": "never reported: not weak", "minutes_ago": null, "frame": null, "never": true, "expect": "never_reported"}
+      ],
+      "expect": {"counts": {"moving": 1, "idling": 0, "parked": 3, "silent": 1, "never_reported": 1, "no_position": 0, "unread": 0}, "silent_ages": {"under_day": 1, "up_to_week": 0, "over_week": 0}, "weak_gps": 2, "quiet_parked": 1, "reporting_now": 4, "total": 6}
+    },
+    {
+      "name": "the fleet on 26-10-2026 at 13:00 (a sample of it)",
+      "units": [
+        {"id": "353742377153192", "minutes_ago": 1, "frame": {"motion_state": "Moving", "speed_log": 19, "ignition_state": "ON", "device_state": "Online", "data_latitude": 0.3255983, "data_longitude": 32.5018233, "data_connected_satelites": 19}, "expect": "moving"},
+        {"id": "354002396040196 UBK 415T", "minutes_ago": 0, "frame": {"motion_state": "Parked", "speed_log": 0, "ignition_state": "OFF", "device_state": "Online", "data_latitude": 1.0744733, "data_longitude": 34.13562, "data_connected_satelites": 17}, "expect": "parked"},
+        {"id": "867556044657628, parked since 23:44", "minutes_ago": 796, "frame": {"motion_state": "Parked", "speed_log": 0, "ignition_state": "OFF", "device_state": "Offline", "data_latitude": 2.0336421, "data_longitude": 33.2075272, "data_connected_satelites": 12}, "expect": "parked"},
+        {"id": "867556044663360, woke up", "minutes_ago": 1, "frame": {"motion_state": "Idiling", "speed_log": 0, "ignition_state": "ON", "device_state": "Online", "data_latitude": 1.155226, "data_longitude": 33.6782417, "data_connected_satelites": 12}, "expect": "idling"},
+        {"id": "860922040927190, idling 19 days ago", "minutes_ago": 27330, "frame": {"motion_state": "Idiling", "speed_log": 0, "ignition_state": "ON", "device_state": "Offline", "data_latitude": 2.5350318, "data_longitude": 34.6601219, "data_connected_satelites": 12}, "expect": "silent"},
+        {"id": "862846042643919, parked 25 days ago", "minutes_ago": 36720, "frame": {"motion_state": "Parked", "speed_log": 0, "ignition_state": "OFF", "device_state": "Offline", "data_latitude": 0.2560773, "data_longitude": 32.5420189, "data_connected_satelites": 12}, "expect": "silent"},
+        {"id": "867556044728460 UAJ 712X, no data", "minutes_ago": null, "frame": null, "never": true, "expect": "never_reported"}
+      ],
+      "expect": {"counts": {"moving": 1, "idling": 1, "parked": 2, "silent": 2, "never_reported": 1, "no_position": 0, "unread": 0}, "silent_ages": {"under_day": 0, "up_to_week": 0, "over_week": 2}, "weak_gps": 0, "quiet_parked": 0, "reporting_now": 4, "total": 7}
+    }
+  ]
+}

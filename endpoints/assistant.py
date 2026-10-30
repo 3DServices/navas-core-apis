@@ -32,20 +32,24 @@ never exposed to any client.
 """
 
 import json
+import os
 import re
 import time
 import uuid
 
-import psycopg2
 import requests
 from flask import Blueprint, request, current_app
 
-from . import waswa_answers
+from . import waswa_app_guide
 from . import waswa_console
+from . import waswa_fleet
 from . import waswa_knowledge
 from . import waswa_products
+from . import waswa_data_auth
 from .globals import reply, _extract_account_uid
-from .waswa_context import build_context, render_for_prompt
+from .waswa_data_client import DataApiError, DataClient
+from .waswa_context import render_for_prompt
+from . import waswa_v2
 from config import (
     OPENROUTER_API_KEY,
     OPENROUTER_MODEL,
@@ -55,6 +59,7 @@ from config import (
 
 assistant_bp = Blueprint("Assistant", __name__)
 waswa_console.register(assistant_bp)
+waswa_app_guide.register(assistant_bp)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -68,12 +73,16 @@ _CONVERSATION_IDLE_MINUTES = 60
 
 # Model -> tools -> model rounds before we stop. Enough for look up a product,
 # check its compatibility, answer; a model looping past that is stuck.
-_MAX_TOOL_ROUNDS = 4
+_MAX_TOOL_ROUNDS = 6
 
 # Apps that send the screen the question came from: surface -> (who, app).
 _SCREEN_SURFACES = {
     'cms': ('staff member', 'CMS'),
     'oliwa_console': ('customer', 'OLIWA tracking console'),
+    # The mobile app sends the screen too. Without this line its module was
+    # parsed, sanitised and then silently dropped, so a short question asked
+    # from the Tokens screen read as if it came from nowhere.
+    'mobile': ('customer', 'OLIWA mobile app'),
 }
 
 # A closing "Source: …" line names an internal document. Staff get it when a
@@ -98,7 +107,8 @@ _RETRY_BACKOFF = (0.6, 1.5)
 # model. Order matters a little: the product tools come first so that a question
 # naming a product is answered from the approved catalogue rather than from a
 # paragraph in a user-story document that happens to mention it.
-_TOOL_SPECS = waswa_products.TOOL_SPECS + waswa_knowledge.TOOL_SPECS
+_TOOL_SPECS = (waswa_products.TOOL_SPECS + waswa_knowledge.TOOL_SPECS
+               + waswa_fleet.TOOL_SPECS)
 
 # Used only if dll_waswa_prompts is unreachable — migration 030 seeds v1 there.
 _FALLBACK_PROMPT = (
@@ -142,11 +152,36 @@ _OWN_CHARGES_PATTERNS = (
 )
 
 
-def _is_pricing_enquiry(text):
+# How discounts are governed -- who approves one, what the policy says -- as
+# opposed to how big a discount someone can have. The Sales Procedures answer
+# the first ("no discount without SMU/KCM approval"), and staff need it; the
+# blanket "discount" pattern above sent "what is the maximum discount a
+# salesperson can give without approval?" to the canned pricing reply.
+_DISCOUNT_POLICY_PATTERNS = (
+    r'\b(?:approv\w*|authori[sz]\w*|sign(?:s|ed)? off|polic(?:y|ies)|rules?|'
+    r'process|procedure|who (?:can|may))\b',
+)
+
+# Asking for an amount stays pricing even when the words above appear.
+_PRICE_AMOUNT_PATTERNS = tuple(
+    p for p in _PRICING_PATTERNS if 'discount' not in p)
+
+
+def _is_pricing_enquiry(text, audience='everyone'):
+    """True when the question asks what something costs.
+
+    A customer asking about discounts at all is routed to sales: how far a
+    salesperson may go is not something to hand a buyer. Staff asking how
+    discounts are approved get an answer from the documents.
+    """
     lowered = (text or '').lower()
     for pattern in _OWN_CHARGES_PATTERNS:
         if re.search(pattern, lowered):
             return False
+    if (audience == 'staff'
+            and any(re.search(p, lowered) for p in _DISCOUNT_POLICY_PATTERNS)
+            and not any(re.search(p, lowered) for p in _PRICE_AMOUNT_PATTERNS)):
+        return False
     for pattern in _PRICING_PATTERNS:
         if re.search(pattern, lowered):
             return True
@@ -154,164 +189,71 @@ def _is_pricing_enquiry(text):
 
 
 # ── Persistence helpers ─────────────────────────────────────────────────────
-# Each takes the request's connection. All swallow their own errors: a logging
-# failure must never cost the user an answer; it costs us a row, and the gap
-# shows up in observability.
+# The chat route holds no database connection: each of these asks the data API
+# (endpoints/waswa_data_api.py) through the turn's DataClient. All swallow their
+# own errors: a logging failure must never cost the user an answer; it costs
+# us a row, and the gap shows up in the log.
 
-def _open_connection():
-    conn = psycopg2.connect(current_app.config['db_link'])
-    # These writes are independent appends; per-statement commit keeps the
-    # helpers simple and avoids holding a transaction open across an HTTP call
-    # to OpenRouter.
-    conn.autocommit = True
-    return conn
-
-
-def _active_prompt(conn):
+def _active_prompt(data):
     """(body, version) of the active runtime prompt, or the fallback."""
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT body, version FROM dll_waswa_prompts "
-                "WHERE prompt_key = 'runtime_system' AND is_active = TRUE "
-                "LIMIT 1"
-            )
-            row = cur.fetchone() if cur.rowcount else None
-        if row:
-            return row[0], row[1]
-    except Exception:       # noqa: BLE001
-        pass
-    return _FALLBACK_PROMPT, None
+        return data.prompt()
+    except DataApiError:
+        return _FALLBACK_PROMPT, None
 
 
-def _resume_or_open_conversation(conn, account_uid, scope, surface,
-                                 requested_uid):
-    """Return a conversation_uid, resuming the caller's recent one if any."""
+def _resume_or_open_conversation(data, surface, requested_uid):
+    """A conversation_uid, resuming the caller's recent one if any. The data
+    API decides whose conversations those are, from the token."""
     try:
-        with conn.cursor() as cur:
-            if requested_uid:
-                cur.execute(
-                    "SELECT conversation_uid FROM dll_waswa_conversations "
-                    "WHERE conversation_uid = %s AND account_uid = %s",
-                    (str(requested_uid), str(account_uid)),
-                )
-                if cur.rowcount:
-                    return cur.fetchone()[0]
-                # An unknown or someone else's uid is not honoured; we open a
-                # fresh conversation rather than writing into theirs.
-
-            cur.execute(
-                "SELECT conversation_uid FROM dll_waswa_conversations "
-                "WHERE account_uid = %s AND surface = %s AND status = 'open' "
-                "  AND last_activity_at > NOW() - (%s * INTERVAL '1 minute') "
-                "ORDER BY last_activity_at DESC LIMIT 1",
-                (str(account_uid), str(surface), _CONVERSATION_IDLE_MINUTES),
-            )
-            if cur.rowcount:
-                return cur.fetchone()[0]
-
-            conversation_uid = str(uuid.uuid4())
-            cur.execute(
-                "INSERT INTO dll_waswa_conversations "
-                "(conversation_uid, account_uid, account_root, client_uid, surface) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (conversation_uid, str(account_uid), scope.get('account_root'),
-                 scope.get('client_uid'), str(surface)),
-            )
-            return conversation_uid
-    except Exception:       # noqa: BLE001
+        return data.open_conversation(surface, requested_uid)
+    except DataApiError as error:
+        _log('conversation not opened: %s', error)
         return None
 
 
-def _stored_history(conn, conversation_uid, limit=_MAX_HISTORY):
+def _stored_history(data, conversation_uid, limit=_MAX_HISTORY):
     """Prior turns as OpenRouter-style role/content dicts, oldest first."""
     if not conversation_uid:
         return []
     try:
-        with conn.cursor() as cur:
-            # Blocked replies are included on purpose. They are server
-            # templates (e.g. the pricing hand-off), never model output, and
-            # dropping them left the user's question in history with no
-            # answer, so the model answered it again on the next turn.
-            cur.execute(
-                "SELECT role, content FROM dll_waswa_messages "
-                "WHERE conversation_uid = %s "
-                "ORDER BY turn_index DESC LIMIT %s",
-                (str(conversation_uid), int(limit)),
-            )
-            rows = cur.fetchall() if cur.rowcount > 0 else []
-        return [{'role': r[0], 'content': r[1]} for r in reversed(rows)]
-    except Exception:       # noqa: BLE001
+        return data.history(conversation_uid, limit)
+    except DataApiError as error:
+        _log('history not read: %s', error)
         return []
 
 
-def _record_turn(conn, conversation_uid, role, content, **fields):
+def _record_turn(data, conversation_uid, role, content, **fields):
     """Append a message. Returns its message_uid, or None if it could not be
     stored (in which case the turn still proceeds)."""
     if not conversation_uid:
         return None
-    message_uid = str(uuid.uuid4())
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT COALESCE(MAX(turn_index), -1) + 1 "
-                "FROM dll_waswa_messages WHERE conversation_uid = %s",
-                (str(conversation_uid),),
-            )
-            turn_index = cur.fetchone()[0]
-            cur.execute(
-                "INSERT INTO dll_waswa_messages "
-                "(message_uid, conversation_uid, turn_index, role, content, "
-                " intent, router_tier, model, prompt_version, blocked_reason, "
-                " latency_ms) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (message_uid, str(conversation_uid), turn_index, role, content,
-                 fields.get('intent'), fields.get('router_tier'),
-                 fields.get('model'), fields.get('prompt_version'),
-                 fields.get('blocked_reason'), fields.get('latency_ms')),
-            )
-            cur.execute(
-                "UPDATE dll_waswa_conversations SET last_activity_at = NOW() "
-                "WHERE conversation_uid = %s",
-                (str(conversation_uid),),
-            )
-        return message_uid
-    except Exception:       # noqa: BLE001
+        return data.record_turn(conversation_uid, role, content, **fields)
+    except DataApiError as error:
+        _log('turn not recorded: %s', error)
         return None
 
 
-def _record_evidence(conn, message_uid, items):
+def _record_evidence(data, message_uid, items):
     """items: list of (source_kind, source_ref, authority_level)."""
     if not message_uid or not items:
         return
     try:
-        with conn.cursor() as cur:
-            for source_kind, source_ref, authority_level in items:
-                cur.execute(
-                    "INSERT INTO dll_waswa_evidence "
-                    "(message_uid, source_kind, source_ref, authority_level) "
-                    "VALUES (%s, %s, %s, %s)",
-                    (message_uid, source_kind, source_ref, authority_level),
-                )
-    except Exception:       # noqa: BLE001
-        pass
+        data.record_evidence(message_uid, items)
+    except DataApiError as error:
+        _log('evidence not recorded: %s', error)
 
 
-def _log_transparency(conn, entry_type, scope, conversation_uid, message_uid,
+def _log_transparency(data, entry_type, conversation_uid, message_uid,
                       action=None, rationale=None):
+    if not conversation_uid:
+        return
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO dll_waswa_transparency_log "
-                "(entry_uid, account_uid, account_root, client_uid, "
-                " conversation_uid, message_uid, entry_type, action, rationale) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (str(uuid.uuid4()), scope.get('account_uid'),
-                 scope.get('account_root'), scope.get('client_uid'),
-                 conversation_uid, message_uid, entry_type, action, rationale),
-            )
-    except Exception:       # noqa: BLE001
-        pass
+        data.log_transparency(conversation_uid, entry_type, message_uid,
+                              action=action, rationale=rationale)
+    except DataApiError as error:
+        _log('transparency entry not written: %s', error)
 
 
 # ── Model call ──────────────────────────────────────────────────────────────
@@ -348,7 +290,258 @@ def _openrouter_error_detail(resp):
     return (detail or '').strip()[:500]
 
 
-def _call_model(messages, allow_tools=True):
+# Waswa answered 26 of its first 40 real questions with no lookup at all:
+# confident prose about token packs, support contacts and offline vehicles,
+# none of it read from NAVAS. The cause was not the wording of the prompt —
+# the tools were declared, described and ignored. So the question is no longer
+# "does this turn need a lookup?" but "is there any reason NOT to look?".
+#
+# Hence the inversion: everything forces a tool call except social turns,
+# which have nothing to look up. Keep this list short and literal. A missed
+# lookup produces an invented answer a customer cannot tell from a correct
+# one; a needless lookup costs one round trip and returns "found: false".
+# Those are not symmetrical mistakes.
+_NO_LOOKUP = re.compile(
+    r"^\s*(hi|hey|hello|yo|good\s+(morning|afternoon|evening|day)|"
+    r"thanks?|thank\s+you|thx|cheers|ok(ay)?|alright|got\s+it|understood|"
+    r"sure|fine|great|nice|cool|perfect|lovely|"
+    r"yes|yeah|yep|yup|no|nope|"
+    r"bye|goodbye|see\s+you|later|good\s?night)"
+    r"[\s!.,:;)\u2019']*$", re.I)
+
+
+def _needs_lookup(message):
+    """True unless the turn is pure pleasantry.
+
+    Inverted on purpose: see the comment above. When in doubt, look it up.
+    """
+    text = (message or '').strip()
+    if not text:
+        return False
+    return not _NO_LOOKUP.match(text)
+
+# Vehicle-shaped questions. Narrower than _needs_lookup on purpose: that gate
+# also fires for tokens and charges, which waswa_context already carries, and a
+# fleet read for "what is my balance" would be two wasted queries.
+# "Is anything running right now" -- answerable only from heartbeats, never
+# from a subscription status or a trip record.
+_LIVENESS_QUESTION = re.compile(
+    r"\b(online|offline|reporting|live|active now|still (on|going|running)|"
+    r"last seen|disconnected|not showing|connected|transmitting)\b", re.I)
+
+_FLEET_QUESTION = re.compile(
+    r"\b(unit|units|vehicle|vehicles|truck|lorry|car|bike|boda|fleet|"
+    r"trip|trips|route|journey|mileage|odometer|driver|"
+    r"offline|online|reporting|disconnected|not showing|last seen|"
+    r"moving|parked|idle|stopped|speed|speeding|overspeed|"
+    r"where is|where was|location|position|geofence)\b", re.I)
+
+
+def _plate_or_imei(message):
+    """The vehicle the person named, or None.
+
+    Plates here look like UBF 364U or UBJ916W; an IMEI is fifteen digits. Both
+    are passed to unit_find as a query, which matches on name, plate, VIN,
+    make, model and IMEI, so a near miss still finds the unit.
+    """
+    text = str(message or '')
+    imei = re.search(r"\b\d{15}\b", text)
+    if imei:
+        return imei.group(0)
+    plate = re.search(r"\b[A-Z]{2,3}\s?\d{3}\s?[A-Z]?\b", text)
+    return plate.group(0).strip() if plate else None
+
+
+# Slots where nothing held means the person cannot do something, so the
+# answer needs a next step. open_incidents is not here: no open incidents is
+# good news and a complete answer by itself.
+_BLOCKING_WHEN_EMPTY = ('token_balance_and_burn_rate',
+                        'asset_count_and_types',
+                        'active_products')
+
+
+def _holds_nothing(value):
+    """True when a resolved slot says the customer holds none of something."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower().startswith('none')
+    if isinstance(value, (list, tuple)):
+        return len(value) == 0
+    if isinstance(value, dict):
+        numbers = [v for v in value.values()
+                   if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        return bool(numbers) and all(x == 0 for x in numbers)
+    return False
+
+
+def _zero_state_note(context):
+    """A system note for an account that holds nothing.
+
+    Why: a customer with two payments recorded against their account, and no
+    token packs, asked how many tokens they had on three separate days. Each
+    time Waswa answered "your account doesn't have any token packs yet" and
+    stopped. That is correct and it is useless -- the reason they had none
+    was sitting one context slot away, in payments.
+
+    This does NOT interpret a payment status. Whether "pending" means
+    awaiting settlement or stuck is the business's to define, and
+    _payment_history refuses to guess for the same reason. The note states
+    that records exist and what they are labelled, nothing more.
+
+    Returns a note, or None when the account holds something.
+    """
+    known = (context or {}).get('known') or {}
+    empty = [slot for slot in _BLOCKING_WHEN_EMPTY
+             if slot in known and _holds_nothing(known[slot])]
+    if not empty:
+        return None
+
+    lines = [
+        "This account holds nothing in: %s." % ', '.join(empty),
+        "Reporting that is correct and you must not soften it or invent a "
+        "holding. But do not stop there: an answer of 'you have none' with "
+        "nothing after it leaves the person with nowhere to go.",
+    ]
+
+    standing = known.get('payment_standing')
+    recent = (standing or {}).get('recent_payments') if isinstance(
+        standing, dict) else None
+    if recent:
+        listed = '; '.join(
+            '%s recorded as %s' % (r.get('date', 'date unrecorded'),
+                                   r.get('status', 'unrecorded'))
+            for r in recent[:3])
+        lines.append(
+            "Payments ARE on record for this account: %s. Say so, with the "
+            "dates and the status exactly as labelled above. Do NOT say what "
+            "a status means, do not say a payment will or will not complete, "
+            "and do not promise a timeframe -- you do not know. Offer to put "
+            "them in touch with someone who can check it." % listed)
+    else:
+        lines.append(
+            "No payments are on record either. Say that plainly and offer who "
+            "can help them get started. Never quote a price or a cost.")
+
+    return '\n'.join(lines)
+
+
+class _FleetUnavailable(Exception):
+    """The data API could not read the vehicle register (its 503). Kept apart
+    from every other failure, as waswa_fleet.FleetUnavailable was: "could not
+    look" must never reach the model as "there is nothing there"."""
+
+
+def _strict_fleet_read(data, tool_name, arguments):
+    """One fleet read for the prefetch, through the data API."""
+    try:
+        return data.tool(tool_name, arguments, strict=True)['result']
+    except DataApiError as error:
+        if error.status == 503:
+            raise _FleetUnavailable(error.message)
+        raise
+
+
+def _prefetch_fleet(message, data):
+    """Read the account's fleet before the model is asked anything.
+
+    Returns (notes, evidence) — notes are system messages to append, evidence
+    are rows for the trail so the audit shows a real lookup rather than "nothing
+    but the standing account context".
+
+    At most two reads: which vehicles exist, and if the person named exactly one,
+    how it is doing. Everything else stays a tool call, because a range of trips
+    or a route probe is too expensive to do speculatively.
+    """
+    notes, evidence = [], []
+    if not _FLEET_QUESTION.search(str(message or '')):
+        return notes, evidence
+
+    named = _plate_or_imei(message)
+    try:
+        found = _strict_fleet_read(
+            data, 'unit_find', {'query': named} if named else {})
+    except _FleetUnavailable as error:
+        _log('fleet prefetch: register unreachable (%s)', error)
+        notes.append(
+            "The vehicle register could not be read just now. This is a fault "
+            "on our side and says NOTHING about what this account owns. Tell "
+            "the person you cannot check their vehicles at the moment. Do not "
+            "say they have none and do not give a count.")
+        evidence.append(('fleet', 'unit_find(unavailable)', 1))
+        return notes, evidence
+    except Exception as error:      # noqa: BLE001 - never break the turn
+        _log('fleet prefetch failed: %s: %s', error.__class__.__name__, error)
+        return notes, evidence
+
+    evidence.append(('fleet', f'unit_find({named or "all"}, prefetched)', 1))
+    notes.append(
+        "This account's own vehicles, read from the database just now — not "
+        "from the screen, and not from your training. Answer from these "
+        "figures:\n" + json.dumps(found, default=str, ensure_ascii=False))
+
+    # One named vehicle, unambiguous: fetch how it is doing too, since that is
+    # what "why is it offline" and "where is it" both need.
+    units = found.get('units') or []
+    if named and found.get('found') and len(units) == 1:
+        imei = units[0].get('imei')
+        if imei:
+            try:
+                status = _strict_fleet_read(data, 'unit_status', {'imei': imei})
+            except _FleetUnavailable as error:
+                _log('status prefetch: unreachable (%s)', error)
+                status = None
+            except Exception as error:      # noqa: BLE001
+                _log('status prefetch failed: %s', error)
+                status = None
+            if status:
+                evidence.append(('fleet', f'unit_status({imei}, prefetched)', 1))
+                notes.append(
+                    "Its current state, measured just now. last_reported_at and "
+                    "last_position.at are LOCAL times. State these figures; if a "
+                    "field is null say it could not be read rather than filling "
+                    "the gap:\n" + json.dumps(status, default=str, ensure_ascii=False))
+    elif named and len(units) > 1:
+        # Only an ambiguity when they actually named a vehicle. Without the
+        # `named` guard this fired on every fleet-wide question too --
+        # telling the model to ask which vehicle they meant when they had
+        # asked about all of them.
+        notes.append(
+            "More than one vehicle matches what they said. Ask which one, "
+            "naming the candidates above, and stop there.")
+
+    # A question about what is running NOW needs every unit's heartbeat, not
+    # one unit's. Reading them here means the model cannot answer from a
+    # sample: the whole fleet's state is already in front of it.
+    if _LIVENESS_QUESTION.search(str(message or '')) and len(units) > 1:
+        try:
+            live = _strict_fleet_read(data, 'fleet_liveness', {})
+        except _FleetUnavailable as error:
+            _log('liveness prefetch: unreachable (%s)', error)
+            notes.append(
+                "The heartbeat registry could not be read just now. Say you "
+                "cannot tell which vehicles are reporting at the moment. Do "
+                "NOT fall back to the subscription status: 'active' there is "
+                "a billing state and says nothing about whether a vehicle is "
+                "transmitting.")
+            evidence.append(('fleet', 'fleet_liveness(unavailable)', 1))
+        except Exception as error:      # noqa: BLE001 - never break the turn
+            _log('liveness prefetch failed: %s: %s',
+                 error.__class__.__name__, error)
+        else:
+            evidence.append(('fleet', 'fleet_liveness(all, prefetched)', 1))
+            notes.append(
+                "Which units are reporting right now, every one of them "
+                "measured just now. Answer the count from these figures and "
+                "no others. A unit under could_not_read was not reached and "
+                "must not be called offline. Never describe a unit as "
+                "reporting or online if its hours_since_last_report says "
+                "otherwise:\n" + json.dumps(live, default=str, ensure_ascii=False))
+
+    return notes, evidence
+
+
+def _call_model(messages, allow_tools=True, force_tools=False):
     """One round trip to OpenRouter.
 
     With allow_tools=False the tools stay declared (earlier turns in
@@ -363,11 +556,22 @@ def _call_model(messages, allow_tools=True):
         "model": OPENROUTER_MODEL,
         "messages": messages,
         "tools": _TOOL_SPECS,
-        "max_tokens": 600,
+        "max_tokens": 1200,
         "temperature": 0.3,
     }
     if not allow_tools:
         payload["tool_choice"] = "none"
+    elif force_tools:
+        # "required" = call SOMETHING. Which tool is still the
+        # model's choice; answering without looking is not.
+        payload["tool_choice"] = "required"
+
+    # What actually goes out. Four account-data questions once produced zero
+    # tool calls, and from the outside that is indistinguishable between "the
+    # code is not running", "the gate said no" and "the model ignored us".
+    # One line removes the guessing.
+    _log('-> model: %s tools, tool_choice=%s', len(_TOOL_SPECS),
+         payload.get('tool_choice', 'auto (not forced)'))
 
     # A dropped connection (RemoteDisconnected, SSL EOF, reset) is usually a
     # blip on the network between here and OpenRouter, so it is retried a
@@ -467,6 +671,21 @@ def _unknown_report(context):
     ]
 
 
+def _fetch_context(store, surface):
+    """The account context from the data API, or a context that says why
+    there is none. Never raises: like build_context, a failure degrades the
+    context, not the turn."""
+    try:
+        return store.context(surface)
+    except DataApiError as error:
+        _log('account context not read: %s', error)
+        reason = f'the data API could not assemble it: {error}'
+        degraded = {'known': {'surface': surface},
+                    'unknown': {'context_assembly': reason}}
+        return {'scope': {}, 'rendered': render_for_prompt(degraded),
+                'zero_state_note': None, 'unknown': _unknown_report(degraded)}
+
+
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
 @assistant_bp.route("/assistant/context", methods=["GET", "POST"])
@@ -485,20 +704,20 @@ def AssistantContext():
     if not account_uid:
         return reply("error", 401, "Authentication required.", "")
 
-    conn = None
+    # Through the data API, like the chat itself, so this shows what the
+    # agent is actually given rather than a second, parallel reading.
     try:
-        conn = _open_connection()
-        context = build_context(account_uid, surface='diagnostic', conn=conn)
-        return reply("success", 200, "OK", {
-            "scope": context['scope'],
-            "known": context['known'],
-            "unknown": _unknown_report(context),
-        })
-    except Exception as error:
-        return reply("error", 500, str(error), "")
-    finally:
-        if conn:
-            conn.close()
+        context = DataClient(waswa_data_auth.mint(account_uid)).context(
+            'diagnostic')
+    except DataApiError as error:
+        return reply("error", error.status or 502,
+                     "The data API could not assemble the context: %s"
+                     % error.message, "")
+    return reply("success", 200, "OK", {
+        "scope": context['scope'],
+        "known": context['known'],
+        "unknown": context['unknown'],
+    })
 
 
 @assistant_bp.route("/assistant/knowledge", methods=["GET", "POST"])
@@ -525,38 +744,36 @@ def AssistantKnowledge():
     if not account_uid:
         return reply("error", 401, "Authentication required.", "")
 
-    # Same audience the chat path would use for this person, so the
-    # diagnostic shows what Waswa would really see. Looking at unapproved
-    # documents is a reviewer's tool, not everyone's.
-    who = waswa_answers.caller(account_uid)
-    audience = waswa_answers.audience_for(who)
+    # Through the data API, which applies the same audience the chat path
+    # would use for this person, so the diagnostic shows what Waswa would
+    # really see. Whether unapproved documents may be shown is decided there
+    # too: a reviewer's tool, not everyone's.
+    store = DataClient(waswa_data_auth.mint(account_uid))
 
     payload = request.get_json(silent=True) or {}
     query = (request.args.get('q') or payload.get('query') or '').strip()
-    if not query:
-        return reply("success", 200, "OK",
-                     waswa_knowledge.knowledge_sources(audience=audience))
-
     flag = str(request.args.get('include_unapproved')
                or payload.get('include_unapproved') or '').lower()
-    include_unapproved = (flag in ('1', 'true', 'yes')
-                          and waswa_answers.can(who, waswa_answers.PERM_REVIEW))
-    result = waswa_knowledge.knowledge_search(
-        query,
-        product=request.args.get('product') or payload.get('product'),
-        document_type=(request.args.get('document_type')
-                       or payload.get('document_type')),
-        limit=request.args.get('limit') or payload.get('limit'),
-        include_unapproved=include_unapproved,
-        audience=audience,
-    )
-    result['audience'] = audience
+    try:
+        if not query:
+            return reply("success", 200, "OK", store.knowledge_sources())
+        result = store.knowledge_search(
+            query,
+            product=request.args.get('product') or payload.get('product'),
+            document_type=(request.args.get('document_type')
+                           or payload.get('document_type')),
+            limit=request.args.get('limit') or payload.get('limit'),
+            include_unapproved=flag in ('1', 'true', 'yes'),
+        )
+    except DataApiError as error:
+        return reply("error", error.status or 502,
+                     "The data API could not run the search: %s"
+                     % error.message, "")
     return reply("success", 200, "OK", result)
 
 
 @assistant_bp.route("/assistant/chat", methods=["POST"])
 def AssistantChat():
-    conn = None
     try:
         account_uid = _extract_account_uid()
         if not account_uid:
@@ -575,33 +792,55 @@ def AssistantChat():
         # nothing and is never trusted for access. Letters, digits, spaces and
         # a little punctuation, 60 characters at most.
         module = re.sub(r"[^A-Za-z0-9 &/+.\-]", "", str(data.get("module") or ""))[:60].strip()
+        # ── agent version ────────────────────────────────────────────
+        # v2 is selected per request so the eval harness can score both
+        # versions in one pass, with no restart between them. Absent the
+        # flag every `if _v2` below is false and v1 runs exactly as before.
+        agent_version = str(
+            data.get("agent_version")
+            or os.environ.get("WASWA_AGENT_VERSION", "v1")).strip().lower()
+        _v2 = (agent_version == 'v2')
+
         requested_conversation = data.get("conversation_uid")
         # data.get("context") and data.get("history") are accepted for
         # backward compatibility and deliberately ignored — see the module
         # docstring. Both are resolved server-side.
 
-        conn = _open_connection()
+        # No database connection from here on. Everything this turn reads or
+        # writes goes through the data API, with a token that acts for the
+        # account just authenticated and for nothing else.
+        store = DataClient(waswa_data_auth.mint(account_uid))
 
-        context = build_context(account_uid, surface=surface, conn=conn)
-        scope = context['scope']
+        context = _fetch_context(store, surface)
 
         conversation_uid = _resume_or_open_conversation(
-            conn, account_uid, scope, surface, requested_conversation)
+            store, surface, requested_conversation)
 
         # Read prior turns BEFORE recording this one, or the new message would
         # appear twice in what we send the model.
-        history = _stored_history(conn, conversation_uid)
+        history = _stored_history(store, conversation_uid)
 
-        _record_turn(conn, conversation_uid, 'user', user_message)
+        _record_turn(store, conversation_uid, 'user', user_message)
+
+        # Who this is decides what Waswa may read to them: staff-only
+        # documents and corrections reach staff, never a fleet customer. The
+        # data API applies the same audience to every search and correction
+        # itself; here it shapes the wording and the pricing check below.
+        try:
+            audience = store.audience()
+        except DataApiError as error:
+            # The narrower audience: unable to tell, treat as a customer.
+            _log('audience not read, treating as customer: %s', error)
+            audience = 'everyone'
 
         # Pricing never reaches a model.
-        if _is_pricing_enquiry(user_message):
+        if _is_pricing_enquiry(user_message, audience):
             message_uid = _record_turn(
-                conn, conversation_uid, 'assistant', _PRICING_ROUTED_REPLY,
+                store, conversation_uid, 'assistant', _PRICING_ROUTED_REPLY,
                 intent='pricing_enquiry', router_tier=1,
                 blocked_reason='pricing_not_available')
             _log_transparency(
-                conn, 'blocked_action', scope, conversation_uid, message_uid,
+                store, 'blocked_action', conversation_uid, message_uid,
                 action='state_price',
                 rationale='No approved price book; Odoo pricing not wired. '
                           'Routed to sales per the master prompt (Appendix C).')
@@ -614,7 +853,7 @@ def AssistantChat():
                 "intent": "pricing_enquiry",
                 "router_tier": 1,
                 "evidence": [],
-                "context_unknown": _unknown_report(context),
+                "context_unknown": context['unknown'],
             })
 
         if not OPENROUTER_API_KEY:
@@ -624,32 +863,32 @@ def AssistantChat():
                 "",
             )
 
-        prompt_body, prompt_version = _active_prompt(conn)
+        prompt_body, prompt_version = _active_prompt(store)
 
-        # Who this is decides what Waswa may read to them: staff-only
-        # documents and corrections reach staff, never a fleet customer.
-        who = waswa_answers.caller(account_uid)
-        audience = waswa_answers.audience_for(who)
+        # What the fleet tools may read is no longer decided here. The data
+        # API builds that scope from the token's account on every tool call,
+        # so nothing in the conversation -- or in this process -- can widen it.
 
         # Corrections first. Matched here, before the model, rather than
         # offered as a tool: a correction exists because the model got this
         # wrong once, so it is not left to the model to remember to look.
-        verified = []
+        verified, verified_note = [], None
         try:
-            with conn.cursor() as cur:
-                verified = waswa_answers.match(cur, user_message, audience)
-        except Exception:       # noqa: BLE001
+            matched = store.match_answers(user_message)
+            verified = matched.get('verified') or []
+            verified_note = matched.get('rendered')
+        except DataApiError as error:
             # A lookup failure costs the verified answer, never the reply.
-            current_app.logger.exception(
-                '[waswa] verified-answer lookup failed (conversation=%s)',
-                conversation_uid)
-            verified = []
+            _log('verified-answer lookup failed (conversation=%s): %s',
+                 conversation_uid, error)
 
         messages = [{"role": "system", "content": prompt_body}]
-        messages.append({"role": "system", "content": render_for_prompt(context)})
-        if verified:
-            messages.append({"role": "system",
-                             "content": waswa_answers.render_for_prompt(verified)})
+        messages.append({"role": "system", "content": context['rendered']})
+        zero_note = context['zero_state_note']
+        if zero_note:
+            messages.append({"role": "system", "content": zero_note})
+        if verified and verified_note:
+            messages.append({"role": "system", "content": verified_note})
         if audience != 'staff':
             messages.append({"role": "system", "content": (
                 "This person is a customer, not 3D Services staff. Do not add "
@@ -657,13 +896,122 @@ def AssistantChat():
                 "system. Answer in plain words from what you were given; if "
                 "nothing you were given covers it, say so and offer who can "
                 "help.")})
+        # Why "why is a vehicle offline?" used to get a textbook answer: there
+        # was no tool to look the vehicle up, so the model had nothing to be
+        # specific about. Now there is, and being specific is the instruction.
+        messages.append({"role": "system", "content": (
+            "You can look up this account's own vehicles. When someone asks "
+            "about a vehicle, a unit or a trip, call unit_find first and work "
+            "from what it returns; never answer such a question from general "
+            "knowledge while a tool could answer it from their actual data. "
+            "If unit_find returns more than one match, or the person named no "
+            "vehicle at all, ASK WHICH ONE and stop there — do not guess, and "
+            "do not answer generically instead of asking. State the figures "
+            "the tools return, including when a unit last reported and how "
+            "long ago; if a tool says it could not read something, say that "
+            "rather than filling the gap.")})
+
+        # 2,679 knowledge chunks sat unread because nothing told the model
+        # they existed. The vehicle instruction above had a counterpart for
+        # documents only in spirit; now it has one in the prompt.
+        messages.append({"role": "system", "content": (
+            "You also have the approved NAVAS and OLIWA documents, through "
+            "knowledge_search. For anything about how the platform works, what "
+            "a term means, a policy, a procedure, a product, billing, tokens, "
+            "support or who to contact, search them FIRST and answer from what "
+            "comes back. Do not answer such a question from general knowledge "
+            "about telematics: a plausible answer that is not what NAVAS "
+            "actually does is worse for the customer than no answer. If the "
+            "search returns nothing, say you could not find it and offer to "
+            "put them in touch with someone who can help.")})
+
+        # "My drivers waste a lot of fuel" is a sales conversation: there are
+        # products for exactly that. Waswa answered "I couldn't find a fuel
+        # telematics product" and offered a technician, because nothing told
+        # it recommending was its job. Equally, a customer who finds it too
+        # costly should leave with a cheaper way to keep using the service,
+        # not with nothing. Neither may involve a price.
+        messages.append({"role": "system", "content": (
+            "Help people get the right amount of NAVAS for their needs. "
+            "UPSELL: when someone describes a problem or goal a product could "
+            "solve -- fuel loss, driver behaviour, theft, idle or misused "
+            "vehicles, compliance, maintenance -- call product_search with "
+            "their own words and recommend at most two products whose "
+            "description fits, saying what each does about their problem and, "
+            "where the account context shows it, why it suits their fleet. "
+            "DOWNSELL: when someone says it costs too much or wants to spend "
+            "less, help them keep the service for less: look up, with "
+            "app_guide_search and knowledge_search, the ways the app offers -- "
+            "pausing tracking on vehicles that are not in use, turning "
+            "auto-renew off, listing idle vehicles on VEBA so they earn -- and "
+            "suggest the ones that fit what they told you. In both cases: only "
+            "recommend what a tool returned, never invent a product or a "
+            "feature, never quote or compare prices (offer sales for those), "
+            "and do not push -- one clear suggestion with the reason beats a "
+            "list.")})
+
+        # Asked from the app, "how do I create a geofence?" was answered from
+        # the CMS manual or not at all. The app now has its own guide, kept in
+        # step with the app (waswa_app_guide); this says to use it first and
+        # never to dress another application's steps up as the app's.
+        if waswa_v2.surface_family(surface) == 'mobile':
+            messages.append({"role": "system", "content": (
+                "This person is using the OLIWA mobile app. For any question "
+                "about how to do something in the app -- a screen, a button, "
+                "a setting, where to find something -- call app_guide_search "
+                "FIRST and give the steps it returns, in order, with the "
+                "app's own labels. If it finds nothing, say the app guide "
+                "does not cover that. Never give steps from another "
+                "application, such as the NAVAS CMS, as if they were steps "
+                "in the app; if only the CMS can do it, say that plainly.")})
+
+        # "I have data and training up to October 2023" was a real answer to a
+        # real customer. Waswa is a NAVAS assistant, not a chatbot discussing
+        # its own construction.
+        messages.append({"role": "system", "content": (
+            "You are Waswa, the assistant for the NAVAS platform and the OLIWA "
+            "apps. Never mention your training data, a knowledge cut-off date, "
+            "any model name, or who built you; you have no useful knowledge of "
+            "those and they are not what was asked. When you do not know "
+            "something, say you could not find it in NAVAS, and stop there.")})
+
+        # A tool that reports unavailable: true has told us it could not look.
+        # Waswa used to turn that into "you have no vehicles", which is the one
+        # answer a customer cannot check and must never be guessed.
+        messages.append({"role": "system", "content": (
+            "If a tool result contains \"unavailable\": true, the system could "
+            "not read that data. Say you cannot check it right now. Never "
+            "convert it into a count, a zero, or \"you have none\" — a figure "
+            "you did not read is worse than admitting the outage.")})
+
+        # unit_trips takes a date range; fleet_activity takes a number of
+        # days. Asked about "last week" they can return different counts for
+        # the same vehicle, both correct for their own window. Every tool result
+        # carries from/to, so the only way to contradict yourself here is to
+        # quote a figure without the window it came from.
+        messages.append({"role": "system", "content": (
+            "Trip counts, distances and fleet totals are always FOR A DATE "
+            "RANGE, and every tool result carries the from/to it used. Say the "
+            "range whenever you give such a figure — \"16 trips between 25 Sep "
+            "and 2 Oct\", not \"16 trips last week\". If two results cover "
+            "different ranges, do not reconcile them by picking one: say what "
+            "each covers.")})
+
         if module and surface in _SCREEN_SURFACES:
             who, app = _SCREEN_SURFACES[surface]
+            # The earlier wording of this ("you do not see what is on their
+            # screen ... say so") was being used as a reason to decline
+            # questions about their own vehicles, which is the opposite of the
+            # point. Not seeing the screen says nothing about what can be
+            # looked up.
             messages.append({"role": "system", "content": (
                 f"The {who} is asking from the {app} \"{module}\" screen. "
-                "Read short or ambiguous questions in that context. You do not "
-                "see what is on their screen; if the question depends on live "
-                "figures from it that you have not been given, say so.")})
+                "Read short or ambiguous questions in that context. You cannot "
+                "see their screen, but that is NEVER a reason to decline a "
+                "question about their vehicles, trips, tokens or charges — "
+                "those come from your tools, not from the screen, so call the "
+                "tools. Only say you cannot see something when it exists just "
+                "on their screen and no tool can fetch it.")})
         messages.extend(history)
         messages.append({"role": "user", "content": user_message})
 
@@ -677,16 +1025,72 @@ def AssistantChat():
         finish_reason = None
         answered = False
         docs_found = False          # a document search returned something
-        for _ in range(_MAX_TOOL_ROUNDS):
-            outcome = _call_model(messages)
+
+        # v2 turn state. Computed even when the flag is off -- plan_turn is a
+        # regex match over the question, it touches nothing, and having it
+        # always present keeps the two paths one body of code rather than two.
+        _v2_plan = waswa_v2.plan_turn(user_message, surface=surface,
+                                      module=module)
+        _v2_rejected = 0
+        must_look_up = _needs_lookup(user_message)
+        # "What is the Ivms Product?" was answered from a product row with no
+        # detail loaded -- "I can't say what it solves" -- while the approved
+        # manual described it at length. Forcing applies to round 0 only and
+        # any tool satisfies it, so nothing made the model read the documents.
+        # A product lookup that came back empty or thin now earns one forced
+        # document search before the answer is accepted.
+        searched_docs = False
+        product_gap = False
+        docs_nudged = False
+        force_next = False
+
+        # Looked up here rather than left to the model. See _prefetch_fleet:
+        # asking the model to call a tool is a request that can be declined
+        # somewhere between here and the provider; reading the data first is
+        # not. Tools remain available for everything past the first lookup.
+        if must_look_up:
+            fleet_notes, fleet_evidence = _prefetch_fleet(
+                user_message, store)
+            for note in fleet_notes:
+                messages.append({"role": "system", "content": note})
+            evidence.extend(fleet_evidence)
+
+        for _round in range(_MAX_TOOL_ROUNDS):
+            forced = (_round == 0 and must_look_up) or force_next
+            force_next = False
+            outcome = _call_model(messages, force_tools=forced)
             if outcome['status'] != 'ok':
-                return reply("error", outcome['code'], outcome['message'], "")
+                # The conversation is open and the user turn is recorded by
+                # now. Without its uid the caller cannot continue or close it,
+                # and an eval run piles every later question into it.
+                return reply("error", outcome['code'], outcome['message'],
+                             {"conversation_uid": conversation_uid})
 
             assistant_message = outcome['message']
             finish_reason = outcome.get('finish_reason')
             tool_calls = assistant_message.get('tool_calls') or []
+            _log('<- model: %s tool call(s)%s, finish_reason=%s (round %s, '
+                 'forced=%s)',
+                 len(tool_calls),
+                 ': ' + ', '.join(
+                     (c.get('function') or {}).get('name', '?')
+                     for c in tool_calls) if tool_calls else '',
+                 finish_reason, _round, forced)
 
             if not tool_calls:
+                if product_gap and not searched_docs and not docs_nudged:
+                    _log('product lookup was empty or thin and no document '
+                         'was searched; forcing knowledge_search '
+                         '(conversation=%s)', conversation_uid)
+                    docs_nudged = True
+                    force_next = True
+                    messages.append({"role": "system", "content": (
+                        "Do not answer yet. The product catalogue had no "
+                        "usable detail for this, and you have not searched "
+                        "the approved documents. Call knowledge_search now "
+                        "with the product or term the person asked about, "
+                        "and answer from what it returns.")})
+                    continue
                 text = (assistant_message.get('content') or '').strip()
                 answered = True
                 break
@@ -700,17 +1104,48 @@ def AssistantChat():
                 except ValueError:
                     arguments = {}
 
-                # Knowledge tools first: dispatch returns None for a name it
-                # does not own, so an unknown tool still reaches the product
-                # dispatcher and gets its readable "no such tool" answer rather
-                # than being swallowed here.
-                result = waswa_knowledge.dispatch(tool_name, arguments,
-                                                  audience=audience)
-                if result is None:
-                    result = waswa_products.dispatch(tool_name, arguments)
+                # The data API runs the tool for the token's account: fleet
+                # tools first, then knowledge, then products, whose dispatcher
+                # gives an unknown name its readable "no such tool" answer.
+                # The model may name a unit; only the server decides whose
+                # fleet it is allowed to look in.
+                try:
+                    ran = store.tool(tool_name, arguments)
+                    owner, result = ran.get('owner'), ran.get('result')
+                    if tool_name in ('knowledge_search', 'app_guide_search'):
+                        searched_docs = True
+                    elif tool_name == 'product_lookup':
+                        found = isinstance(result, dict) and result.get('found')
+                        loaded = found and (result.get('product') or {}).get(
+                            'attributes_loaded')
+                        product_gap = product_gap or not loaded
+                except DataApiError as error:
+                    _log('tool %s failed in the data API: %s', tool_name, error)
+                    owner = None
+                    result = {'error': f'{tool_name} could not be run just now',
+                              'unavailable': True}
+                if owner == 'fleet':
+                    # The account's own telemetry — the most authoritative
+                    # thing Waswa can cite, and measured rather than written.
+                    authority = 1
+                    kind = 'fleet'
+                elif owner == 'products':
                     authority = 1          # PPMM tables are level 1 by definition
                     kind = 'tool'
+                elif owner is None:
+                    authority = None       # nothing was read
+                    kind = 'tool'
                 else:
+                    if _v2:
+                        # THE WRONG-CORPUS GUARD. A how-to from the mobile app
+                        # must not be answered out of the CMS manual. Chunks
+                        # whose document does not state the right scope are
+                        # dropped here, before the model ever sees them --
+                        # filtering the prompt is stronger than asking the
+                        # model to ignore what it was handed.
+                        result, _v2_dropped = waswa_v2.filter_for_scope(
+                            result, _v2_plan.get('require_scope'))
+                        _v2_rejected += _v2_dropped
                     # A document answer is only as authoritative as the weakest
                     # chunk it was built from, and that varies per search.
                     authority = waswa_knowledge.authority_of(result)
@@ -723,7 +1158,7 @@ def AssistantChat():
                     'role': 'tool',
                     'tool_call_id': call.get('id'),
                     'name': tool_name,
-                    'content': json.dumps(result, default=str),
+                    'content': json.dumps(result, default=str, ensure_ascii=False),
                 })
 
         if not answered:
@@ -733,7 +1168,8 @@ def AssistantChat():
                  '(conversation=%s)', _MAX_TOOL_ROUNDS, conversation_uid)
             outcome = _call_model(messages, allow_tools=False)
             if outcome['status'] != 'ok':
-                return reply("error", outcome['code'], outcome['message'], "")
+                return reply("error", outcome['code'], outcome['message'],
+                             {"conversation_uid": conversation_uid})
             finish_reason = outcome.get('finish_reason')
             text = (outcome['message'].get('content') or '').strip()
 
@@ -751,14 +1187,46 @@ def AssistantChat():
         if not text:
             _log('model returned empty content (finish_reason=%s, '
                  'conversation=%s)', finish_reason, conversation_uid)
-            return reply("error", 502, "The assistant returned no response.", "")
+            return reply("error", 502, "The assistant returned no response.",
+                         {"conversation_uid": conversation_uid})
+
+        # ── v2 verification gate ─────────────────────────────────────
+        # The draft is checked against what was actually retrieved BEFORE the
+        # user sees it, and one repair round is spent on any violation. v1
+        # has no equivalent: every guarantee there rests on the model having
+        # behaved.
+        _v2_unresolved = []
+        _v2_repairs = 0
+        if _v2:
+            _v2_retrieval = {'chunks': [1] if docs_found else [],
+                             'rejected_for_scope': [1] * _v2_rejected}
+            _v2_unresolved = waswa_v2.verify(
+                text, _v2_plan, _v2_retrieval, tool_refs=[e[1] for e in evidence])
+            if _v2_unresolved:
+                _v2_repairs = 1
+                messages.append({'role': 'assistant', 'content': text})
+                messages.append({
+                    'role': 'system',
+                    'content': 'This draft was rejected before it reached the '
+                               'user. Fix every point and answer again:\n'
+                               + '\n'.join('- ' + v for v in _v2_unresolved)})
+                repaired = _call_model(messages, allow_tools=False)
+                if repaired['status'] == 'ok':
+                    candidate = (repaired['message'].get('content') or '').strip()
+                    if candidate:
+                        text = _tidy_source_line(
+                            candidate,
+                            keep=(audience == 'staff' and docs_found))
+                        _v2_unresolved = waswa_v2.verify(
+                            text, _v2_plan, _v2_retrieval,
+                            tool_refs=[e[1] for e in evidence])
 
         message_uid = _record_turn(
-            conn, conversation_uid, 'assistant', text,
+            store, conversation_uid, 'assistant', text,
             router_tier=3, model=OPENROUTER_MODEL,
             prompt_version=prompt_version, latency_ms=latency_ms)
 
-        _record_evidence(conn, message_uid, evidence)
+        _record_evidence(store, message_uid, evidence)
 
         return reply("success", 200, "OK", {
             "reply": text,
@@ -778,16 +1246,24 @@ def AssistantChat():
             "router_tier": 3,
             "latency_ms": latency_ms,
             "truncated": truncated,
+            "agent_version": agent_version,
+            # Step efficiency and the verification result -- the two signals
+            # the evaluation plan found missing. Recorded on every turn,
+            # whichever version answered, so v1 and v2 are comparable.
+            "tool_rounds": _round + 1,
+            "scope_rejected": _v2_rejected,
+            "repairs": _v2_repairs,
+            "unresolved": _v2_unresolved,
             "evidence": [
                 {"source_kind": e[0], "source_ref": e[1], "authority_level": e[2]}
                 for e in evidence
             ],
-            "context_unknown": _unknown_report(context),
+            "context_unknown": context['unknown'],
         })
 
     except Exception as error:
         current_app.logger.exception('[waswa] /assistant/chat failed')
-        return reply("error", 500, str(error), "")
-    finally:
-        if conn:
-            conn.close()
+        # The detail is in the log above. The customer sees plain words, not
+        # a driver message such as "server closed the connection".
+        return reply("error", 500,
+                     "Waswa could not answer just now. Please try again.", "")

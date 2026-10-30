@@ -35,6 +35,12 @@ def _require_env(name: str) -> str:
 
 DB_LINK = _require_env("DATABASE_URL")
 
+# Waswa connects as its own least-privilege role (navas_waswa, see
+# database/manual/waswa_readonly_role.sql) when WASWA_DATABASE_URL is set.
+# Unset, it shares DATABASE_URL. Set it only after
+# scripts/waswa_grant_check.py passes against the role.
+WASWA_DB_LINK = os.environ.get("WASWA_DATABASE_URL", "").strip() or DB_LINK
+
 JWT_SECRET = _require_env("JWT_SECRET")
 
 
@@ -76,6 +82,11 @@ AUTO_RENEW_LIVE = os.environ.get("AUTO_RENEW_LIVE", "false").lower() == "true"
 AUTO_RENEW_INTERVAL_MINUTES = int(
     os.environ.get("AUTO_RENEW_INTERVAL_MINUTES", "15"))
 
+# Refer & Earn: the token_id (dll_tokens_registry) of a 24-hour token. One
+# pack of it is added to a referrer's wallet when a company they referred
+# makes its first paid top-up. Unset, rewards are held as 'qualified'.
+REFERRAL_REWARD_TOKEN_ID = os.environ.get("REFERRAL_REWARD_TOKEN_ID", "").strip()
+
 # CORS — allowed origins for credential-bearing requests
 
 CORS_ORIGINS = [
@@ -111,6 +122,11 @@ CASSANDRA_PORT = int(os.environ.get("CASSANDRA_PORT", "9042"))
 CASSANDRA_USERNAME = os.environ.get("CASSANDRA_USERNAME", "cassandra")
 CASSANDRA_PASSWORD = _require_env("CASSANDRA_PASSWORD")
 CASSANDRA_LOCAL_DC = os.environ.get("CASSANDRA_LOCAL_DC", "datacenter1")
+# Seconds the driver may spend on its first connection, which downloads the
+# schema of every keyspace. The driver's default of 2 s is enough next to the
+# cluster but not from a developer machine ~280 ms away, where every connect
+# failed with OperationTimedOut and all vehicle data was unavailable.
+CASSANDRA_CONTROL_TIMEOUT = float(os.environ.get("CASSANDRA_CONTROL_TIMEOUT", "10"))
 
 
 # ── Payments (Santripe mobile money) ───────────────────────────────────────

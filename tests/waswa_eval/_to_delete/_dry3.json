@@ -1,0 +1,366 @@
+{
+  "_what_this_is": "The Waswa eval set. A fixed list of questions with expected outcomes, re-run after every prompt, retrieval or tool change. This is a test suite: it is meant to be kept and re-run, not deleted after one look.",
+  "_expectations_are_a_draft": "Every expect block except must_not_contain_price was guessed from the wording of the question. Correct them by hand before the first run. A wrong expectation makes a correct answer look broken.",
+  "_seeded_from": "dll_waswa_feedback - the only questions on this platform whose correct outcome a real user has already ruled on.",
+  "generated_at": "2026-10-08T20:12:29",
+  "generated_by": "scripts/waswa_eval_build.py",
+  "statuses_included": [
+    "open",
+    "in_review",
+    "resolved",
+    "dismissed"
+  ],
+  "count": 4,
+  "questions": [
+    {
+      "id": "fb-001",
+      "question": "How many tokens do I have?",
+      "surface": "mobile",
+      "language": null,
+      "shape": "account",
+      "guard": "fix",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [
+          "waswa_context"
+        ],
+        "must_cite_document": false,
+        "must_match_context": {
+          "ask_as_account_uid": "acctFULL",
+          "slots": [
+            "token_balance_and_burn_rate"
+          ],
+          "rule": "every figure in the answer must equal what build_context reports for this account at the moment the test runs. Never write a number here."
+        },
+        "no_unsourced_numbers": true
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "uid-01",
+        "account_uid": "acctFULL",
+        "ask_as_account_uid": "acctFULL",
+        "client_uid": "C-FULL",
+        "verdict": "wrong",
+        "status": "open",
+        "note": null,
+        "message_uid": "msg-01",
+        "conversation_uid": "conv-01",
+        "model": "gpt-4o",
+        "prompt_version": 9,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-09-01T00:00:00",
+        "previous_answer": "prior",
+        "judgements": 1,
+        "verdicts_seen": [
+          "wrong"
+        ],
+        "history": [
+          {
+            "feedback_uid": "uid-01",
+            "verdict": "wrong",
+            "status": "open",
+            "note": null,
+            "message_uid": "msg-01",
+            "prompt_version": 9,
+            "account_uid": "acctFULL",
+            "client_uid": "C-FULL",
+            "created_at": "2026-09-01T00:00:00",
+            "answer": "prior"
+          }
+        ],
+        "context_at_build": {
+          "_not_an_expectation": "what the store held when this file was generated. A record for a reader, never something to assert against - the figures move. The expectation is expect.must_match_context, evaluated at run time.",
+          "resolved_client_uid": "C-FULL",
+          "slots": {
+            "token_balance_and_burn_rate": {
+              "token_packs": 234,
+              "token_units_left": 120.0
+            },
+            "asset_count_and_types": {
+              "subscribed_units": 4
+            },
+            "open_incidents": {
+              "unread_alerts_30d": 0
+            },
+            "payment_standing": {
+              "by_status": {
+                "successful": 6
+              }
+            },
+            "active_products": [
+              {
+                "product_name": "ivms"
+              }
+            ]
+          },
+          "no_value": {}
+        }
+      }
+    },
+    {
+      "id": "fb-002",
+      "question": "How many tokens do I have?",
+      "surface": "mobile",
+      "language": null,
+      "shape": "account",
+      "guard": "fix",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [
+          "waswa_context"
+        ],
+        "must_cite_document": false,
+        "must_match_context": {
+          "ask_as_account_uid": "acctZERO",
+          "slots": [
+            "token_balance_and_burn_rate"
+          ],
+          "rule": "every figure in the answer must equal what build_context reports for this account at the moment the test runs. Never write a number here."
+        },
+        "no_unsourced_numbers": true,
+        "must_not_dead_end": {
+          "why": "the slot this question is answered from resolves to nothing. Reporting that is correct, and on its own it leaves the customer with nowhere to go.",
+          "must_offer_next_step": true,
+          "zero_slots": [
+            "token_balance_and_burn_rate"
+          ],
+          "context_that_explains_it": [
+            "payment_standing"
+          ],
+          "note": "this account holds nothing AND has payments on record, so what to say next is already in context. No claim is made here about what any payment status means."
+        }
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "uid-03",
+        "account_uid": "acctZERO",
+        "ask_as_account_uid": "acctZERO",
+        "client_uid": "C-ZERO",
+        "verdict": "unhelpful",
+        "status": "open",
+        "note": null,
+        "message_uid": "msg-03",
+        "conversation_uid": "conv-03",
+        "model": "gpt-4o",
+        "prompt_version": 9,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-09-03T00:00:00",
+        "previous_answer": "prior",
+        "judgements": 2,
+        "verdicts_seen": [
+          "good",
+          "unhelpful"
+        ],
+        "history": [
+          {
+            "feedback_uid": "uid-02",
+            "verdict": "good",
+            "status": "resolved",
+            "note": null,
+            "message_uid": "msg-02",
+            "prompt_version": 9,
+            "account_uid": "acctZERO",
+            "client_uid": "C-ZERO",
+            "created_at": "2026-09-02T00:00:00",
+            "answer": "prior"
+          },
+          {
+            "feedback_uid": "uid-03",
+            "verdict": "unhelpful",
+            "status": "open",
+            "note": null,
+            "message_uid": "msg-03",
+            "prompt_version": 9,
+            "account_uid": "acctZERO",
+            "client_uid": "C-ZERO",
+            "created_at": "2026-09-03T00:00:00",
+            "answer": "prior"
+          }
+        ],
+        "context_at_build": {
+          "_not_an_expectation": "what the store held when this file was generated. A record for a reader, never something to assert against - the figures move. The expectation is expect.must_match_context, evaluated at run time.",
+          "resolved_client_uid": "C-ZERO",
+          "slots": {
+            "token_balance_and_burn_rate": {
+              "token_packs": 0,
+              "note": "none yet"
+            },
+            "asset_count_and_types": {
+              "subscribed_units": 0
+            },
+            "open_incidents": {
+              "unread_alerts_30d": 0
+            },
+            "payment_standing": {
+              "by_status": {
+                "pending": 2
+              }
+            },
+            "active_products": "none (no token packs yet)"
+          },
+          "no_value": {}
+        }
+      },
+      "_verdict_conflict": true,
+      "_verdict_conflict_reason": "this question was judged good/unhelpful at different times; the most recent judgement (unhelpful) was used to set guard - confirm that is right",
+      "guard_detail": {
+        "numbers": "regression",
+        "phrasing": "fix",
+        "why": "the same answer was judged good and not-good at different times. Someone found the figures acceptable, so the figures must not change; the wording is what has to move."
+      }
+    },
+    {
+      "id": "fb-003",
+      "question": "how do I created a new geofence",
+      "surface": "mobile",
+      "language": null,
+      "shape": "document",
+      "guard": "fix",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [
+          "knowledge_search"
+        ],
+        "must_cite_document": true
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "uid-04",
+        "account_uid": "acctFULL",
+        "ask_as_account_uid": "acctFULL",
+        "client_uid": "C-FULL",
+        "verdict": "unhelpful",
+        "status": "open",
+        "note": null,
+        "message_uid": "msg-04",
+        "conversation_uid": "conv-04",
+        "model": "gpt-4o",
+        "prompt_version": 9,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-09-04T00:00:00",
+        "previous_answer": "prior",
+        "judgements": 1,
+        "verdicts_seen": [
+          "unhelpful"
+        ],
+        "history": [
+          {
+            "feedback_uid": "uid-04",
+            "verdict": "unhelpful",
+            "status": "open",
+            "note": null,
+            "message_uid": "msg-04",
+            "prompt_version": 9,
+            "account_uid": "acctFULL",
+            "client_uid": "C-FULL",
+            "created_at": "2026-09-04T00:00:00",
+            "answer": "prior"
+          }
+        ]
+      },
+      "blocked_on": "oliwa-ui-corpus",
+      "blocked_reason": "the knowledge corpus holds CMS how-to material only. There is no OLIWA UI documentation in it, so no retrieval can answer this however well the tool selection works. Fixing tool selection alone would make Waswa hand CMS steps to a mobile user with confidence, which is worse than refusing.",
+      "expected_to_fail": true
+    },
+    {
+      "id": "fb-004",
+      "question": "how many units are in my oliwa account?",
+      "surface": "mobile",
+      "language": null,
+      "shape": "account",
+      "guard": "fix",
+      "expect": {
+        "must_not_contain_price": true,
+        "must_not_refuse": true,
+        "must_call": [
+          "waswa_context"
+        ],
+        "must_cite_document": false,
+        "must_match_context": {
+          "ask_as_account_uid": "acctZERO",
+          "slots": [
+            "asset_count_and_types"
+          ],
+          "rule": "every figure in the answer must equal what build_context reports for this account at the moment the test runs. Never write a number here."
+        },
+        "no_unsourced_numbers": true,
+        "must_not_dead_end": {
+          "why": "the slot this question is answered from resolves to nothing. Reporting that is correct, and on its own it leaves the customer with nowhere to go.",
+          "must_offer_next_step": true,
+          "zero_slots": [
+            "asset_count_and_types"
+          ],
+          "context_that_explains_it": [
+            "payment_standing"
+          ],
+          "note": "this account holds nothing AND has payments on record, so what to say next is already in context. No claim is made here about what any payment status means."
+        }
+      },
+      "origin": {
+        "source": "dll_waswa_feedback",
+        "feedback_uid": "uid-05",
+        "account_uid": "acctZERO",
+        "ask_as_account_uid": "acctZERO",
+        "client_uid": "C-ZERO",
+        "verdict": "unhelpful",
+        "status": "open",
+        "note": null,
+        "message_uid": "msg-05",
+        "conversation_uid": "conv-05",
+        "model": "gpt-4o",
+        "prompt_version": 9,
+        "router_tier": 3,
+        "intent": null,
+        "created_at": "2026-09-05T00:00:00",
+        "previous_answer": "prior",
+        "judgements": 1,
+        "verdicts_seen": [
+          "unhelpful"
+        ],
+        "history": [
+          {
+            "feedback_uid": "uid-05",
+            "verdict": "unhelpful",
+            "status": "open",
+            "note": null,
+            "message_uid": "msg-05",
+            "prompt_version": 9,
+            "account_uid": "acctZERO",
+            "client_uid": "C-ZERO",
+            "created_at": "2026-09-05T00:00:00",
+            "answer": "prior"
+          }
+        ],
+        "context_at_build": {
+          "_not_an_expectation": "what the store held when this file was generated. A record for a reader, never something to assert against - the figures move. The expectation is expect.must_match_context, evaluated at run time.",
+          "resolved_client_uid": "C-ZERO",
+          "slots": {
+            "token_balance_and_burn_rate": {
+              "token_packs": 0,
+              "note": "none yet"
+            },
+            "asset_count_and_types": {
+              "subscribed_units": 0
+            },
+            "open_incidents": {
+              "unread_alerts_30d": 0
+            },
+            "payment_standing": {
+              "by_status": {
+                "pending": 2
+              }
+            },
+            "active_products": "none (no token packs yet)"
+          },
+          "no_value": {}
+        }
+      }
+    }
+  ]
+}

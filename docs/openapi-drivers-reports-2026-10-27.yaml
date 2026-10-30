@@ -1,0 +1,635 @@
+openapi: 3.0.3
+info:
+  title: NAVAS core APIs — drivers, reports and trip replay (26–27 Oct 2026)
+  version: 2026-10-27
+  description: |
+    Endpoints added or changed for the OLIWA app on 26–27 October 2026:
+
+    * **Driver management** (new, migration 052): register drivers, edit them,
+      change their status, attach them to a unit, photos, history.
+    * **Geofence report** (changed): optional `breach` for separate Geofence
+      Entry / Geofence Exit reports; now reads recorded crossings.
+    * **Trip replay** (changed): optional `dedupe`, and `from_time` / `to_time`
+      for an exact window.
+
+    Every response uses the standard envelope
+    `{ "status": "success" | "error", "message": "...", "data": <payload> }`,
+    with the HTTP status code matching. Request bodies are sent as
+    `{ "data": { ... } }`.
+
+    Driver routes work on the signed-in user's own client: a driver of another
+    client answers 404. Before migration 052 is run they fail (the tables do
+    not exist); before `waswa-ai` is deployed they answer 404.
+servers:
+  - url: '{baseUrl}'
+    variables:
+      baseUrl:
+        default: https://narvas.3dservices.co.ug
+security:
+  - bearerAuth: []
+tags:
+  - name: Drivers
+  - name: Driver assignment
+  - name: Reports
+  - name: Trips
+
+paths:
+  # ── Drivers ──────────────────────────────────────────────────────────────
+  /drivers/registry:
+    get:
+      tags: [Drivers]
+      summary: List the client's drivers
+      description: A–Z, each with their current unit (if any).
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/DriverStatus' }
+        - name: q
+          in: query
+          description: Searches name, phone, permit number and employee number.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Drivers
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Driver' }
+        '403': { $ref: '#/components/responses/NoClient' }
+    post:
+      tags: [Drivers]
+      summary: Register a driver
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data: { $ref: '#/components/schemas/DriverInput' }
+            example:
+              data:
+                full_name: Okello John
+                phone: 0772 123 456
+                permit_number: UG1234567/A
+                permit_expiry: '2028-03-31'
+                permit_classes: [B, CM]
+                ibutton_id: 01-23-45-67-89-AB-CD-EF
+                national_id: ''
+                employee_number: E-0042
+                home_branch: Mbale
+                emergency_name: Achen Mary
+                emergency_phone: 0701 234567
+                notes: Night shifts
+      responses:
+        '201': { $ref: '#/components/responses/OneDriver' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '403': { $ref: '#/components/responses/NoClient' }
+        '409': { $ref: '#/components/responses/Duplicate' }
+
+  /drivers/registry/{driver_uid}:
+    parameters:
+      - $ref: '#/components/parameters/DriverUid'
+    get:
+      tags: [Drivers]
+      summary: One driver
+      responses:
+        '200': { $ref: '#/components/responses/OneDriver' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Drivers]
+      summary: Edit a driver
+      description: |
+        Only the fields sent change. A required field may be left out but not
+        blanked; an optional field sent as "" is cleared.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data: { $ref: '#/components/schemas/DriverInput' }
+            example:
+              data:
+                phone: '+256772999888'
+                home_branch: Jinja
+                national_id: ''
+      responses:
+        '200': { $ref: '#/components/responses/OneDriver' }
+        '400': { $ref: '#/components/responses/Invalid' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Duplicate' }
+
+  /drivers/registry/{driver_uid}/status:
+    parameters:
+      - $ref: '#/components/parameters/DriverUid'
+    put:
+      tags: [Drivers]
+      summary: Suspend, blacklist, deactivate or reinstate a driver
+      description: |
+        Any status other than `active` also ends the driver's current
+        assignment. The change and its reason go to the audit log.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data:
+                  type: object
+                  required: [status]
+                  properties:
+                    status: { $ref: '#/components/schemas/DriverStatus' }
+                    reason: { type: string, maxLength: 500 }
+            example:
+              data: { status: suspended, reason: Repeated overspeeding }
+      responses:
+        '200': { $ref: '#/components/responses/OneDriver' }
+        '400':
+          description: Unknown status, or already in it
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /drivers/registry/{driver_uid}/photo:
+    parameters:
+      - $ref: '#/components/parameters/DriverUid'
+    post:
+      tags: [Drivers]
+      summary: Upload or replace the driver's photo
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [photo]
+              properties:
+                photo:
+                  type: string
+                  format: binary
+                  description: JPEG, PNG or WebP, 5 MB or less. The file's
+                    content is checked, not its name.
+      responses:
+        '200': { $ref: '#/components/responses/OneDriver' }
+        '400':
+          description: No file, too large, or not an image
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    get:
+      tags: [Drivers]
+      summary: The driver's photo
+      description: Sent only to signed-in users of the same client.
+      responses:
+        '200':
+          description: The image
+          content:
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/png: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ── Assignment ───────────────────────────────────────────────────────────
+  /drivers/registry/{driver_uid}/assign:
+    parameters:
+      - $ref: '#/components/parameters/DriverUid'
+    post:
+      tags: [Driver assignment]
+      summary: Put the driver in a unit
+      description: |
+        Only an active driver whose permit has not expired. The driver's
+        previous unit, and the unit's previous driver, are released (one
+        driver per unit, one unit per driver). The unit must belong to the
+        caller's client.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data:
+                  type: object
+                  required: [device_imei]
+                  properties:
+                    device_imei: { type: string }
+            example:
+              data: { device_imei: '354002396040196' }
+      responses:
+        '200': { $ref: '#/components/responses/OneDriver' }
+        '400':
+          description: No unit given, or the driver may not drive (suspended,
+            blacklisted, inactive, permit expired)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '403':
+          description: The unit does not belong to the caller's client
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The same driver or unit was assigned at the same moment.
+            Refresh and try again.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: The unit register could not be read
+
+  /drivers/registry/{driver_uid}/unassign:
+    parameters:
+      - $ref: '#/components/parameters/DriverUid'
+    post:
+      tags: [Driver assignment]
+      summary: Take the driver out of their unit
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200': { $ref: '#/components/responses/OneDriver' }
+        '400':
+          description: The driver has no unit
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /drivers/registry/{driver_uid}/assignments:
+    parameters:
+      - $ref: '#/components/parameters/DriverUid'
+    get:
+      tags: [Driver assignment]
+      summary: The units the driver has driven, newest first (up to 200)
+      responses:
+        '200':
+          description: History
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Assignment' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /drivers/registry/unit/{device_imei}:
+    parameters:
+      - name: device_imei
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Driver assignment]
+      summary: The unit's current driver
+      description: '`data` is null when the unit has no driver.'
+      responses:
+        '200':
+          description: The driver, or null
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        nullable: true
+                        allOf:
+                          - $ref: '#/components/schemas/Driver'
+
+  # ── Changed: reports ─────────────────────────────────────────────────────
+  /data-stream/reports/geozone/generate-data:
+    post:
+      tags: [Reports]
+      summary: Geofence report — entries, exits, or both (CHANGED)
+      description: |
+        Now reads the crossings the alert engine records
+        (dll_event_notifications), newest first. New optional `breach`:
+        `entry` for the Geofence Entry report, `exit` for Geofence Exit;
+        without it both come back, as before. Rows also changed: see
+        GeofenceRow.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data:
+                  type: object
+                  required: [report_devices, start_date, end_date]
+                  properties:
+                    report_devices:
+                      type: array
+                      items: { type: string }
+                    start_date: { type: string, example: 19-10-2026, description: DD-MM-YYYY }
+                    end_date: { type: string, example: 26-10-2026, description: DD-MM-YYYY }
+                    breach:
+                      type: string
+                      enum: [entry, exit]
+                      description: NEW. Also accepts enter / entrance.
+            example:
+              data:
+                report_devices: ['354002396040196']
+                start_date: 19-10-2026
+                end_date: 26-10-2026
+                breach: entry
+      responses:
+        '200':
+          description: One object per unit, keyed by unit name
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties:
+                            type: array
+                            items: { $ref: '#/components/schemas/GeofenceRow' }
+        '400':
+          description: No rows — "No Geofence Entries Found", "No Geofence
+            Exits Found" or "No Geozone Events Found"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  # ── Changed: trip replay ─────────────────────────────────────────────────
+  /data-stream/trips/history/replay:
+    post:
+      tags: [Trips]
+      summary: A unit's positions in a window, newest first (CHANGED)
+      description: |
+        Reads the live position store (Cassandra). With `from_time` /
+        `to_time` the window is one continuous span from (from_date,
+        from_time) to (to_date, to_time). NEW optional `dedupe`: "false" keeps
+        every fix (by default only the latest fix per distinct position is
+        kept). Page with `offset_log` and `record_count` (up to 15000).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data:
+                  type: object
+                  required: [device_imei, from_date, to_date, offset_log, record_count]
+                  properties:
+                    device_imei: { type: string }
+                    from_date: { type: string, example: 25-10-2026, description: DD-MM-YYYY }
+                    to_date: { type: string, example: 26-10-2026, description: DD-MM-YYYY }
+                    from_time: { type: string, example: '06:00', description: HH:MM (24-hour) }
+                    to_time: { type: string, example: '11:59', description: 'HH:MM; padded to :59' }
+                    offset_log: { type: string, example: '0' }
+                    record_count: { type: string, example: '5000' }
+                    dedupe:
+                      type: string
+                      enum: ['true', 'false']
+                      default: 'true'
+                      description: NEW. "false" keeps every fix.
+            example:
+              data:
+                device_imei: '354002396040196'
+                from_date: 25-10-2026
+                to_date: 26-10-2026
+                from_time: '06:00'
+                to_time: '11:59'
+                offset_log: '0'
+                record_count: '5000'
+                dedupe: 'false'
+      responses:
+        '200':
+          description: Fixes, newest first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Fix' }
+        '400':
+          description: '"No Trips Found" (an empty window or page), "Device
+            Billing Is Blocked", "Routing Failed, Device Cant be found"'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: The position store could not be read
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    DriverUid:
+      name: driver_uid
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    OneDriver:
+      description: The driver
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Envelope'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Driver' }
+    NotFound:
+      description: No such driver in the caller's client
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    NoClient:
+      description: The login has no client account (drivers belong to a client)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Invalid:
+      description: A field failed its check; `message` is the first problem,
+        `data.errors` has one message per field
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/FieldErrors' }
+          example:
+            status: error
+            message: Enter a valid phone number, e.g. 0772 123 456.
+            data:
+              errors:
+                phone: Enter a valid phone number, e.g. 0772 123 456.
+    Duplicate:
+      description: Another driver of the client already has this phone,
+        permit number, iButton or NIN
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/FieldErrors' }
+          example:
+            status: error
+            message: Another driver already has this phone number.
+            data:
+              errors:
+                phone: Another driver already has this phone number.
+
+  schemas:
+    Envelope:
+      type: object
+      properties:
+        status: { type: string, enum: [success, error] }
+        message: { type: string }
+        data: {}
+    ErrorEnvelope:
+      type: object
+      properties:
+        status: { type: string, example: error }
+        message: { type: string }
+        data: { type: string, example: '' }
+    FieldErrors:
+      type: object
+      properties:
+        status: { type: string, example: error }
+        message: { type: string }
+        data:
+          type: object
+          properties:
+            errors:
+              type: object
+              additionalProperties: { type: string }
+
+    DriverStatus:
+      type: string
+      enum: [active, suspended, blacklisted, inactive]
+
+    PermitClass:
+      type: string
+      enum: [A, B, C, CM, CH, DL, DM, DH, E, F, G]
+
+    DriverInput:
+      type: object
+      description: |
+        Required on register: full_name, phone, permit_number, permit_expiry,
+        permit_classes. Everything else optional.
+      properties:
+        full_name: { type: string, minLength: 2, maxLength: 150 }
+        phone:
+          type: string
+          description: Any common form; stored as +256772123456
+          example: 0772 123 456
+        permit_number:
+          type: string
+          description: Letters, digits, "/" or "-"; stored upper-case without spaces
+        permit_expiry: { type: string, format: date, example: '2028-03-31' }
+        permit_classes:
+          type: array
+          items: { $ref: '#/components/schemas/PermitClass' }
+          description: Or a comma-separated string, e.g. "B,CM"
+        ibutton_id:
+          type: string
+          description: 6–16 hex digits, separators allowed; stored upper-case, e.g. 0123456789ABCDEF
+        national_id:
+          type: string
+          description: Optional NIN, 14 letters and digits
+        employee_number: { type: string, maxLength: 40 }
+        emergency_name: { type: string, maxLength: 150 }
+        emergency_phone: { type: string }
+        home_branch: { type: string, maxLength: 100 }
+        notes: { type: string, maxLength: 1000 }
+
+    Driver:
+      type: object
+      properties:
+        driver_uid: { type: string, format: uuid }
+        full_name: { type: string }
+        phone: { type: string, example: '+256772123456' }
+        permit_number: { type: string }
+        permit_expiry: { type: string, format: date }
+        permit_state:
+          type: string
+          enum: [valid, expiring, expired]
+          description: expiring = within 30 days
+        permit_classes:
+          type: array
+          items: { $ref: '#/components/schemas/PermitClass' }
+        ibutton_id: { type: string, nullable: true }
+        national_id: { type: string, nullable: true }
+        employee_number: { type: string, nullable: true }
+        has_photo: { type: boolean }
+        emergency_name: { type: string, nullable: true }
+        emergency_phone: { type: string, nullable: true }
+        home_branch: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/DriverStatus' }
+        status_reason: { type: string, nullable: true }
+        current_imei: { type: string, nullable: true, description: The unit they are in now }
+        assigned_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time, nullable: true }
+
+    Assignment:
+      type: object
+      properties:
+        device_imei: { type: string }
+        assigned_at: { type: string, format: date-time }
+        ended_at: { type: string, format: date-time, nullable: true, description: null = current }
+        end_reason:
+          type: string
+          nullable: true
+          description: reassigned, replaced, unassigned, or the status that ended it (suspended, blacklisted, inactive)
+
+    GeofenceRow:
+      type: object
+      properties:
+        date_logged: { type: string, example: '2026-10-26' }
+        time_logged: { type: string, example: '12:51:46' }
+        geozone_name: { type: string }
+        event_triggered: { type: string, enum: [Entry, Exit] }
+        rule_name: { type: string, description: The alert rule that recorded it }
+
+    Fix:
+      type: object
+      properties:
+        data_longitude: { type: number }
+        data_latitude: { type: number }
+        speed_log: { type: number }
+        data_hdop: { type: number }
+        local_system_datestamp: { type: string, example: 26-10-2026 }
+        local_system_timestamp: { type: string, example: 06:34:17PM }
+        geocoded_location: { type: string }
+        data_connected_satelites: { type: integer }
+        data_idx: { type: integer }

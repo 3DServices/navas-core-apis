@@ -1,0 +1,162 @@
+{
+  "_what_this_is": "one run of the Waswa eval set. The ids under \"created\" are the rows this run added to your database; scripts/waswa_eval_cleanup.py removes exactly those and nothing else.",
+  "started_at": "2026-10-09T10:51:12",
+  "transport": "app.test_client()",
+  "checks_fingerprint": "1456dc4417aa",
+  "crashed": null,
+  "rows": 2,
+  "created": {
+    "conversations": [
+      "ebc047ce-c499-4e4c-af0a-c89bf47308d2",
+      "d3540463-0487-4860-a6c9-ac83f90fb09e"
+    ],
+    "messages": [
+      "61c3433e-5725-4cf7-b18e-26f728cae2dd",
+      "d4702754-0f98-4659-b07e-a12118023ddd"
+    ]
+  },
+  "results": [
+    {
+      "id": "fb-011",
+      "question": "How many tokens do I have?",
+      "shape": "account",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "3f20c477-4446-4070-ad96-79aaa6877bd9",
+      "http_status": 200,
+      "seconds": 28.98,
+      "answer": "Your account currently holds no token packs, so there are no tokens available. \n\nRegarding payments, there are two recorded payments on your account: one dated 2026-09-18 and another dated 2026-09-11, both marked as pending. If you need further assistance with these payments, I can connect you with someone who can help check their status.",
+      "tools_used": [
+        "waswa_context",
+        "knowledge_search(token balance and burn rate)"
+      ],
+      "evidence": [
+        {
+          "authority_level": 3,
+          "source_kind": "account_context",
+          "source_ref": "waswa_context"
+        },
+        {
+          "authority_level": 4,
+          "source_kind": "document",
+          "source_ref": "knowledge_search(token balance and burn rate)"
+        }
+      ],
+      "context_numbers": [
+        0.0
+      ],
+      "cited_authorities": [
+        4
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "conversation_uid": "ebc047ce-c499-4e4c-af0a-c89bf47308d2",
+      "message_uid": "61c3433e-5725-4cf7-b18e-26f728cae2dd",
+      "checks": [
+        {
+          "check": "must_use_account_context",
+          "result": true,
+          "detail": "account context present"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        },
+        {
+          "check": "no_unsourced_numbers",
+          "result": false,
+          "detail": "not in context: 2026, 2026 (ignored -09: inside a date or range, -18: inside a date or range, -09: inside a date or range, -11: inside a date or range)"
+        }
+      ],
+      "not_scored": [
+        {
+          "check": "must_not_dead_end",
+          "why": "needs a judgement about whether the answer offers a useful next step. No mechanical test for this; a reviewer or a model as judge has to read it.",
+          "hint_offers_handoff": true
+        }
+      ],
+      "passed": false,
+      "undecided": 0
+    },
+    {
+      "id": "fb-012",
+      "question": "how many units are in my oliwa account?",
+      "shape": "account",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "3f20c477-4446-4070-ad96-79aaa6877bd9",
+      "http_status": 200,
+      "seconds": 26.46,
+      "answer": "Your account currently has no units subscribed to the OLIWA platform. If you need assistance with adding units or have any other questions, I can connect you with someone who can help.",
+      "tools_used": [
+        "waswa_context",
+        "unit_find(all, prefetched)",
+        "unit_find(oliwa)"
+      ],
+      "evidence": [
+        {
+          "authority_level": 3,
+          "source_kind": "account_context",
+          "source_ref": "waswa_context"
+        },
+        {
+          "authority_level": 1,
+          "source_kind": "fleet",
+          "source_ref": "unit_find(all, prefetched)"
+        },
+        {
+          "authority_level": 1,
+          "source_kind": "fleet",
+          "source_ref": "unit_find(oliwa)"
+        }
+      ],
+      "context_numbers": [
+        0.0
+      ],
+      "cited_authorities": [],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "conversation_uid": "d3540463-0487-4860-a6c9-ac83f90fb09e",
+      "message_uid": "d4702754-0f98-4659-b07e-a12118023ddd",
+      "checks": [
+        {
+          "check": "must_use_account_context",
+          "result": true,
+          "detail": "account context present"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        },
+        {
+          "check": "no_unsourced_numbers",
+          "result": true,
+          "detail": "every figure traced to context"
+        }
+      ],
+      "not_scored": [
+        {
+          "check": "must_not_dead_end",
+          "why": "needs a judgement about whether the answer offers a useful next step. No mechanical test for this; a reviewer or a model as judge has to read it.",
+          "hint_offers_handoff": true
+        }
+      ],
+      "passed": true,
+      "undecided": 0
+    }
+  ]
+}
