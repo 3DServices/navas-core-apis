@@ -336,6 +336,17 @@ def _read_points(imei, start, end):
             for r in rows if r.get('at') is not None]
 
 
+def _assigned_driver(cur, client, imei, at):
+    """Who was assigned to the vehicle at `at`, or None."""
+    cur.execute(
+        """SELECT driver_uid FROM dll_driver_assignments
+            WHERE device_imei = %s AND client_uid = %s AND assigned_at <= %s
+              AND (ended_at IS NULL OR ended_at > %s)
+            ORDER BY assigned_at DESC LIMIT 1""", (imei, client, at, at))
+    row = cur.fetchone()
+    return row['driver_uid'] if row else None
+
+
 def _context(cur, client, clean):
     """What assess() needs from the database, for the issue being recorded."""
     imei, at = clean['device_imei'], clean['issued_at']
@@ -362,12 +373,7 @@ def _context(cur, client, clean):
             ORDER BY issued_at DESC LIMIT 1""", (imei, client, at))
     previous_odometer = cur.fetchone()
 
-    cur.execute(
-        """SELECT driver_uid FROM dll_driver_assignments
-            WHERE device_imei = %s AND client_uid = %s AND assigned_at <= %s
-              AND (ended_at IS NULL OR ended_at > %s)
-            ORDER BY assigned_at DESC LIMIT 1""", (imei, client, at, at))
-    assigned = cur.fetchone()
+    assigned = _assigned_driver(cur, client, imei, at)
 
     cur.execute(
         """SELECT COUNT(*) AS n FROM dll_fuel_issues
@@ -386,7 +392,7 @@ def _context(cur, client, clean):
 
     return dict(previous_full=previous_full, since_full=since_full,
                 previous_odometer=previous_odometer, points=points,
-                assigned_driver_uid=assigned['driver_uid'] if assigned else None,
+                assigned_driver_uid=assigned,
                 nearby_issues=nearby)
 
 
@@ -432,13 +438,21 @@ def record_issue():
                 data, _now(), profile['fuel_type'] if profile else None)
             if errors:
                 return _invalid(errors)
-            cur.execute(
-                """SELECT driver_uid, status, permit_expiry FROM dll_drivers
-                    WHERE driver_uid = %s AND client_uid = %s""",
-                (clean['driver_uid'], client))
-            driver = cur.fetchone()
-            if not driver:
-                return _invalid({'driver_uid': 'Choose one of your drivers.'})
+            # No driver chosen: whoever was assigned to the vehicle when the
+            # fuel was issued -- the receipt's time, not now, so a back-dated
+            # receipt goes to the driver of that day.
+            if not clean['driver_uid']:
+                clean['driver_uid'] = _assigned_driver(
+                    cur, client, imei, clean['issued_at'])
+            driver = None
+            if clean['driver_uid']:
+                cur.execute(
+                    """SELECT driver_uid, status, permit_expiry FROM dll_drivers
+                        WHERE driver_uid = %s AND client_uid = %s""",
+                    (clean['driver_uid'], client))
+                driver = cur.fetchone()
+                if not driver:
+                    return _invalid({'driver_uid': 'Choose one of your drivers.'})
 
             result = rules.assess(clean, profile=profile, driver=driver,
                                   **_context(cur, client, clean))

@@ -86,7 +86,7 @@ eq('total rounds to the shilling', fr.total_cost(33.33, 5150), 171650.0)
 
 _, errors = fr.validate_issue({}, NOW)
 eq('every required field reported',
-   sorted(errors), sorted(['device_imei', 'driver_uid', 'issued_at', 'litres',
+   sorted(errors), sorted(['device_imei', 'issued_at', 'litres',
                            'unit_price', 'fuel_type', 'station_name',
                            'payment_method']))
 
@@ -213,6 +213,22 @@ driving_through = trip(400, stop_at_issue=False) + line(AT - W, 90, 100, lat=0.7
 check('not stopped at the time', 'not_stopped' in assess(points=driving_through)['flags'])
 check('another driver assigned', 'driver_not_assigned' in assess(assigned_driver_uid='d-9')['flags'])
 eq('no assignment at the time is not a flag', assess(assigned_driver_uid=None)['flags'], [])
+
+
+def assess_no_driver(**over):
+    kw = dict(driver=None, assigned_driver_uid=None)
+    kw.update(over)
+    return assess(issue=dict(clean_issue(), driver_uid=None), **kw)
+
+
+eq('driver is optional', fr.validate_issue(dict(VALID, driver_uid=''), NOW)[0]['driver_uid'], None)
+
+
+check('no driver: a notice, not a discrepancy',
+      'no_driver' in assess_no_driver()['flags']
+      and fr.FLAGS['no_driver'][0] == 'notice')
+check('no driver is never "another driver assigned"',
+      'driver_not_assigned' not in assess_no_driver(assigned_driver_uid='d-9')['flags'])
 check('suspended driver',
       'driver_not_allowed' in assess(driver={'status': 'suspended',
                                              'permit_expiry': date(2028, 1, 1)})['flags'])
@@ -305,6 +321,16 @@ eq('analogue source without calibration', fr.sensor_state('270', False),
    'needs_calibration')
 eq('analogue source calibrated', fr.sensor_state(' 270 ', True), 'ready')
 eq('direct source needs no calibration', fr.sensor_state('lls_lvl_add1', False), 'ready')
+
+no_driver = fr.summarise([
+    {'device_imei': 'A', 'driver_uid': None, 'driver_name': None, 'litres': 10,
+     'total_cost': 50000, 'flags': '', 'review_state': 'none'},
+    {'device_imei': 'A', 'driver_uid': 'd-1', 'driver_name': 'Okello', 'litres': 20,
+     'total_cost': 100000, 'flags': '', 'review_state': 'none'},
+], {})
+eq('issues with no driver are one bucket, so drivers add up',
+   sorted((d['driver_name'], d['cost']) for d in no_driver['drivers']),
+   [('No driver recorded', 50000), ('Okello', 100000)])
 
 if __name__ == '__main__':
     failed = [r for r in RESULTS if not r[1]]

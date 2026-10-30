@@ -363,6 +363,23 @@ add("/data-stream/trips/history", "post", P, "Trip history for a unit",
 add("/data-stream/trips/history/replay", "post", P, "Positions for playback",
     "Same fields. Page with offset_log; records come back newest first.",
     req=body(PLAYBACK, required=["device_imei", "from_date", "to_date"], example=EX))
+add("/data-stream/trips/engine-time", "post", P, "Engine-on time at stops",
+    "For each span (a stop the app's trip history found, local times), how "
+    "long the ignition was on, from the unit's ignition_detection input. "
+    "engine_on_seconds is null when no fix in the span had a reading. "
+    "ignition is 'not_configured' when the unit has no ignition input. At "
+    "most 50 spans, within 3 days.",
+    req=body({"device_imei": S["str"],
+              "spans": {"type": "array", "items": {
+                  "type": "object",
+                  "properties": {"from": S["str"], "to": S["str"]}}}},
+             required=["device_imei", "spans"],
+             example={"device_imei": "354002396040196", "spans": [
+                 {"from": "2026-10-30 00:00:00", "to": "2026-10-30 12:19:00"},
+                 {"from": "2026-10-30 15:50:00", "to": "2026-10-30 22:01:00"}]}),
+    responses=ok(example={"ignition": "configured", "spans": [
+        {"from": "2026-10-30 00:00:00", "to": "2026-10-30 12:19:00",
+         "engine_on_seconds": 56, "readings": 41}]}))
 
 # ── Profile (changed) ────────────────────────────────────────────────────────
 add("/rbac/users/{user_uid}/permissions", "get", "Profile",

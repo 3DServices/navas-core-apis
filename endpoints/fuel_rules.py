@@ -7,11 +7,13 @@ Pure: no Flask, no database, no clock (`now` is passed in), so
 tests/test_fuel_rules.py runs without a server.
 
 A fuel issue
-  Required    device_imei, driver_uid, issued_at, litres, unit_price,
-              station_name, payment_method, fuel_type (taken from the
-              vehicle's profile when it has one)
-  Optional    full_tank, odometer_km, receipt_number, notes (the receipt
-              photo is uploaded separately)
+  Required    device_imei, issued_at, litres, unit_price, station_name,
+              payment_method, fuel_type (taken from the vehicle's profile
+              when it has one)
+  Optional    driver_uid (when left out, fuel_registry uses whoever was
+              assigned to the vehicle at issued_at, if anyone), full_tank,
+              odometer_km, receipt_number, notes (the receipt photo is
+              uploaded separately)
   total_cost  litres x unit_price, worked out here -- UGX, whole shillings
 
 The checks (assess)
@@ -107,6 +109,9 @@ FLAGS = {
                            'Another issue for this vehicle within 30 minutes.'),
     'fuel_type_mismatch': ('discrepancy',
                            "Not the fuel type in the vehicle's profile."),
+    'no_driver': ('notice',
+                  'No driver was recorded, and nobody was assigned to the '
+                  'vehicle at that time.'),
     'no_tracker_data': ('notice',
                         'The tracker sent nothing around this time, so the '
                         'issue could not be checked against it.'),
@@ -223,11 +228,8 @@ def validate_issue(data, now, profile_fuel=None):
     else:
         clean['device_imei'] = imei
 
-    driver = _text(data.get('driver_uid'))
-    if not driver:
-        errors['driver_uid'] = 'Choose the driver who received the fuel.'
-    else:
-        clean['driver_uid'] = driver
+    # Optional: fuel for a vehicle nobody is assigned to is still fuel.
+    clean['driver_uid'] = _text(data.get('driver_uid')) or None
 
     issued_at = parse_datetime(data.get('issued_at'))
     if issued_at is None:
@@ -413,7 +415,9 @@ def assess(issue, *, profile=None, previous_full=None, since_full=(),
         if driver_rules.assignment_refusal(
                 driver.get('status'), driver.get('permit_expiry'), at.date()):
             flags.append('driver_not_allowed')
-    if assigned_driver_uid and assigned_driver_uid != issue['driver_uid']:
+    if not issue.get('driver_uid'):
+        flags.append('no_driver')
+    elif assigned_driver_uid and assigned_driver_uid != issue['driver_uid']:
         flags.append('driver_not_assigned')
     if nearby_issues:
         flags.append('possible_duplicate')
@@ -571,8 +575,12 @@ def summarise(issues, profiles):
             'device_imei': imei, 'issues': 0, 'litres': 0.0, 'cost': 0.0,
             'open_reviews': 0, 'flagged': 0, 'measured_km': 0.0,
             'measured_litres': 0.0})
-        d = drivers.setdefault(row['driver_uid'], {
-            'driver_uid': row['driver_uid'], 'driver_name': row.get('driver_name'),
+        # Issues with no driver are one bucket, so the drivers still add
+        # up to the period's totals.
+        d = drivers.setdefault(row.get('driver_uid'), {
+            'driver_uid': row.get('driver_uid'),
+            'driver_name': (row.get('driver_name') if row.get('driver_uid')
+                            else 'No driver recorded'),
             'issues': 0, 'litres': 0.0, 'cost': 0.0, 'flagged': 0})
         litres, cost = float(row['litres']), float(row['total_cost'])
         flagged = review_state_for(str(row.get('flags') or '').split(',')) == 'open'

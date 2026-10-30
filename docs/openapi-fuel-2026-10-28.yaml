@@ -17,7 +17,7 @@ info:
     be done. Flags: over_capacity, more_than_used, not_stopped,
     odometer_backwards, odometer_mismatch, driver_not_assigned,
     driver_not_allowed, possible_duplicate, fuel_type_mismatch (discrepancies);
-    no_tracker_data, tracker_unavailable, no_profile, first_full_tank,
+    no_driver, no_tracker_data, tracker_unavailable, no_profile, first_full_tank,
     span_too_long (notices).
 servers:
   - url: https://narvas.3dservices.co.ug
@@ -133,11 +133,17 @@ paths:
               properties:
                 data:
                   type: object
-                  required: [device_imei, driver_uid, issued_at, litres, unit_price,
+                  required: [device_imei, issued_at, litres, unit_price,
                              station_name, payment_method]
                   properties:
                     device_imei: {type: string}
-                    driver_uid: {type: string}
+                    driver_uid:
+                      type: string
+                      description: >-
+                        Optional. When left out, the driver assigned to the
+                        vehicle at issued_at is used; when nobody was, the
+                        issue is stored without a driver and gets the
+                        no_driver notice.
                     issued_at: {type: string, example: "2026-10-28T09:00",
                                 description: "Local time; at most 92 days ago, not in the future"}
                     litres: {type: number, maximum: 1000}
