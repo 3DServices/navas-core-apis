@@ -329,6 +329,17 @@ _LIVENESS_QUESTION = re.compile(
     r"\b(online|offline|reporting|live|active now|still (on|going|running)|"
     r"last seen|disconnected|not showing|connected|transmitting)\b", re.I)
 
+# "How many are moving / parked / idling" -- answerable only from each unit's
+# latest live report under the fleet status rule, never from heartbeats (a
+# parked vehicle reports too) or trip records.
+# Only about the fleet, not one unit: "Who is driving UBK 415T?" or "Why has
+# tracking stopped?" would otherwise read the whole fleet's state.
+_MOTION_QUESTION = re.compile(
+    r"^(?=.*\b(moving|in motion|on the move|driving|parked|idl(e|ing)|stopped|"
+    r"stationary)\b)"
+    r"(?=.*\b(how many|which|list|count|any(thing|one)?|all|fleet|vehicles|"
+    r"units|trucks|cars|lorries|bikes)\b)", re.I | re.S)
+
 _FLEET_QUESTION = re.compile(
     r"\b(unit|units|vehicle|vehicles|truck|lorry|car|bike|boda|fleet|"
     r"trip|trips|route|journey|mileage|odometer|driver|"
@@ -537,6 +548,33 @@ def _prefetch_fleet(message, data):
                 "must not be called offline. Never describe a unit as "
                 "reporting or online if its hours_since_last_report says "
                 "otherwise:\n" + json.dumps(live, default=str, ensure_ascii=False))
+
+    # Moving / parked / idling NOW: the whole fleet's state, by the rule the
+    # dashboard and Live Monitoring use. Without it the model counted units
+    # that were reporting and called them moving (4 against Live
+    # Monitoring's 2).
+    if _MOTION_QUESTION.search(str(message or '')) and len(units) > 1:
+        try:
+            motion = _strict_fleet_read(data, 'fleet_status', {})
+        except _FleetUnavailable as error:
+            _log('motion prefetch: unreachable (%s)', error)
+            notes.append(
+                "Live positions could not be read just now. Say you cannot "
+                "tell which vehicles are moving at the moment. Do NOT count "
+                "reporting units or trips as moving.")
+            evidence.append(('fleet', 'fleet_status(unavailable)', 1))
+        except Exception as error:      # noqa: BLE001 - never break the turn
+            _log('motion prefetch failed: %s: %s',
+                 error.__class__.__name__, error)
+        else:
+            evidence.append(('fleet', 'fleet_status(all, prefetched)', 1))
+            notes.append(
+                "What every unit is doing right now, measured just now by the "
+                "rule the dashboard and Live Monitoring use. Answer moving / "
+                "idling / parked / offline counts from these figures and no "
+                "others; reporting is not moving. A unit under unread was not "
+                "reached and must not be called offline:\n"
+                + json.dumps(motion, default=str, ensure_ascii=False))
 
     return notes, evidence
 

@@ -19,3 +19,6 @@ database/knowledge/uploads/
 
 # Local MLflow tracking server: its own venv, run store and artifacts
 .mlflow/
+
+# User uploads (fuel receipts and the like): customer files, never committed.
+uploads/

@@ -25,11 +25,17 @@ LIVE_STATUSES = ("Moving", "Parked", "Idling", "Offline")
 
 _redis_client = None
 
+# The live feed's position store. On the server it is the local Redis; a
+# development machine has none, so every live read (the fleet summary,
+# Waswa's fleet_status) failed there. Set these to reach it through a tunnel.
+REDIS_HOST = os.environ.get("REDIS_HOST", "127.0.0.1")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
+
 
 def _redis():
     global _redis_client
     if _redis_client is None:
-        _redis_client = redis.Redis(host="127.0.0.1", port=6379, db=0, socket_timeout=2,
+        _redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, socket_timeout=2,
                                     socket_connect_timeout=2, decode_responses=True)
     return _redis_client
 

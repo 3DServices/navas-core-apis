@@ -960,6 +960,86 @@ def fleet_liveness(client_uid=None, scope=None):
     return result
 
 
+# Units listed by name per state; the counts are always whole.
+MAX_LISTED_PER_STATE = 40
+
+
+def fleet_status(client_uid=None, scope=None):
+    """How many units are moving, idling, parked or offline right now.
+
+    Why this exists: there was no tool for it. Asked "how many vehicles are
+    moving", Waswa answered 4 while Live Monitoring showed 2: it could only
+    count units that were *reporting* (fleet_liveness) or had made a trip
+    (fleet_activity), and neither is moving.
+
+    The counts come from the same readings and the same rule as the
+    dashboard's fleet summary (fleet.py, fleet_summary.py), which the mobile
+    app and the console also follow (tests/fixtures/fleet_status_cases.json):
+    a report up to an hour old as it is; a unit last seen moving or idling
+    and quiet for longer is silent; one last reported parked stays parked for
+    up to 7 days while its tracker sleeps.
+    """
+    from . import fleet, fleet_summary   # fleet imports this module
+
+    target = _target_client(scope, client_uid)
+    if not target:
+        return {'found': False,
+                'reason': 'no client named — ask which client this is about'}
+    units = _units_of(target)
+    if not units:
+        return {'found': False,
+                'reason': 'no units are registered to this account'}
+    try:
+        readings, notes = fleet._readings(units)
+    except fleet._LiveStoreDown as error:
+        raise FleetUnavailable(
+            'live positions could not be read: %s' % error) from error
+
+    now = datetime.now()
+    listed = {state: [] for state in fleet_summary.STATES}
+    for reading in readings:
+        state = fleet_summary.classify(reading, now)
+        entry = {'imei': reading['imei'], 'name': reading.get('name')}
+        seen = reading.get('seen')
+        if seen is not None:
+            entry['last_reported_at'] = seen.isoformat(sep=' ', timespec='seconds')
+            entry['minutes_since_last_report'] = int(
+                (now - seen).total_seconds() // 60)
+        snapshot = reading.get('snapshot') or {}
+        if state == 'moving':
+            entry['speed_kph'] = _num(snapshot.get('speed_log'))
+        if (state == 'parked' and seen is not None
+                and now - seen > fleet_summary.QUIET_AFTER):
+            entry['tracker_quiet'] = True
+        listed[state].append(entry)
+
+    status = fleet_summary.fleet_status(readings, now)
+    result = {
+        'found': True,
+        'measured_at': now.isoformat(sep=' ', timespec='seconds'),
+        'units_registered': len(units),
+        'counts': status['counts'],
+        'reporting_now': status['reporting_now'],
+        'quiet_parked': status['quiet_parked'],
+        'units': {state: entries[:MAX_LISTED_PER_STATE]
+                  for state, entries in listed.items() if entries},
+        'rule': ("moving / idling / parked are from each unit's latest live "
+                 "report. A report older than %d minutes is silent, except a "
+                 "unit last reported parked, which stays parked for up to %d "
+                 "days while its tracker sleeps (tracker_quiet after a day). "
+                 "no_position: reporting, but with no position, so not known "
+                 "to be moving. unread: could not be checked, which is NOT "
+                 "offline."
+                 % (fleet_summary.SILENT_AFTER.total_seconds() // 60,
+                    fleet_summary.PARKED_HOLD.days)),
+        'notes': notes,
+    }
+    if any(len(entries) > MAX_LISTED_PER_STATE for entries in listed.values()):
+        result['truncated'] = ('Units are listed up to %d per state; the '
+                               'counts are complete.' % MAX_LISTED_PER_STATE)
+    return result
+
+
 TOOL_SPECS = [
     {
         'type': 'function',
@@ -1071,7 +1151,28 @@ TOOL_SPECS = [
                 'in one call. Use for "how many vehicles are online", "what '
                 'is reporting", "which are offline", "is anything live". Do '
                 'NOT answer those from a subscription or billing status, and '
-                'do not call unit_status per vehicle to work it out.'),
+                'do not call unit_status per vehicle to work it out. '
+                'Reporting is NOT moving: a parked vehicle reports too. For '
+                'moving, idling or parked, use fleet_status.'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'client_uid': {'type': 'string', 'description': 'Staff only.'},
+                },
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'fleet_status',
+            'description': (
+                'How many units are moving, idling, parked or offline RIGHT '
+                'NOW, for the whole account in one call, with the units in '
+                'each state. Use for "how many vehicles are moving", "which '
+                'are parked", "is anything idling". The same counts as the '
+                'dashboard and Live Monitoring. Do not work motion out from '
+                'fleet_liveness, fleet_activity or unit_status.'),
             'parameters': {
                 'type': 'object',
                 'properties': {
@@ -1087,7 +1188,9 @@ TOOL_SPECS = [
             'description': (
                 'How much each unit moved over the last N days — trips and '
                 'distance per unit. Use for "how is my fleet doing", "which '
-                'vehicle travelled most", "has anything not moved".'),
+                'vehicle travelled most", "has anything not moved". Not for '
+                'what is moving NOW (a trip record can stay open after the '
+                'vehicle stops): use fleet_status for that.'),
             'parameters': {
                 'type': 'object',
                 'properties': {
@@ -1408,6 +1511,7 @@ _DISPATCH = {
     'unit_route_probe': unit_route_probe,
     'fleet_activity': fleet_activity,
     'fleet_liveness': fleet_liveness,
+    'fleet_status': fleet_status,
     'alerts_recent': alerts_recent,
     'geofences_list': geofences_list,
 }

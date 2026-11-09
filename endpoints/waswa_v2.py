@@ -306,6 +306,15 @@ _LIVE_CLAIM = re.compile(
     r"\b(is|are|currently)\s+(online|reporting|live)\b|"
     r"\bactively\s+reporting\b|\blive\s+now\b", re.I)
 
+# A count of vehicles in a motion state: "4 vehicles are moving", "2 of your
+# 35 units are parked", "Moving: 3". Only a count of vehicles: "since 07:48
+# it has been parked" is about one unit and is not matched.
+_MOTION_CLAIM = re.compile(
+    r"\b\d+\s+(?:of\s+(?:your\s+|the\s+)?\d+\s+)?(?:vehicles?|units?|"
+    r"trucks?|cars?|lorries|bikes?)\b[^.\n]{0,25}\b(moving|in motion|"
+    r"on the move|driving|parked|idling|idle|stationary)\b|"
+    r"\b(moving|parked|idling|idle)\s*[:=]\s*\d+\b", re.I)
+
 _NUMBER = re.compile(r'\d[\d,]*(?:\.\d+)?')
 _DATE_SHAPED = re.compile(
     r'\b(?:\d{4}-\d{2}-\d{2}|\d{2}-\d{2}-\d{4}|\d{2}/\d{2}/\d{4})\b')
@@ -374,6 +383,18 @@ def verify(draft, plan, retrieval, context_numbers=None, tool_refs=()):
                 'The answer calls a unit live or reporting, but the heartbeat '
                 'registry was not read. Either call fleet_liveness or drop '
                 'the claim.')
+
+    # 2b -- a count of moving / parked / idling units that did not come from
+    # the fleet status read. Waswa once answered "4 moving" from units that
+    # were merely reporting, against Live Monitoring's 2.
+    if _MOTION_CLAIM.search(text):
+        # 'fleet_status(unavailable)' is a read that failed: no count from it.
+        if not any(str(ref).startswith('fleet_status')
+                   and 'unavailable' not in str(ref) for ref in tool_refs):
+            violations.append(
+                'The answer counts vehicles moving, idling or parked, but '
+                'fleet_status was not read. Reporting is not moving and a trip '
+                'record is not current. Call fleet_status or drop the count.')
 
     # 3 -- figures that trace to nothing. Only checked when the context
     # figures were captured AND no live tool ran: a figure from a live fleet

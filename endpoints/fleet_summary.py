@@ -81,10 +81,17 @@ def _ignition_on(value):
     return str(value or '').strip().lower() in ('1', 'on', 'true', 'yes')
 
 
+def _motion_text(snapshot):
+    """motion_state, lower case. The feed spells idling "Idiling", which has
+    no "idl" in it: read as it is, an idling unit with the ignition off was
+    counted parked here and idling everywhere else."""
+    return str(snapshot.get('motion_state') or '').lower().replace('idiling', 'idling')
+
+
 def motion(snapshot):
     """moving / idling / parked, the console's normalizeStatus(): the feed's
     motion_state first, then speed, then ignition for a stationary unit."""
-    state = str(snapshot.get('motion_state') or '').lower()
+    state = _motion_text(snapshot)
     if 'park' in state or 'stop' in state:
         return 'parked'
     if 'idl' in state:
@@ -114,7 +121,7 @@ def says_parked(snapshot):
     motion_state text that names no state ("Unknown") is no evidence either
     way, so the ignition decides, as the app does; only text that says moving
     or idling rules parked out. (Found by the shared fleet status cases.)"""
-    state = str(snapshot.get('motion_state') or '').lower()
+    state = _motion_text(snapshot)
     if 'park' in state or 'stop' in state:
         return True
     if 'idl' in state or 'mov' in state or 'driv' in state:

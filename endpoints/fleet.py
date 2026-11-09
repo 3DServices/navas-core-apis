@@ -23,9 +23,13 @@ the fleet status still comes back and `zones` is null with a note.
 
 import json
 import logging
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 import psycopg2.extras
+import requests
 from flask import Blueprint
 
 from . import db_pool, fleet_summary
@@ -48,19 +52,93 @@ CROSSINGS_LOOKBACK = timedelta(days=2)
 MAX_HEARTBEAT_LOOKUPS = 500
 
 
+# The live feed (narvasocket) serves the same snapshots Redis holds, one
+# stream per unit. A development machine has no Redis, so the dashboard's
+# fleet status and Waswa's fleet_status could never be read there. With
+# LIVE_FEED_URL set, an unreachable Redis is read through the feed instead.
+# Unset -- the server -- an unreachable Redis is still an outage.
+LIVE_FEED_URL = os.environ.get('LIVE_FEED_URL', '').strip().rstrip('/')
+LIVE_FEED_WAIT_S = 8
+# All at once: the feed takes about 2 s to say a unit has nothing, and the
+# console gives this call 10 s.
+LIVE_FEED_PARALLEL = 64
+
+
 class _LiveStoreDown(Exception):
     pass
 
 
+def _feed_snapshot(imei):
+    """The unit's snapshot from the live feed: its first position frame, None
+    when the feed says it has nothing (or stays quiet). Raises on a failed
+    connection, so a feed that is down is not read as a fleet with no data.
+
+    The read timeout is per gap between reads: a stream of heartbeats alone
+    never trips it, so the whole read is also held to LIVE_FEED_WAIT_S and
+    the unit then read as quiet."""
+    url = '%s/data-stream/%s/x-location' % (LIVE_FEED_URL, imei)
+    deadline = time.monotonic() + LIVE_FEED_WAIT_S
+    with requests.get(url, stream=True, timeout=(5, LIVE_FEED_WAIT_S),
+                      headers={'Accept': 'text/event-stream'}) as response:
+        response.raise_for_status()
+        # A byte at a time: by default lines are only handed over once 512
+        # bytes have come, so a short frame waited for the read timeout and
+        # the deadline below was not checked for many heartbeats. A unit's
+        # stream is a few KB at most before its first frame.
+        for line in response.iter_lines(chunk_size=1, decode_unicode=True):
+            if time.monotonic() > deadline:
+                return None
+            if not line or not line.startswith('data:'):
+                continue
+            try:
+                message = json.loads(line[5:])
+            except ValueError:
+                continue
+            state = str(message.get('status') or '').lower()
+            if state == 'heartbeat':
+                continue
+            if state == 'success' and isinstance(message.get('data'), dict):
+                return message['data']
+            return None
+    return None
+
+
+def _feed_snapshots(imeis):
+    """{imei: snapshot} through the live feed. Raises _LiveStoreDown when no
+    unit could be read at all."""
+    def read(imei):
+        try:
+            return imei, _feed_snapshot(imei), None
+        except Exception as error:      # noqa: BLE001
+            return imei, None, error
+    out, failed = {}, []
+    with ThreadPoolExecutor(max_workers=min(LIVE_FEED_PARALLEL, max(1, len(imeis)))) as pool:
+        for imei, snapshot, error in pool.map(read, imeis):
+            if error is not None:
+                failed.append(error)
+            elif snapshot is not None:
+                out[imei] = snapshot
+    if imeis and len(failed) == len(imeis):
+        raise _LiveStoreDown('the live feed could not be read: %s' % failed[0])
+    if failed:
+        log.warning('fleet summary: %d of %d units unreadable on the live feed',
+                    len(failed), len(imeis))
+    return out
+
+
 def _snapshots(imeis):
     """{imei: snapshot dict}. Raises _LiveStoreDown when Redis cannot be read:
-    an unreachable store must not be reported as a fleet with no positions."""
+    an unreachable store must not be reported as a fleet with no positions.
+    With LIVE_FEED_URL set, the live feed is read instead."""
     out = {}
     for start in range(0, len(imeis), MGET_CHUNK):
         chunk = imeis[start:start + MGET_CHUNK]
         try:
             raw = _redis().mget(['device:location:%s' % imei for imei in chunk])
         except Exception as error:      # noqa: BLE001
+            if LIVE_FEED_URL:
+                log.info('fleet summary: Redis unreachable (%s); reading the live feed', error)
+                return _feed_snapshots(imeis)
             raise _LiveStoreDown(str(error)) from error
         for imei, value in zip(chunk, raw):
             if not value:
@@ -243,6 +321,9 @@ def fleet_summary_route(client_uid):
             fleet_summary.SILENT_AFTER.total_seconds() // 60),
         'units_registered': len(units),
         'fleet': fleet_summary.fleet_status(readings, now),
+        # Each unit's state, for screens that list units (Live Monitoring
+        # tells Offline from No data with it: it reads only the live feed).
+        'unit_states': {r['imei']: fleet_summary.classify(r, now) for r in readings},
         'zones': zones,
         'notes': notes,
     })

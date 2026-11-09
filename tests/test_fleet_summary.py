@@ -56,6 +56,10 @@ eq('crawl idles', fs.motion(snap(speed=2)), 'idling')
 eq('stationary, ignition on', fs.motion(snap(ignition='1')), 'idling')
 eq('stationary, ignition off', fs.motion(snap(ignition='0')), 'parked')
 eq('stationary, no ignition', fs.motion(snap()), 'parked')
+eq('the feed\'s "Idiling" is idling, whatever the ignition says',
+   fs.motion(snap(motion='Idiling', ignition='0')), 'idling')
+eq('and a quiet "Idiling" unit is not held as parked',
+   fs.says_parked(snap(motion='Idiling', ignition='0')), False)
 
 # ── classify ──────────────────────────────────────────────────────────────
 eq('fresh snapshot', fs.classify(reading(snap(speed=40)), NOW), 'moving')
