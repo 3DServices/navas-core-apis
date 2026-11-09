@@ -1408,52 +1408,114 @@ def update_device():
         return reply('error', 500, str(error), '')
     
 
+# ── Rules attached to a unit ────────────────────────────────────────────────
+# A unit's rules live in its registry row: Cassandra dll_device_basic_data
+# .events_attached, a JSON list of rule uids. The alert engine, the vehicle
+# lists and the console's rule editor all read them there.
+#
+# These three routes used to read and write the Postgres copy of that table,
+# which is no longer kept current: a rule attached to a vehicle never reached
+# the alert engine, and a vehicle missing from the copy was skipped while the
+# reply said it was attached. The copy is still updated where it has the
+# vehicle, for anything that reads it.
+
+_RULES_OF = "SELECT events_attached FROM dll_device_basic_data WHERE device_imei = ?"
+_SET_RULES = "UPDATE dll_device_basic_data SET events_attached = ? WHERE device_imei = ?"
+
+
+def _rule_uids(raw):
+    """events_attached as a list of rule uids: [] when empty or unreadable."""
+    if isinstance(raw, (list, tuple, set)):
+        return [str(e) for e in raw]
+    try:
+        value = json.loads(raw or '[]')
+    except (TypeError, ValueError):
+        return []
+    return [str(e) for e in value] if isinstance(value, list) else []
+
+
+def _registered_rules(session, statement, imei):
+    """The unit's rule uids from the registry; None when it is not registered.
+    (The UPDATE below would create a row for an unknown IMEI, so this is asked
+    first.)"""
+    row = session.execute(statement, (imei,)).one()
+    return None if row is None else _rule_uids(row.events_attached)
+
+
+def _save_rules(session, statement, cursor, imei, rules):
+    """The unit's rules to the registry, and to the Postgres copy if it has
+    the unit."""
+    value = json.dumps(rules)
+    session.execute(statement, (value, imei))
+    cursor.execute("UPDATE dll_device_basic_data SET events_attached=%s WHERE device_imei=%s",
+                   (value, imei))
+
+
+def _add_to_device_count(cursor, event_uid, change):
+    """dll_device_events.device_count, kept as it was: a count in text."""
+    cursor.execute("SELECT device_count FROM dll_device_events WHERE event_local_uid=%s",
+                   (str(event_uid),))
+    row = cursor.fetchone()
+    if row is None:
+        return  # the rule was deleted: nothing to count against
+    try:
+        count = int(row[0] or 0)
+    except (TypeError, ValueError):
+        count = 0
+    cursor.execute("UPDATE dll_device_events SET device_count=%s WHERE event_local_uid=%s",
+                   (str(max(0, count + change)), str(event_uid)))
+
+
 #Attach Device to Event
 @devices_bp.route("/devices/events/<string:event_uid>/attach", methods=["POST"])
 def AttachDevice(event_uid):
-
+    """Attach a rule to units. data says which units were attached, which
+    already had the rule and which are not registered; when none could be
+    attached for that last reason, it is an error."""
     try:
+        payload = request.get_json(silent=True) or {}
+        device_list = (payload.get('data') or {}).get('device_list') or []
+        if len(str(event_uid)) <= 10 or not isinstance(device_list, list) or not device_list:
+            return reply("error", 400, "Some data Is Missing", "")
+        event_uid = str(event_uid)
+
+        _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            return reply('error', 503, STORE_UNAVAILABLE, '')
+        rules_of = _cassandra_session.prepare(_RULES_OF)
+        set_rules = _cassandra_session.prepare(_SET_RULES)
+
+        outcome = {'attached': [], 'already_attached': [], 'not_found': []}
         dbconnect = db_pool.connect()
-        devices_payload = request.get_json()
-        _devicesAttached = devices_payload['data']['device_list']
-
-        if(len(str(event_uid)) > 10) and (len(_devicesAttached) > 0):
-
+        try:
             with dbconnect:
                 with dbconnect.cursor() as cursor:
-                    cursor.execute("SELECT device_count FROM dll_device_events WHERE event_local_uid=%s", (str(event_uid),))
-
-                    if(cursor.rowcount == 1):
-                        for _FocusDevice in _devicesAttached:
-                            cursor.execute("SELECT events_attached FROM dll_device_basic_data WHERE device_imei=%s", (str(_FocusDevice),))
-
-                            if(cursor.rowcount == 1):
-                                _dataTunnelLink = cursor.fetchone()
-                                _AttachedExisting_Events = json.loads(_dataTunnelLink[0])
-
-                                if(event_uid not in _AttachedExisting_Events):
-                                    _AttachedExisting_Events.append(event_uid)
-                                    _NewAttachedEvents_Objt = json.dumps(_AttachedExisting_Events)
-                                    cursor.execute("UPDATE dll_device_basic_data SET events_attached=%s WHERE device_imei=%s", (str(_NewAttachedEvents_Objt), str(_FocusDevice),))
-
-                                    cursor.execute("SELECT device_count FROM dll_device_events WHERE event_local_uid=%s", (str(event_uid),))
-                                    _dataTunnel = cursor.fetchone()
-                                    _EventDevice_Count = _dataTunnel[0]
-                                    _NewDevice_Count = int(_EventDevice_Count) + 1
-                                    cursor.execute("UPDATE dll_device_events SET device_count=%s WHERE event_local_uid=%s", (str(_NewDevice_Count), str(event_uid),))
-                                
-                            else:
-                                pass
-
-                        return reply("success", 200, "Devices Attached SuccessFuly", "")
-                    
-                    elif(cursor.rowcount == 0):
+                    cursor.execute("SELECT device_count FROM dll_device_events WHERE event_local_uid=%s",
+                                   (event_uid,))
+                    if cursor.rowcount != 1:
                         return reply('error', 400, "Event Route Not Found", "")
-                    
-        else:
-            return reply("error", 400, "Some data Is Missing", "")
+
+                    for imei in dict.fromkeys(str(d) for d in device_list):
+                        rules = _registered_rules(_cassandra_session, rules_of, imei)
+                        if rules is None:
+                            outcome['not_found'].append(imei)
+                        elif event_uid in rules:
+                            outcome['already_attached'].append(imei)
+                        else:
+                            _save_rules(_cassandra_session, set_rules, cursor, imei, rules + [event_uid])
+                            outcome['attached'].append(imei)
+
+                    if outcome['attached']:
+                        _add_to_device_count(cursor, event_uid, len(outcome['attached']))
+        finally:
+            dbconnect.close()
+
+        if not outcome['attached'] and not outcome['already_attached']:
+            return reply("error", 400, "Device Not Found", outcome)
+        return reply("success", 200, "Devices Attached SuccessFuly", outcome)
 
     except Exception as error:
+        logging.exception('devices: attaching rule %s failed', event_uid)
         return reply('error', 500, str(error), "")
 
 
@@ -1463,87 +1525,67 @@ def AttachDevice(event_uid):
 def RemoveEvent(device_id, event_uid):
 
     try:
-        dbconnect = db_pool.connect()
         _EventID_Focus = str(event_uid)
         _Device_Focus = str(device_id)
 
-        with dbconnect:
-            with dbconnect.cursor() as cursor:
-                cursor.execute("SELECT events_attached FROM dll_device_basic_data WHERE device_imei=%s", (_Device_Focus,))
+        _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            return reply('error', 503, STORE_UNAVAILABLE, '')
+        rules = _registered_rules(_cassandra_session, _cassandra_session.prepare(_RULES_OF), _Device_Focus)
+        if rules is None:
+            return reply('error', 400, "Device Not Found", "")
+        if _EventID_Focus not in rules:
+            return reply("error", 400, "Event Is Not Attached", "")
 
-                if(cursor.rowcount == 1):
-
-                    _dataTunnelLink = cursor.fetchone()
-                    _ExistingEvents = _dataTunnelLink[0]
-                    _TheEventsObject = json.loads(_ExistingEvents)
-
-                    if(_EventID_Focus in _TheEventsObject):
-                        _TheEventsObject.remove(_EventID_Focus)
-
-                        _UpdatedEvents_Object = json.dumps(_TheEventsObject)
-                        cursor.execute("UPDATE dll_device_basic_data SET events_attached=%s WHERE device_imei=%s", (str(_UpdatedEvents_Object) ,str(_Device_Focus),))
-                        
-                        cursor.execute("SELECT device_count FROM dll_device_events WHERE event_local_uid=%s", (str(_EventID_Focus),))
-                        _dataTunnelPipe = cursor.fetchone()
-                        _EventCurrentDevice_Count = int(_dataTunnelPipe[0])
-                        _NewEventDevice_Count = _EventCurrentDevice_Count - 1
-
-                        cursor.execute("UPDATE dll_device_events SET device_count=%s WHERE event_local_uid=%s", (str(_NewEventDevice_Count), str(_EventID_Focus),))
-
-                        return reply('success', 200, "Event Removed", _TheEventsObject)
-                    
-                    else:
-                        return reply("error", 400, "Event Is Not Attached", "")
-
-                else:
-                    return reply('error', 400, "Device Not Found", "")
+        rules = [r for r in rules if r != _EventID_Focus]
+        dbconnect = db_pool.connect()
+        try:
+            with dbconnect:
+                with dbconnect.cursor() as cursor:
+                    _save_rules(_cassandra_session, _cassandra_session.prepare(_SET_RULES),
+                                cursor, _Device_Focus, rules)
+                    _add_to_device_count(cursor, _EventID_Focus, -1)
+        finally:
+            dbconnect.close()
+        return reply('success', 200, "Event Removed", rules)
 
     except Exception as error:
+        logging.exception('devices: removing rule %s from %s failed', event_uid, device_id)
         return reply('error', 500, str(error), "")
 
 
 @devices_bp.route("/devices/<string:device_imei>/events", methods=["GET"])
 def GetDevice_Events(device_imei):
-
+    """The rules attached to a unit, by name. A rule that has since been
+    deleted is left out (it used to fail the whole request)."""
     try:
+        _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            return reply('error', 503, STORE_UNAVAILABLE, '')
+        rules = _registered_rules(_cassandra_session, _cassandra_session.prepare(_RULES_OF), str(device_imei))
+        if rules is None:
+            return reply("error", 400, "Device Not Found", "")
+        if not rules:
+            return reply("error", 400, "No Events Attached", "")
+
         dbconnect = db_pool.connect()
-        _FocusedDevice_ID = str(device_imei)
+        try:
+            with dbconnect:
+                with dbconnect.cursor() as cursor:
+                    cursor.execute("SELECT event_local_uid, event_display_name FROM dll_device_events "
+                                   "WHERE event_local_uid = ANY(%s)", (rules,))
+                    names = {str(uid): name for uid, name in cursor.fetchall()}
+        finally:
+            dbconnect.close()
 
-        with dbconnect:
-            with dbconnect.cursor() as cursor:
-                cursor.execute("SELECT events_attached FROM dll_device_basic_data WHERE device_imei=%s", (str(_FocusedDevice_ID),))
-
-                if(cursor.rowcount == 1):
-
-                    _dataTunnelLink = cursor.fetchone()
-                    _deviceEventsList = json.loads(_dataTunnelLink[0])
-                    _AttachedEvents = []
-
-                    if(len(_deviceEventsList) > 0):
-
-                        for EventFound in _deviceEventsList:
-
-                            cursor.execute("SELECT event_display_name FROM dll_device_events WHERE event_local_uid=%s", (str(EventFound),))
-                            _dataTunnelRoute = cursor.fetchone()
-                            _EventName = _dataTunnelRoute[0]
-                            _SingleEvent = {
-                                "event_name": _EventName,
-                                "event_id": EventFound
-                            }
-                            _AttachedEvents.append(_SingleEvent)
-
-                        _AttachedEvents = resource_policy().apply('event_rule', _AttachedEvents, 'event_id')
-                        if not _AttachedEvents:
-                            return reply("error", 400, "No Events Attached", "")
-                        return reply("success", 200, "Found Events", _AttachedEvents)
-                    
-                    elif(len(_deviceEventsList) == 0):
-                        return reply("error", 400, "No Events Attached", "")
-                    
-                elif(cursor.rowcount == 0):
-                    return reply("error", 400, "Device Not Found", "")
+        _AttachedEvents = [{"event_name": names[uid], "event_id": uid} for uid in rules if uid in names]
+        _AttachedEvents = resource_policy().apply('event_rule', _AttachedEvents, 'event_id')
+        if not _AttachedEvents:
+            return reply("error", 400, "No Events Attached", "")
+        return reply("success", 200, "Found Events", _AttachedEvents)
 
     except Exception as error:
+        logging.exception('devices: listing rules of %s failed', device_imei)
         return reply("error", 500, str(error), "")
 
 

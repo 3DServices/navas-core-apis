@@ -59,12 +59,23 @@ MAX_HEARTBEAT_LOOKUPS = 500
 # Unset -- the server -- an unreachable Redis is still an outage.
 LIVE_FEED_URL = os.environ.get('LIVE_FEED_URL', '').strip().rstrip('/')
 LIVE_FEED_WAIT_S = 8
-# All at once: the feed takes about 2 s to say a unit has nothing, and the
-# console gives this call 10 s.
+# The whole read of one unit. The feed takes about 2.5 s a unit alone but
+# serves them one after another: 35 at once took 7-10 s each (9 Nov), and an
+# 8 s limit cut off all but one, every vehicle then counted as having
+# nothing live -- UA 628BV, moving at 23 km/h, came out no_position.
+LIVE_FEED_DEADLINE_S = 25
 LIVE_FEED_PARALLEL = 64
+
+# A unit the feed did not answer for: not checked, unlike one it has nothing
+# for (absent from the snapshots).
+UNREAD = object()
 
 
 class _LiveStoreDown(Exception):
+    pass
+
+
+class _FeedCutOff(Exception):
     pass
 
 
@@ -74,10 +85,11 @@ def _feed_snapshot(imei):
     connection, so a feed that is down is not read as a fleet with no data.
 
     The read timeout is per gap between reads: a stream of heartbeats alone
-    never trips it, so the whole read is also held to LIVE_FEED_WAIT_S and
-    the unit then read as quiet."""
+    never trips it, so the whole read is also held to LIVE_FEED_DEADLINE_S.
+    Past it the read fails (the unit is not checked); it is not read as a
+    unit with nothing live."""
     url = '%s/data-stream/%s/x-location' % (LIVE_FEED_URL, imei)
-    deadline = time.monotonic() + LIVE_FEED_WAIT_S
+    deadline = time.monotonic() + LIVE_FEED_DEADLINE_S
     with requests.get(url, stream=True, timeout=(5, LIVE_FEED_WAIT_S),
                       headers={'Accept': 'text/event-stream'}) as response:
         response.raise_for_status()
@@ -87,7 +99,7 @@ def _feed_snapshot(imei):
         # stream is a few KB at most before its first frame.
         for line in response.iter_lines(chunk_size=1, decode_unicode=True):
             if time.monotonic() > deadline:
-                return None
+                raise _FeedCutOff('no frame within %d s' % LIVE_FEED_DEADLINE_S)
             if not line or not line.startswith('data:'):
                 continue
             try:
@@ -104,8 +116,8 @@ def _feed_snapshot(imei):
 
 
 def _feed_snapshots(imeis):
-    """{imei: snapshot} through the live feed. Raises _LiveStoreDown when no
-    unit could be read at all."""
+    """{imei: snapshot} through the live feed; UNREAD for a unit it did not
+    answer for. Raises _LiveStoreDown when no unit could be read at all."""
     def read(imei):
         try:
             return imei, _feed_snapshot(imei), None
@@ -116,6 +128,7 @@ def _feed_snapshots(imeis):
         for imei, snapshot, error in pool.map(read, imeis):
             if error is not None:
                 failed.append(error)
+                out[imei] = UNREAD
             elif snapshot is not None:
                 out[imei] = snapshot
     if imeis and len(failed) == len(imeis):
@@ -215,6 +228,13 @@ def _readings(units):
         if not imei:
             continue
         snapshot = snapshots.get(imei)
+        if snapshot is UNREAD:
+            # The feed did not answer: its last position is unknown, and a
+            # heartbeat alone would call a moving unit no_position or silent.
+            readings[imei] = {'imei': imei, 'name': unit.get('name'),
+                              'snapshot': None, 'seen': None, 'unread': True,
+                              'never': False}
+            continue
         seen = _snapshot_seen(snapshot) if snapshot else None
         readings[imei] = {'imei': imei, 'name': unit.get('name'),
                           'snapshot': snapshot, 'seen': seen, 'unread': False,
