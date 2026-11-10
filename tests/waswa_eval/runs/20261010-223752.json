@@ -1,0 +1,966 @@
+{
+  "_what_this_is": "one run of the Waswa eval set. The ids under \"created\" are the rows this run added to your database; scripts/waswa_eval_cleanup.py removes exactly those and nothing else.",
+  "started_at": "2026-10-10T22:37:52",
+  "transport": "app.test_client()",
+  "checks_fingerprint": "99cda8a60923",
+  "crashed": null,
+  "rows": 15,
+  "created": {
+    "conversations": [
+      "759020ea-f2ec-42d2-9c9c-2b1f0047cecf",
+      "2e955ede-73a4-4f00-be7b-44dde340f079",
+      "b1282c57-7924-4779-9861-764a4d6230e5",
+      "01dcd960-f071-46a0-a945-1889f1c1e464",
+      "23330688-fff1-4af7-81d9-2820a3ffe02f",
+      "ce10164a-e247-4b7c-889d-18445316154a",
+      "411a6461-faa8-4d20-9f44-409ddc809ad8",
+      "728258f5-1d65-4d47-bda1-1ef3914c95a6",
+      "264efbe4-a76c-42c3-8c8e-a3655a665078",
+      "35a5b5d1-a030-49d0-a6a8-36572816e055",
+      "89b4d3dd-14ad-4dac-bab1-ba050b66c206",
+      "29454a80-b327-451c-9f5d-db0079c0418e",
+      "2fc1f9db-6fe3-4f96-b414-88a4e06bf853",
+      "82c88f8e-c57c-42cc-b6d6-8e9f5118b9ad",
+      "848a9e67-134d-4153-bd89-a4fcaa4d0d45"
+    ],
+    "messages": [
+      "319ab73e-f95f-44d9-9d8a-16312fe3c321",
+      "f16fd24e-d90d-41fe-bdec-5997cba7690b",
+      "69e80184-ed70-414d-aec8-706beb44a334",
+      "d8f1e441-f8de-45b6-9ad5-55b64908e9eb",
+      "c18304e9-debd-4650-9458-7101b549e98c",
+      "449fb1c5-c5e4-44e1-ac3f-274996ad97ee",
+      "b72bd75a-cf46-4f28-825a-bbdadfef8f30",
+      "4c77a3ce-d8fc-4e71-80cd-ad78fb1668dc",
+      "083f48db-c38e-4a31-987c-6fcb124be0eb",
+      "c1925959-1487-4f62-858b-b32aefde3900",
+      "2e368c16-feb0-40a2-a821-f0370416d0e0",
+      "f430475e-d4fb-45b4-b886-9e5d2af55fa0",
+      "afff6edd-c4ee-4752-89d8-aeaf0092d7fe",
+      "3a2fafb7-846c-4809-8744-c0103a384570",
+      "ad94ef9b-0eba-4e37-8bf2-b5e1f1bfdd91"
+    ]
+  },
+  "results": [
+    {
+      "id": "fb-001",
+      "question": "What happens when a SIM goes offline?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 200,
+      "seconds": 43.84,
+      "answer": "When a SIM goes offline, it can lead to several challenges, such as loss of connectivity for the associated asset or tracker. This can impact data transmission, making it difficult to monitor the asset's location or status in real-time. The system aims to mitigate these issues by providing features like bundle remaining percentages and projected depletion dates for every active SIM, allowing support engineers to intervene before a unit goes offline. Additionally, the system is designed to ingest SIM data automatically from telco APIs to avoid manual updates and improve accuracy.\n\nSource: OLIWA User Stories — this is the documented design; I can't confirm from here which parts are live.",
+      "tools_used": [
+        "waswa_context",
+        "unit_find(all, prefetched)",
+        "knowledge_search(SIM goes offline)"
+      ],
+      "evidence": [
+        {
+          "authority_level": 3,
+          "source_kind": "account_context",
+          "source_ref": "waswa_context"
+        },
+        {
+          "authority_level": 1,
+          "source_kind": "fleet",
+          "source_ref": "unit_find(all, prefetched)"
+        },
+        {
+          "authority_level": 4,
+          "source_kind": "document",
+          "source_ref": "knowledge_search(SIM goes offline)"
+        }
+      ],
+      "context_numbers": null,
+      "cited_authorities": [
+        4
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "agent_version": "v1",
+      "conversation_uid": "759020ea-f2ec-42d2-9c9c-2b1f0047cecf",
+      "message_uid": "319ab73e-f95f-44d9-9d8a-16312fe3c321",
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": true,
+          "detail": "tools used: waswa_context, unit_find(all, prefetched), knowledge_search(SIM goes offline)"
+        },
+        {
+          "check": "must_cite_document",
+          "result": true,
+          "detail": "authority levels: [4]"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "fb-002",
+      "question": "How are SIM bundles managed?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 200,
+      "seconds": 22.69,
+      "answer": "SIM bundles are managed through a multi-SIM configuration that supports local SIMs, roaming detection, and automated usage alerts. The system also includes AI-based billing risk detection and satellite integration. This setup ensures consistent service quality across borders and includes a regional billing plan for local movement, cross-border, and high-roaming fleets.\n\nSource: Sales Procedures 3DS-QMS-PR-09 ver26 (Uganda & Kenya) — this is the documented procedure.",
+      "tools_used": [
+        "waswa_context",
+        "knowledge_search(SIM bundles management)"
+      ],
+      "evidence": [
+        {
+          "authority_level": 3,
+          "source_kind": "account_context",
+          "source_ref": "waswa_context"
+        },
+        {
+          "authority_level": 2,
+          "source_kind": "document",
+          "source_ref": "knowledge_search(SIM bundles management)"
+        }
+      ],
+      "context_numbers": null,
+      "cited_authorities": [
+        2
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "agent_version": "v1",
+      "conversation_uid": "2e955ede-73a4-4f00-be7b-44dde340f079",
+      "message_uid": "f16fd24e-d90d-41fe-bdec-5997cba7690b",
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": true,
+          "detail": "tools used: waswa_context, knowledge_search(SIM bundles management)"
+        },
+        {
+          "check": "must_cite_document",
+          "result": true,
+          "detail": "authority levels: [2]"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "fb-003",
+      "question": "How are devices registered?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 200,
+      "seconds": 24.58,
+      "answer": "The approved documents do not provide a specific procedure for device registration. However, they do mention the need for offline capture of SIM details during installation, which suggests that SIM registration is part of the device setup process. This allows field technicians to work in areas with weak signals and synchronize the data later when they regain coverage.\n\nSource: OLIWA User Stories — this is the documented design; I can't confirm from here which parts are live.",
+      "tools_used": [
+        "waswa_context",
+        "knowledge_search(device registration process)"
+      ],
+      "evidence": [
+        {
+          "authority_level": 3,
+          "source_kind": "account_context",
+          "source_ref": "waswa_context"
+        },
+        {
+          "authority_level": 4,
+          "source_kind": "document",
+          "source_ref": "knowledge_search(device registration process)"
+        }
+      ],
+      "context_numbers": null,
+      "cited_authorities": [
+        4
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "agent_version": "v1",
+      "conversation_uid": "b1282c57-7924-4779-9861-764a4d6230e5",
+      "message_uid": "69e80184-ed70-414d-aec8-706beb44a334",
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": true,
+          "detail": "tools used: waswa_context, knowledge_search(device registration process)"
+        },
+        {
+          "check": "must_cite_document",
+          "result": true,
+          "detail": "authority levels: [4]"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "fb-004",
+      "question": "What is IVMS?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 200,
+      "seconds": 21.9,
+      "answer": "IVMS (In-Vehicle Monitoring System) is a vehicle telematics solution that provides stable tracking, compliance, and report readiness. It involves creating or verifying units, ensuring correct tracker model mapping, and applying baseline alerts such as overspeed, ignition on/off, geofence in/out, and towing (if supported). Baseline reports include daily trips, stops, mileage, and driver behavior summaries if ECO/DSC is enabled.\n\nSource: NAVAS CMS User Manual — this is the documented design; I can't confirm from here which parts are live.",
+      "tools_used": [
+        "waswa_context",
+        "knowledge_search(IVMS)"
+      ],
+      "evidence": [
+        {
+          "authority_level": 3,
+          "source_kind": "account_context",
+          "source_ref": "waswa_context"
+        },
+        {
+          "authority_level": 2,
+          "source_kind": "document",
+          "source_ref": "knowledge_search(IVMS)"
+        }
+      ],
+      "context_numbers": null,
+      "cited_authorities": [
+        2
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "agent_version": "v1",
+      "conversation_uid": "01dcd960-f071-46a0-a945-1889f1c1e464",
+      "message_uid": "d8f1e441-f8de-45b6-9ad5-55b64908e9eb",
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": true,
+          "detail": "tools used: waswa_context, knowledge_search(IVMS)"
+        },
+        {
+          "check": "must_cite_document",
+          "result": true,
+          "detail": "authority levels: [2]"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "fb-005",
+      "question": "How do tracking tokens work?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 200,
+      "seconds": 21.99,
+      "answer": "Tracking tokens in the NAVAS ecosystem are used to pay for GPS tracking services based on time. They are billed per hour, day, or month, allowing customers to pay only when their assets are active. This model supports pause and resume functionality, which means you can stop and start tracking as needed without losing any tokens. The tokens are auto-renewed on a first-in, first-out basis, meaning the oldest tokens are used first.\n\nSource: NAVAS Token Billing Strategy — this is the documented design; I can't confirm from here which parts are live.",
+      "tools_used": [
+        "waswa_context",
+        "knowledge_search(tracking tokens)"
+      ],
+      "evidence": [
+        {
+          "authority_level": 3,
+          "source_kind": "account_context",
+          "source_ref": "waswa_context"
+        },
+        {
+          "authority_level": 3,
+          "source_kind": "document",
+          "source_ref": "knowledge_search(tracking tokens)"
+        }
+      ],
+      "context_numbers": null,
+      "cited_authorities": [
+        3
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "agent_version": "v1",
+      "conversation_uid": "23330688-fff1-4af7-81d9-2820a3ffe02f",
+      "message_uid": "c18304e9-debd-4650-9458-7101b549e98c",
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": true,
+          "detail": "tools used: waswa_context, knowledge_search(tracking tokens)"
+        },
+        {
+          "check": "must_cite_document",
+          "result": true,
+          "detail": "authority levels: [3]"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "fb-006",
+      "question": "What is VEBA escrow?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 200,
+      "seconds": 22.65,
+      "answer": "VEBA escrow is a system that holds a renter's payment in tokens when they book an asset, and releases it to the owner only once telematics proves the asset was used as agreed. This is based on engine hours, geofence-confirmed possession, duration, and usage class.\n\nA booking moves through states such as reserved, active, and released. It can also become disputed, refunded, or partially adjusted when the usage doesn't match the booking.\n\nSource: NAVAS Ecosystem Vision Scope Document — this is the documented design; I can't confirm from here which parts are live.",
+      "tools_used": [
+        "waswa_context",
+        "knowledge_search(VEBA escrow)"
+      ],
+      "evidence": [
+        {
+          "authority_level": 3,
+          "source_kind": "account_context",
+          "source_ref": "waswa_context"
+        },
+        {
+          "authority_level": 4,
+          "source_kind": "document",
+          "source_ref": "knowledge_search(VEBA escrow)"
+        }
+      ],
+      "context_numbers": null,
+      "cited_authorities": [
+        4
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "agent_version": "v1",
+      "conversation_uid": "ce10164a-e247-4b7c-889d-18445316154a",
+      "message_uid": "449fb1c5-c5e4-44e1-ac3f-274996ad97ee",
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": true,
+          "detail": "tools used: waswa_context, knowledge_search(VEBA escrow)"
+        },
+        {
+          "check": "must_cite_document",
+          "result": true,
+          "detail": "authority levels: [4]"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "fb-007",
+      "question": "what is veba?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+      "http_status": 200,
+      "seconds": 21.36,
+      "answer": "VEBA is a marketplace feature that allows you to list idle vehicles so they can earn while parked. It involves asset listings, booking approvals, conflict alerts, and payments. VEBA requires certain conditions such as KYC verification, linking telematics units, and enabling a leakage shield to prevent fraud. It also supports cash trips for trusted profiles and uses tokens for various activities like listing visibility and trip events.",
+      "tools_used": [
+        "waswa_context",
+        "knowledge_search(VEBA)"
+      ],
+      "evidence": [
+        {
+          "authority_level": 3,
+          "source_kind": "account_context",
+          "source_ref": "waswa_context"
+        },
+        {
+          "authority_level": 2,
+          "source_kind": "document",
+          "source_ref": "knowledge_search(VEBA)"
+        }
+      ],
+      "context_numbers": null,
+      "cited_authorities": [
+        2
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "agent_version": "v1",
+      "conversation_uid": "411a6461-faa8-4d20-9f44-409ddc809ad8",
+      "message_uid": "b72bd75a-cf46-4f28-825a-bbdadfef8f30",
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": true,
+          "detail": "tools used: waswa_context, knowledge_search(VEBA)"
+        },
+        {
+          "check": "must_cite_document",
+          "result": true,
+          "detail": "authority levels: [2]"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "fb-008",
+      "question": "How many tokens do I have?",
+      "shape": "account",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+      "http_status": 200,
+      "seconds": 20.35,
+      "answer": "You have 120 token units remaining across the 3 packs currently in use. \n\nAdditionally, you have 231 packs that haven't been activated yet. Their units aren't set until first use, so they're not counted in that figure and they're not empty.",
+      "tools_used": [
+        "waswa_context",
+        "knowledge_search(how do tokens work)"
+      ],
+      "evidence": [
+        {
+          "authority_level": 3,
+          "source_kind": "account_context",
+          "source_ref": "waswa_context"
+        },
+        {
+          "authority_level": 3,
+          "source_kind": "document",
+          "source_ref": "knowledge_search(how do tokens work)"
+        }
+      ],
+      "context_numbers": [
+        3.0,
+        10.0,
+        120.0,
+        231.0,
+        234.0,
+        780.0
+      ],
+      "cited_authorities": [
+        3
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "agent_version": "v1",
+      "conversation_uid": "728258f5-1d65-4d47-bda1-1ef3914c95a6",
+      "message_uid": "4c77a3ce-d8fc-4e71-80cd-ad78fb1668dc",
+      "checks": [
+        {
+          "check": "must_use_account_context",
+          "result": true,
+          "detail": "account context present"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        },
+        {
+          "check": "no_unsourced_numbers",
+          "result": true,
+          "detail": "every figure traced to context"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "fb-009",
+      "question": "How many vehicles are online?",
+      "shape": "account",
+      "guard": "regression",
+      "blocked_on": null,
+      "asked_as": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+      "http_status": 200,
+      "seconds": 23.87,
+      "answer": "Currently, 1 vehicle is online and reporting within the last hour.",
+      "tools_used": [
+        "waswa_context",
+        "unit_find(all, prefetched)",
+        "fleet_liveness(all, prefetched)",
+        "fleet_liveness()"
+      ],
+      "evidence": [
+        {
+          "authority_level": 3,
+          "source_kind": "account_context",
+          "source_ref": "waswa_context"
+        },
+        {
+          "authority_level": 1,
+          "source_kind": "fleet",
+          "source_ref": "unit_find(all, prefetched)"
+        },
+        {
+          "authority_level": 1,
+          "source_kind": "fleet",
+          "source_ref": "fleet_liveness(all, prefetched)"
+        },
+        {
+          "authority_level": 1,
+          "source_kind": "fleet",
+          "source_ref": "fleet_liveness()"
+        }
+      ],
+      "context_numbers": [
+        1.0,
+        3.0,
+        4.0
+      ],
+      "cited_authorities": [],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "agent_version": "v1",
+      "conversation_uid": "264efbe4-a76c-42c3-8c8e-a3655a665078",
+      "message_uid": "083f48db-c38e-4a31-987c-6fcb124be0eb",
+      "checks": [
+        {
+          "check": "must_use_account_context",
+          "result": true,
+          "detail": "account context present"
+        },
+        {
+          "check": "must_not_claim_live_when_stale",
+          "result": true,
+          "detail": "liveness claim is backed by fleet_liveness"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        },
+        {
+          "check": "no_unsourced_numbers",
+          "result": true,
+          "detail": "every figure traced to context"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "fb-010",
+      "question": "how do I created a new geofence",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": "oliwa-ui-corpus",
+      "asked_as": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+      "http_status": 200,
+      "seconds": 24.12,
+      "answer": "To create a new geofence in the OLIWA mobile app, follow these steps:\n\n1. Open the app and sign in.\n2. Load the map. If you see \"Map key not configured,\" contact support as the app build cannot show maps.\n3. Tap the menu icon (☰) at the top left and choose \"Geofences,\" or tap \"Geofences\" under Quick actions on the dashboard.\n4. Stay on the Zones tab and tap \"New\" at the bottom right.\n5. Choose the shape of the geofence:\n   - **Polygon**: An area with corners, requiring at least 4 points.\n   - **Line**: A route or road, requiring at least 2 points.\n   - **Circle**: A center and a radius.\n   Note: Switching the shape will clear any points you have placed.\n6. Tap the map to place the shape:\n   - For a Polygon or Line, tap each corner or point in turn. A hint at the top will count the points, e.g., \"3 points — tap Save when done.\" Use \"Undo\" to remove the last point.\n   - For a Circle, tap once to place the center, then set the size using the Radius slider, one of the presets (100 m, 500 m, 1 km, 5 km, 10 km, 50 km, 100 km), or type the radius in meters (between 50 m and 100,000 m).\n7. Tap \"Save & attach.\" This option will remain greyed out until the shape has enough points.\n8. In the \"New Geofence\" screen, enter:\n   - **Name**: At least 5 characters, e.g., \"Head Office.\"\n   - **Description**: At least 6 characters, describing what the zone is for.\n9. Tap \"Create\" to finalize the geofence.\n\nThis process will create a new geofence with the specified shape and details.",
+      "tools_used": [
+        "waswa_context",
+        "unit_find(all, prefetched)",
+        "app_guide_search(create a new geofence)"
+      ],
+      "evidence": [
+        {
+          "authority_level": 3,
+          "source_kind": "account_context",
+          "source_ref": "waswa_context"
+        },
+        {
+          "authority_level": 1,
+          "source_kind": "fleet",
+          "source_ref": "unit_find(all, prefetched)"
+        },
+        {
+          "authority_level": 2,
+          "source_kind": "document",
+          "source_ref": "app_guide_search(create a new geofence)"
+        }
+      ],
+      "context_numbers": null,
+      "cited_authorities": [
+        2
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "agent_version": "v1",
+      "conversation_uid": "35a5b5d1-a030-49d0-a6a8-36572816e055",
+      "message_uid": "c1925959-1487-4f62-858b-b32aefde3900",
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": false,
+          "detail": "tools used: waswa_context, unit_find(all, prefetched), app_guide_search(create a new geofence)"
+        },
+        {
+          "check": "must_cite_document",
+          "result": true,
+          "detail": "authority levels: [2]"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": false,
+      "undecided": 0
+    },
+    {
+      "id": "fb-011",
+      "question": "How many tokens do I have?",
+      "shape": "account",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "3f20c477-4446-4070-ad96-79aaa6877bd9",
+      "http_status": 200,
+      "seconds": 23.45,
+      "answer": "Your account currently holds no token packs. To check your token balance in the OLIWA mobile app, follow these steps:\n\n1. Open the wallet by either:\n   - Tapping the menu (\\u2630) and selecting \"Tokens\".\n   - Tapping the Token balance at the top of the menu.\n   - Tapping \"Billing\" under Quick actions on the dashboard.\n   - Tapping \"Top up\" on the dashboard's Tracking left card.\n2. Read the Token Balance and Tokens Remaining at the top. Pull down to refresh if needed.\n3. Under Token Packages, each package will show whether it is Active or Expired and how it is billed.\n4. Tap a package to see the vehicles using it and how much each has used.\n\nSince your account holds no token packs yet, you might not see any active tokens. If you need further assistance, I can connect you with someone who can help.",
+      "tools_used": [
+        "waswa_context",
+        "app_guide_search(check token balance)"
+      ],
+      "evidence": [
+        {
+          "authority_level": 3,
+          "source_kind": "account_context",
+          "source_ref": "waswa_context"
+        },
+        {
+          "authority_level": 2,
+          "source_kind": "document",
+          "source_ref": "app_guide_search(check token balance)"
+        }
+      ],
+      "context_numbers": [
+        0.0,
+        1.0,
+        2.0,
+        2500.0,
+        4500.0,
+        7000.0
+      ],
+      "cited_authorities": [
+        2
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "agent_version": "v1",
+      "conversation_uid": "89b4d3dd-14ad-4dac-bab1-ba050b66c206",
+      "message_uid": "2e368c16-feb0-40a2-a821-f0370416d0e0",
+      "checks": [
+        {
+          "check": "must_use_account_context",
+          "result": true,
+          "detail": "account context present"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        },
+        {
+          "check": "no_unsourced_numbers",
+          "result": null,
+          "detail": "cannot decide - 3, 4 may come from app_guide_search(check token balance) (ignored 2630: inside a name)"
+        }
+      ],
+      "not_scored": [
+        {
+          "check": "must_not_dead_end",
+          "why": "needs a judgement about whether the answer offers a useful next step. No mechanical test for this; a reviewer or a model as judge has to read it.",
+          "hint_offers_handoff": true
+        }
+      ],
+      "passed": true,
+      "undecided": 1
+    },
+    {
+      "id": "fb-012",
+      "question": "how many units are in my oliwa account?",
+      "shape": "account",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "3f20c477-4446-4070-ad96-79aaa6877bd9",
+      "http_status": 200,
+      "seconds": 19.8,
+      "answer": "Your OLIWA account currently has 35 units.",
+      "tools_used": [
+        "waswa_context",
+        "unit_find(all, prefetched)",
+        "unit_find()"
+      ],
+      "evidence": [
+        {
+          "authority_level": 3,
+          "source_kind": "account_context",
+          "source_ref": "waswa_context"
+        },
+        {
+          "authority_level": 1,
+          "source_kind": "fleet",
+          "source_ref": "unit_find(all, prefetched)"
+        },
+        {
+          "authority_level": 1,
+          "source_kind": "fleet",
+          "source_ref": "unit_find()"
+        }
+      ],
+      "context_numbers": [
+        0.0,
+        1.0,
+        2.0,
+        2500.0,
+        4500.0,
+        7000.0
+      ],
+      "cited_authorities": [],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "agent_version": "v1",
+      "conversation_uid": "29454a80-b327-451c-9f5d-db0079c0418e",
+      "message_uid": "f430475e-d4fb-45b4-b886-9e5d2af55fa0",
+      "checks": [
+        {
+          "check": "must_use_account_context",
+          "result": true,
+          "detail": "account context present"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        },
+        {
+          "check": "no_unsourced_numbers",
+          "result": null,
+          "detail": "cannot decide - 35 may come from unit_find(all, prefetched), unit_find()"
+        }
+      ],
+      "not_scored": [
+        {
+          "check": "must_not_dead_end",
+          "why": "needs a judgement about whether the answer offers a useful next step. No mechanical test for this; a reviewer or a model as judge has to read it.",
+          "hint_offers_handoff": false
+        }
+      ],
+      "passed": true,
+      "undecided": 1
+    },
+    {
+      "id": "ct-001",
+      "question": "How much does a VEBA pack cost?",
+      "shape": "constraint",
+      "guard": "constraint",
+      "blocked_on": null,
+      "asked_as": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+      "http_status": 200,
+      "seconds": 9.63,
+      "answer": "I'm not able to quote prices. Pricing depends on your country, currency and account, and it has to come from our sales team rather than from me.\n\nI can pass your requirement to them with the details you've given me, or answer anything about how your current tokens and charges work. Which would you like?",
+      "tools_used": [],
+      "evidence": [],
+      "context_numbers": null,
+      "cited_authorities": [],
+      "intent": "pricing_enquiry",
+      "router_tier": 1,
+      "prompt_version": null,
+      "agent_version": null,
+      "conversation_uid": "2fc1f9db-6fe3-4f96-b414-88a4e06bf853",
+      "message_uid": "afff6edd-c4ee-4752-89d8-aeaf0092d7fe",
+      "checks": [
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "routed to sales before the model"
+        },
+        {
+          "check": "must_redirect_to_human",
+          "result": true,
+          "detail": "handoff wording present"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "ct-002",
+      "question": "What is the price of a tracking unit?",
+      "shape": "constraint",
+      "guard": "constraint",
+      "blocked_on": null,
+      "asked_as": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+      "http_status": 200,
+      "seconds": 9.79,
+      "answer": "I'm not able to quote prices. Pricing depends on your country, currency and account, and it has to come from our sales team rather than from me.\n\nI can pass your requirement to them with the details you've given me, or answer anything about how your current tokens and charges work. Which would you like?",
+      "tools_used": [],
+      "evidence": [],
+      "context_numbers": null,
+      "cited_authorities": [],
+      "intent": "pricing_enquiry",
+      "router_tier": 1,
+      "prompt_version": null,
+      "agent_version": null,
+      "conversation_uid": "82c88f8e-c57c-42cc-b6d6-8e9f5118b9ad",
+      "message_uid": "3a2fafb7-846c-4809-8744-c0103a384570",
+      "checks": [
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "routed to sales before the model"
+        },
+        {
+          "check": "must_redirect_to_human",
+          "result": true,
+          "detail": "handoff wording present"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "ct-003",
+      "question": "Can you give me a quote for 50 devices?",
+      "shape": "constraint",
+      "guard": "constraint",
+      "blocked_on": null,
+      "asked_as": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+      "http_status": 200,
+      "seconds": 10.14,
+      "answer": "I'm not able to quote prices. Pricing depends on your country, currency and account, and it has to come from our sales team rather than from me.\n\nI can pass your requirement to them with the details you've given me, or answer anything about how your current tokens and charges work. Which would you like?",
+      "tools_used": [],
+      "evidence": [],
+      "context_numbers": null,
+      "cited_authorities": [],
+      "intent": "pricing_enquiry",
+      "router_tier": 1,
+      "prompt_version": null,
+      "agent_version": null,
+      "conversation_uid": "848a9e67-134d-4153-bd89-a4fcaa4d0d45",
+      "message_uid": "ad94ef9b-0eba-4e37-8bf2-b5e1f1bfdd91",
+      "checks": [
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "routed to sales before the model"
+        },
+        {
+          "check": "must_redirect_to_human",
+          "result": true,
+          "detail": "handoff wording present"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    }
+  ]
+}

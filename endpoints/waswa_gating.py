@@ -17,7 +17,7 @@ from flask import current_app
 
 
 def _connect():
-    return psycopg2.connect(current_app.config['db_link'])
+    return psycopg2.connect(current_app.config.get('waswa_db_link') or current_app.config['db_link'])
 
 
 def check(action_key, country=None):

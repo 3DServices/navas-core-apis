@@ -1,7 +1,9 @@
+from .globals import STORE_UNAVAILABLE
 from flask import Flask
 from flask import Blueprint
 from flask import request
 import psycopg2
+from . import db_pool
 from flask import json
 from flask import jsonify
 import datetime
@@ -29,6 +31,7 @@ devices_bp = Blueprint('devices', __name__)
 # Cassandra connection settings, including the password, come from the
 # environment via config.py. They used to be written out in full in each
 # of these six files.
+import logging
 from config import (
     CASSANDRA_KEYSPACE,
     CASSANDRA_CONTACT_POINTS,
@@ -38,39 +41,17 @@ from config import (
     CASSANDRA_LOCAL_DC,
 )
 
-_cassandra_cluster = None
-_cassandra_session = None
+# B9: one Cassandra session per PROCESS, not one per module. This module
+# used to define its own get_cassandra_session() over its own globals and
+# its own Cluster(); six identical copies meant a worker could hold six
+# pools to the same database, each paying its own 6-7s handshake. The
+# name is re-exported so this module's callers and importers are unchanged.
+from .cassandra_store import get_cassandra_session
 
-def get_cassandra_session():
-    global _cassandra_cluster, _cassandra_session
-    if _cassandra_session and not _cassandra_session.is_shutdown:
-        return _cassandra_session
-    try:
-        auth_provider = PlainTextAuthProvider(
-            username=CASSANDRA_USERNAME,
-            password=CASSANDRA_PASSWORD
-        )
-        profile = ExecutionProfile(
-            load_balancing_policy=TokenAwarePolicy(DCAwareRoundRobinPolicy(local_dc=CASSANDRA_LOCAL_DC)),
-            consistency_level=ConsistencyLevel.ONE
-        )
-        _cassandra_cluster = Cluster(
-            contact_points=CASSANDRA_CONTACT_POINTS,
-            port=CASSANDRA_PORT,
-            auth_provider=auth_provider,
-            protocol_version=4,
-            execution_profiles={EXEC_PROFILE_DEFAULT: profile}
-        )
-        _cassandra_session = _cassandra_cluster.connect(CASSANDRA_KEYSPACE)
-        print("Successfully connected to Cassandra cluster")
-        return _cassandra_session
-    except Exception as e:
-        print(f"Error connecting to Cassandra: {e}")
-        return None
 
 
 def get_postgres_connection():
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
     return dbconnect
 #register device
 @devices_bp.route("/devices/create", methods=["POST"])
@@ -79,7 +60,7 @@ def register_device():
 
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     payload_data = request.get_json()
 
     try:
@@ -116,7 +97,11 @@ def register_device():
             return reply('error', 400, 'Something Is Missing', '')
 
     except Exception as error:
-        return reply('error', 500, error, '')
+        # B10 class: `error` is an exception OBJECT. scrub_secrets() passes
+        # non-strings through, jsonify then raises TypeError and the caller
+        # gets a 500 with no message at all.
+        logging.exception('devices: unhandled error')
+        return reply('error', 500, str(error), '')
     
 
 #get all devices
@@ -126,7 +111,7 @@ def get_devices():
 
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     payload_data = request.get_json()
 
     try:
@@ -162,11 +147,18 @@ def get_devices():
         page_rows, pagination = paginate(rows, page, page_size)
 
         page_imeis = [row.device_imei for row in page_rows]
-        billing = pg_lookup("SELECT device_imei, device_billing_status FROM dll_device_basic_data WHERE device_imei = ANY(%s)",
-                            page_imeis)
-        owners = {row.device_imei: row.device_client for row in cassandra_in(
-            _cassandra_session, "SELECT device_imei, device_client FROM dll_device_basic_data WHERE device_imei IN ?",
-            page_imeis)}
+        # Billing comes from the Cassandra register with the owner. It was read
+        # from the Postgres copy, which stopped being written when the device
+        # listener moved: units registered since read "not-found", and billing
+        # changes since (written to Cassandra) never showed.
+        register = cassandra_in(
+            _cassandra_session,
+            "SELECT device_imei, device_client, device_billing_status FROM dll_device_basic_data "
+            "WHERE device_imei IN ?", page_imeis)
+        owners, billing = {}, {}
+        for reg in register:
+            owners[reg.device_imei] = reg.device_client
+            billing[str(reg.device_imei)] = reg.device_billing_status
         client_names = pg_lookup("SELECT client_uid, client_name FROM dll_client_accounts WHERE client_uid = ANY(%s)",
                                  set(owners.values()))
 
@@ -196,204 +188,113 @@ def get_devices():
 #get configured devices
 @devices_bp.route("/devices/configured/all", methods=["POST"])
 def get_configured_devices():
+    """Every unit at a data level (client, service_provider or inhouse), with
+    its details, SIM number, hardware, client name and subscription.
+
+    Each source is read once for the whole list. This used to make about
+    eight round trips per unit (two Cassandra reads, four Postgres queries and
+    a pooled connection that was never given back): ~2 s for 35 units next to
+    the databases, 153 s from a development machine, where the console's
+    Track Playback (15 s) and Live Monitoring (30 s) gave up first. The reply
+    is the same, field for field, as it was.
+    """
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     payload_data = request.get_json()
 
     try:
         if(len(str(payload_data['data']['data_level'])) > 2) and (len(str(payload_data['data']['account_uid'])) > 2):
             dataLevel = payload_data['data']['data_level']
             AccountID = payload_data['data']['account_uid']
-
-            if(dataLevel == 'service_provider'):
-                _data_query = _cassandra_session.prepare("SELECT device_imei FROM dll_device_registrar WHERE service_provider_uid = ? ALLOW FILTERING")
-                rows = _cassandra_session.execute(_data_query, (AccountID,))
-                if rows:
-                    data_adapter = rows
-                    devices_found = []
-                    for row in data_adapter:
-                        FoundIMEI = row.device_imei
-                        _simcard_query = _cassandra_session.prepare("SELECT device_name, device_simcard, device_car_make, device_car_model, device_vin_number, device_car_type, events_attached, device_billing_status, device_client FROM dll_device_basic_data WHERE device_imei = ?")
-                        rows_basic = _cassandra_session.execute(_simcard_query, (FoundIMEI,))
-                        DeviceBasicData_Adapter = rows_basic[0] if rows_basic else None
-                        if DeviceBasicData_Adapter:
-                            SimCard = DeviceBasicData_Adapter.device_simcard
-                            # Using PostgreSQL for dll_telecom_assets query
-                            conn = get_postgres_connection()
-                            cur = conn.cursor()
-                            cur.execute("SELECT simcard_number FROM dll_telecom_assets WHERE asset_uid = %s", (SimCard,))
-                            rows_simcard = cur.fetchone()
-                            #conn.close()
-                            SimcardData = rows_simcard if rows_simcard else None
-                            SimcardNumber = SimcardData[0] if SimcardData else None
-                            _hardware_query = _cassandra_session.prepare("SELECT device_vendor, device_hardware FROM dll_device_registrar WHERE device_imei = ?")
-                            rows_hardware = _cassandra_session.execute(_hardware_query, (FoundIMEI,))
-                            Hardware_dataAdapter = rows_hardware[0] if rows_hardware else None
-                            Hardware = Hardware_dataAdapter.device_vendor if Hardware_dataAdapter else None
-                            HardwareModel = Hardware_dataAdapter.device_hardware if Hardware_dataAdapter else None
-                            
-                            # Query to get the client name
-                            cur.execute("SELECT client_name FROM dll_client_accounts WHERE client_uid = %s", (DeviceBasicData_Adapter.device_client,))
-                            client_record = cur.fetchone()
-                            client_name = client_record[0] if client_record else None
-
-                            # Query to get the subscription end date
-                            cur.execute("SELECT end_date FROM dll_device_subscriptions WHERE device_imei_number = %s", (FoundIMEI,))
-                            subscription_record = cur.fetchone()
-                            expiry_date = subscription_record[0] if subscription_record else '0'
-
-                            SingleBasic_Data = {
-                                "device_name": DeviceBasicData_Adapter.device_name,
-                                "simcard": SimcardNumber,
-                                "simcard_uid": SimCard,
-                                "car_make": DeviceBasicData_Adapter.device_car_make,
-                                "car_model": DeviceBasicData_Adapter.device_car_model,
-                                "vin_number": DeviceBasicData_Adapter.device_vin_number,
-                                "car_type": DeviceBasicData_Adapter.device_car_type,
-                                "events_attached": DeviceBasicData_Adapter.events_attached,
-                                "billing_status": DeviceBasicData_Adapter.device_billing_status,
-                                "device_imei": FoundIMEI,
-                                "subscription_end_date": expiry_date,
-                                "client_uid": DeviceBasicData_Adapter.device_client,
-                                "client_name": client_name,
-                                "hardware": Hardware,
-                                "hardware_model": HardwareModel
-                            }
-                            devices_found.append(SingleBasic_Data)
-                    if(len(devices_found) > 0):
-                        return reply('success', 200, 'Found Devices', devices_found)
-                    elif(len(devices_found) == 0):
-                        return reply('error', 400, 'No Devices Found', '')
-                else:
-                    return reply('error', 400, 'No Devices Found', '')
-
-            elif(dataLevel == 'client'):
-                _client_data_query = _cassandra_session.prepare("SELECT device_imei FROM dll_device_basic_data WHERE device_client = ? ALLOW FILTERING")
-                rows = _cassandra_session.execute(_client_data_query, (AccountID,))
-                if rows:
-                    data_adapter = rows
-                    devices_found = []
-                    for row in data_adapter:
-                        FoundIMEI = row.device_imei
-                        _simcard_query = _cassandra_session.prepare("SELECT device_name, device_simcard, device_car_make, device_car_model, device_vin_number, device_car_type, events_attached, device_billing_status, device_client FROM dll_device_basic_data WHERE device_imei = ?")
-                        rows_basic = _cassandra_session.execute(_simcard_query, (FoundIMEI,))
-                        DeviceBasicData_Adapter = rows_basic[0] if rows_basic else None
-                        if DeviceBasicData_Adapter:
-                            SimCard = DeviceBasicData_Adapter.device_simcard
-                            # Using PostgreSQL for dll_telecom_assets query
-                            conn = get_postgres_connection()
-                            cur = conn.cursor()
-                            cur.execute("SELECT simcard_number FROM dll_telecom_assets WHERE asset_uid = %s", (SimCard,))
-                            rows_simcard = cur.fetchone()
-                            #conn.close()
-                            SimcardData = rows_simcard if rows_simcard else None
-                            SimcardNumber = SimcardData[0] if SimcardData else None
-                            _hardware_query = _cassandra_session.prepare("SELECT device_vendor, device_hardware FROM dll_device_registrar WHERE device_imei = ?")
-                            rows_hardware = _cassandra_session.execute(_hardware_query, (FoundIMEI,))
-                            Hardware_dataAdapter = rows_hardware[0] if rows_hardware else None
-                            Hardware = Hardware_dataAdapter.device_vendor if Hardware_dataAdapter else None
-                            HardwareModel = Hardware_dataAdapter.device_hardware if Hardware_dataAdapter else None
-                            cur.execute("SELECT client_name FROM dll_client_accounts WHERE client_uid = %s", (DeviceBasicData_Adapter.device_client,))
-                            client_record = cur.fetchone()
-                            client_name = client_record[0] if client_record else None
-
-                            # Query to get the subscription end date
-                            cur.execute("SELECT subscription_status FROM dll_device_subscriptions WHERE device_imei_number = %s", (FoundIMEI,))
-                            subscription_record = cur.fetchone()
-                            expiry_date = subscription_record[0] if subscription_record else 'token_subscription_status_not_found'
-
-                            SingleBasic_Data = {
-                                "device_name": DeviceBasicData_Adapter.device_name,
-                                "simcard": SimcardNumber,
-                                "simcard_uid": SimCard,
-                                "car_make": DeviceBasicData_Adapter.device_car_make,
-                                "car_model": DeviceBasicData_Adapter.device_car_model,
-                                "vin_number": DeviceBasicData_Adapter.device_vin_number,
-                                "car_type": DeviceBasicData_Adapter.device_car_type,
-                                "events_attached": DeviceBasicData_Adapter.events_attached,
-                                #"billing_status": 'running',
-                                "billing_status": expiry_date,
-                                "device_imei": FoundIMEI,
-                                "subscription_status": expiry_date,
-                                #"subscription_status": "running",
-                                "client_uid": DeviceBasicData_Adapter.device_client,
-                                "client_name": client_name,
-                                "hardware": Hardware,
-                                "hardware_model": HardwareModel
-                            }
-                            devices_found.append(SingleBasic_Data)
-                    if(len(devices_found) > 0):
-                        return reply('success', 200, 'Found Devices', devices_found)
-                    elif(len(devices_found) == 0):
-                        return reply('error', 400, 'No Devices Found', '')
-                else:
-                    return reply('error', 400, 'No Devices Found', '')
-
-            elif(dataLevel == 'inhouse'):
-                _inhouse_data_query = _cassandra_session.prepare("SELECT device_imei FROM dll_device_registrar")
-                rows = _cassandra_session.execute(_inhouse_data_query)
-                if rows:
-                    data_adapter = rows
-                    devices_found = []
-                    for row in data_adapter:
-                        FoundIMEI = row.device_imei
-                        _simcard_query = _cassandra_session.prepare("SELECT device_name, device_simcard, device_car_make, device_car_model, device_vin_number, device_car_type, events_attached, device_billing_status, device_client FROM dll_device_basic_data WHERE device_imei = ?")
-                        rows_basic = _cassandra_session.execute(_simcard_query, (FoundIMEI,))
-                        DeviceBasicData_Adapter = rows_basic[0] if rows_basic else None
-                        if DeviceBasicData_Adapter:
-                            SimCard = DeviceBasicData_Adapter.device_simcard
-                            # Using PostgreSQL for dll_telecom_assets query
-                            conn = get_postgres_connection()
-                            cur = conn.cursor()
-                            cur.execute("SELECT simcard_number FROM dll_telecom_assets WHERE asset_uid = %s", (SimCard,))
-                            rows_simcard = cur.fetchone()
-                            #conn.close()
-                            SimcardData = rows_simcard if rows_simcard else None
-                            SimcardNumber = SimcardData[0] if SimcardData else None
-                            _hardware_query = _cassandra_session.prepare("SELECT device_vendor, device_hardware FROM dll_device_registrar WHERE device_imei = ?")
-                            rows_hardware = _cassandra_session.execute(_hardware_query, (FoundIMEI,))
-                            Hardware_dataAdapter = rows_hardware[0] if rows_hardware else None
-                            Hardware = Hardware_dataAdapter.device_vendor if Hardware_dataAdapter else None
-                            HardwareModel = Hardware_dataAdapter.device_hardware if Hardware_dataAdapter else None
-                            cur.execute("SELECT client_name FROM dll_client_accounts WHERE client_uid = %s", (DeviceBasicData_Adapter.device_client,))
-                            client_record = cur.fetchone()
-                            client_name = client_record[0] if client_record else None
-
-                            # Query to get the subscription end date
-                            cur.execute("SELECT subscription_status FROM dll_device_subscriptions WHERE device_imei_number = %s", (FoundIMEI,))
-                            subscription_record = cur.fetchone()
-                            expiry_date = subscription_record[0] if subscription_record else 'token_subscription_status_not_found'
-
-                            SingleBasic_Data = {
-                                "device_name": DeviceBasicData_Adapter.device_name,
-                                "simcard": SimcardNumber,
-                                "simcard_uid": SimCard,
-                                "car_make": DeviceBasicData_Adapter.device_car_make,
-                                "car_model": DeviceBasicData_Adapter.device_car_model,
-                                "vin_number": DeviceBasicData_Adapter.device_vin_number,
-                                "car_type": DeviceBasicData_Adapter.device_car_type,
-                                "events_attached": DeviceBasicData_Adapter.events_attached,
-                                #"billing_status": 'running',
-                                "billing_status": expiry_date,
-                                "client_uid": DeviceBasicData_Adapter.device_client,
-                                "client_name": client_name,
-                                "subscription_status": expiry_date,
-                                #"subscription_status": "running",
-                                "hardware": Hardware,
-                                "hardware_model": HardwareModel,
-                                "device_imei": FoundIMEI 
-                            }
-                            devices_found.append(SingleBasic_Data)
-                    return reply('success', 200, 'Found Devices', devices_found)
-                else:
-                    return reply('error', 400, 'No Devices Found', '')
-            else:
+            if dataLevel not in ('service_provider', 'client', 'inhouse'):
                 return reply('error', 400, 'Unknown data level', '')
+            devices_found = configured_devices(_cassandra_session, dataLevel, AccountID)
+            if devices_found is None:
+                return reply('error', 400, 'No Devices Found', '')
+            if not devices_found and dataLevel != 'inhouse':
+                return reply('error', 400, 'No Devices Found', '')
+            return reply('success', 200, 'Found Devices', devices_found)
         else:
             return reply('error', 400, 'Something Is Missing', '')
     except Exception as error:
-        return reply('error', 500, error, '')
+        # B10 class: `error` is an exception OBJECT. scrub_secrets() passes
+        # non-strings through, jsonify then raises TypeError and the caller
+        # gets a 500 with no message at all.
+        logging.exception('devices: unhandled error')
+        return reply('error', 500, str(error), '')
+
+
+def configured_devices(session, data_level, account_uid):
+    """The /devices/configured/all list, or None when the level has no units
+    at all. Units with no basic-data row are left out, as they always were."""
+    if data_level == 'client':
+        query = session.prepare(
+            "SELECT %s FROM dll_device_basic_data WHERE device_client = ? ALLOW FILTERING" % BASIC_COLUMNS)
+        basics = [row for row in session.execute(query, (account_uid,)) if row.device_imei]
+        if not basics:
+            return None
+    else:
+        if data_level == 'service_provider':
+            query = session.prepare(
+                "SELECT device_imei FROM dll_device_registrar WHERE service_provider_uid = ? ALLOW FILTERING")
+            imeis = [row.device_imei for row in session.execute(query, (account_uid,)) if row.device_imei]
+        else:  # inhouse
+            imeis = [row.device_imei for row in session.execute(
+                session.prepare("SELECT device_imei FROM dll_device_registrar")) if row.device_imei]
+        if not imeis:
+            return None
+        by_imei = {row.device_imei: row for row in cassandra_in(
+            session, "SELECT %s FROM dll_device_basic_data WHERE device_imei IN ?" % BASIC_COLUMNS, imeis)}
+        # In the registrar's order, as the per-unit reads returned them.
+        basics = [by_imei[imei] for imei in dict.fromkeys(imeis) if imei in by_imei]
+
+    all_imeis = [row.device_imei for row in basics]
+    hardware = {row.device_imei: row for row in cassandra_in(
+        session, "SELECT device_imei, device_vendor, device_hardware FROM dll_device_registrar WHERE device_imei IN ?",
+        all_imeis)}
+    simcards = pg_lookup("SELECT asset_uid, simcard_number FROM dll_telecom_assets WHERE asset_uid = ANY(%s)",
+                         {row.device_simcard for row in basics})
+    client_names = pg_lookup("SELECT client_uid, client_name FROM dll_client_accounts WHERE client_uid = ANY(%s)",
+                             {row.device_client for row in basics})
+    if data_level == 'service_provider':
+        subscriptions = pg_lookup(
+            "SELECT device_imei_number, end_date FROM dll_device_subscriptions WHERE device_imei_number = ANY(%s)",
+            all_imeis)
+    else:
+        subscriptions = pg_lookup(
+            "SELECT device_imei_number, subscription_status FROM dll_device_subscriptions "
+            "WHERE device_imei_number = ANY(%s)", all_imeis)
+
+    devices_found = []
+    for row in basics:
+        hw = hardware.get(row.device_imei)
+        item = {
+            "device_name": row.device_name,
+            "simcard": simcards.get(str(row.device_simcard)) if row.device_simcard else None,
+            "simcard_uid": row.device_simcard,
+            "car_make": row.device_car_make,
+            "car_model": row.device_car_model,
+            "vin_number": row.device_vin_number,
+            "car_type": row.device_car_type,
+            "events_attached": row.events_attached,
+        }
+        subscription = subscriptions.get(str(row.device_imei))
+        if data_level == 'service_provider':
+            item["billing_status"] = row.device_billing_status
+            item["device_imei"] = row.device_imei
+            item["subscription_end_date"] = subscription if subscription is not None else '0'
+        else:
+            status = subscription if subscription is not None else 'token_subscription_status_not_found'
+            item["billing_status"] = status
+            item["device_imei"] = row.device_imei
+            item["subscription_status"] = status
+        item["client_uid"] = row.device_client
+        item["client_name"] = client_names.get(str(row.device_client)) if row.device_client else None
+        item["hardware"] = hw.device_vendor if hw else None
+        item["hardware_model"] = hw.device_hardware if hw else None
+        devices_found.append(item)
+    return devices_found
 
 
 BASIC_COLUMNS = ("device_imei, device_name, device_simcard, device_car_make, device_car_model, device_vin_number, "
@@ -404,7 +305,7 @@ BASIC_COLUMNS = ("device_imei, device_name, device_simcard, device_car_make, dev
 def get_system32_configured_devices():
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     payload_data = request.get_json()
 
     try:
@@ -496,6 +397,10 @@ def get_system32_configured_devices():
         return paged_reply('Found Devices', devices_found, pagination, status_counts=status_counts)
 
     except Exception as error:
+        # B10 class: `error` is an exception OBJECT. scrub_secrets() passes
+        # non-strings through, jsonify then raises TypeError and the caller
+        # gets a 500 with no message at all.
+        logging.exception('devices: unhandled error')
         return reply('error', 500, str(error), '')
 
 
@@ -513,7 +418,7 @@ def action():
 
             _cassandra_session = get_cassandra_session()
             if not _cassandra_session:
-                return reply('error', 500, 'Failed to connect to Cassandra', '')
+                return reply('error', 503, STORE_UNAVAILABLE, '')
 
             logs = []
 
@@ -604,85 +509,43 @@ def action():
 #List Devices By Client
 @devices_bp.route("/devices/configured/<string:client_id>/client", methods=["GET"])
 def ClientConfigured_Devices(client_id):
+    """The mobile app's vehicle list: a client's units, read the batched way
+    (configured_devices). It made about eight round trips per unit -- 128 s
+    for 35 units from a development machine, where the app gives up at 20 s.
+
+    The reply is as it was: billing_status and subscription_status are always
+    "running" here (the subscription read beside them was never used).
+    """
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     try:
         if(len(str(client_id)) > 5):
-            AccountID = str(client_id)
-            _client_data_query = _cassandra_session.prepare("SELECT device_imei FROM dll_device_basic_data WHERE device_client = ? ALLOW FILTERING")
-            rows = _cassandra_session.execute(_client_data_query, (AccountID,))
-            if rows:
-                data_adapter = rows
-                devices_found = []
-                for row in data_adapter:
-                    FoundIMEI = row.device_imei
-                    _simcard_query = _cassandra_session.prepare("SELECT device_name, device_simcard, device_car_make, device_car_model, device_vin_number, device_car_type, events_attached, device_billing_status, device_client FROM dll_device_basic_data WHERE device_imei = ?")
-                    rows_basic = _cassandra_session.execute(_simcard_query, (FoundIMEI,))
-                    DeviceBasicData_Adapter = rows_basic[0] if rows_basic else None
-                    if DeviceBasicData_Adapter:
-                        SimCard = DeviceBasicData_Adapter.device_simcard
-                        # Using PostgreSQL for dll_telecom_assets query
-                        conn = get_postgres_connection()
-                        cur = conn.cursor()
-                        cur.execute("SELECT simcard_number FROM dll_telecom_assets WHERE asset_uid = %s", (SimCard,))
-                        rows_simcard = cur.fetchone()
-                        conn.close()
-                        SimcardData = rows_simcard if rows_simcard else None
-                        SimcardNumber = SimcardData[0] if SimcardData else None
-                        _hardware_query = _cassandra_session.prepare("SELECT device_vendor, device_hardware FROM dll_device_registrar WHERE device_imei = ?")
-                        rows_hardware = _cassandra_session.execute(_hardware_query, (FoundIMEI,))
-                        Hardware_dataAdapter = rows_hardware[0] if rows_hardware else None
-                        Hardware = Hardware_dataAdapter.device_vendor if Hardware_dataAdapter else None
-                        HardwareModel = Hardware_dataAdapter.device_hardware if Hardware_dataAdapter else None
-                        
-                        conn = get_postgres_connection()
-                        cur = conn.cursor()
-                        cur.execute("SELECT client_name FROM dll_client_accounts WHERE client_uid = %s", (DeviceBasicData_Adapter.device_client,))
-                        client_record = cur.fetchone()
-                        _ClientName = client_record[0] if client_record else None
-                        cur.close()
-                        conn.close()
-
-                        # Query to get the subscription end date from PostgreSQL
-                        conn = get_postgres_connection()
-                        cur = conn.cursor()
-                        cur.execute("SELECT subscription_status FROM dll_device_subscriptions WHERE device_imei_number = %s", (FoundIMEI,))
-                        subscription_record = cur.fetchone()
-                        expiry_date = subscription_record[0] if subscription_record else 'token_subscription_status_not_found'
-                        cur.close()
-                        conn.close()
-
-                        SingleBasic_Data = {
-                            "device_name": DeviceBasicData_Adapter.device_name,
-                            "simcard": SimcardNumber,
-                            "simcard_uid": SimCard,
-                            "car_make": DeviceBasicData_Adapter.device_car_make,
-                            "car_model": DeviceBasicData_Adapter.device_car_model,
-                            "vin_number": DeviceBasicData_Adapter.device_vin_number,
-                            "car_type": DeviceBasicData_Adapter.device_car_type,
-                            "events_attached": DeviceBasicData_Adapter.events_attached,
-                            "billing_status": "running",
-                            "device_imei": FoundIMEI,
-                            #"subscription_status": expiry_date,
-                            "subscription_status": "running",
-                            "client_uid": DeviceBasicData_Adapter.device_client,
-                            "client_name": _ClientName,
-                            "hardware": Hardware,
-                            "hardware_model": HardwareModel
-                        }
-                        devices_found.append(SingleBasic_Data)
-                return reply('success', 200, 'Found Devices', devices_found)
-            else:
+            devices_found = configured_devices(_cassandra_session, 'client', str(client_id))
+            if devices_found is None:
                 return reply('error', 400, 'No Devices Found', '')
+            for item in devices_found:
+                item["billing_status"] = "running"
+                item["subscription_status"] = "running"
+            return reply('success', 200, 'Found Devices', devices_found)
         else:
             return reply('error', 400, 'Something Is Missing', '')
     except Exception as error:
-        return reply('error', 500, error, '')
+        # B10 class: `error` is an exception OBJECT. scrub_secrets() passes
+        # non-strings through, jsonify then raises TypeError and the caller
+        # gets a 500 with no message at all.
+        logging.exception('devices: unhandled error')
+        return reply('error', 500, str(error), '')
 
 
 @devices_bp.route("/devices/filter/clients/<client_uid>/network/group/<group_uid>/filter-out", methods=["GET"])
 def FilterRequest(client_uid, group_uid):
+    # B9: this route read the module global directly and never called the
+    # accessor, so on a cold worker it raised AttributeError on None.
+    _cassandra_session = get_cassandra_session()
+    if not _cassandra_session:
+        return reply('error', 503, STORE_UNAVAILABLE, '')
+
     try:
         ClientID = str(client_uid)
         GroupID = str(group_uid)
@@ -858,7 +721,7 @@ def FilterRequest(client_uid, group_uid):
 def single_configured_device(device_imei):
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     try:
         if(len(str(device_imei)) > 4):
             _basic_data_query = _cassandra_session.prepare("SELECT device_name, device_simcard, device_car_make, device_car_model, device_vin_number, device_car_type, events_attached, device_billing_status, device_client FROM dll_device_basic_data WHERE device_imei = ?")
@@ -905,7 +768,7 @@ def single_configured_device(device_imei):
 @devices_bp.route("/devices/simcards/create", methods=["POST"])
 def search_device():
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
     payload_data = request.get_json()
 
     try:
@@ -948,7 +811,7 @@ def search_device():
 @devices_bp.route("/devices/simcards/all", methods=["GET"])
 def get_simcards():
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
 
     try:
 
@@ -988,7 +851,7 @@ def get_simcards():
 @devices_bp.route("/devices/simcards/<simcard_owner>/all", methods=["GET"])
 def get_simcards_byOwner(simcard_owner):
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
 
     try:
 
@@ -1030,7 +893,7 @@ def update_simcard():
 
     try:
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         payload_data = request.get_json()
 
         if(len(str(payload_data['data']['simcard_uid'])) > 2) and (len(str(payload_data['data']['simcard_number'])) > 2) and (len(str(payload_data['data']['telecom'])) > 2):
@@ -1067,7 +930,7 @@ def update_simcard():
 def delete_simcard(simcard_uid):
 
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
 
         with dbconnect:
             with dbconnect.cursor() as cursor:
@@ -1091,10 +954,77 @@ def delete_simcard(simcard_uid):
 
 
 #Create New Event
+def _geofence_value_error(condition, value):
+    """Why a geofence rule's condition value cannot work, or None.
+
+    The alert engine (alert_engine.load_rules) reads a geofence_breach
+    rule's value as {"zones": [geozone_uid, ...], "breach_type":
+    "enter" | "exit" | "both"} and silently skips anything else. The mobile
+    app used to send a bare "enter" or "exit": the rule was saved, listed,
+    and never fired. Refuse what can never be read, rather than store it.
+    An empty zone list is allowed -- the console saves a rule first and
+    picks its zones afterwards.
+    """
+    if condition != 'geofence_breach':
+        return None
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        parsed = None
+    if not isinstance(parsed, dict) or not isinstance(parsed.get('zones'), list):
+        return ('A geofence rule needs the zones it watches: send '
+                'event_condition_value as {"zones": [geozone_uid, ...], '
+                '"breach_type": "enter" | "exit" | "both"}.')
+    if parsed.get('breach_type', 'both') not in ('enter', 'exit', 'both'):
+        return 'breach_type must be enter, exit or both.'
+    return None
+
+
+def _event_value_error(condition, value):
+    """Why a rule cannot be checked by the alert engine as saved, or None.
+
+    Geofence rules as above. For the rest, alert_conditions.parse_config is
+    what the engine reads the value with, so a value it cannot read is
+    refused here rather than saved as a rule that never fires.
+    """
+    from . import alert_conditions as conditions
+    problem = _geofence_value_error(condition, value)
+    if problem or condition == conditions.GEOFENCE:
+        return problem
+    condition = str(condition or '').strip().lower()
+    if condition in conditions.UNSUPPORTED:
+        return (f'This alert is not available yet: '
+                f'{conditions.UNSUPPORTED[condition]}.')
+    if condition not in conditions.SUPPORTED:
+        return None
+    config = conditions.parse_config(condition, value)
+    if config is not None and condition == conditions.FUEL_FLAGGED and config['flags']:
+        from .fuel_rules import FLAGS
+        unknown = [c for c in config['flags']
+                   if FLAGS.get(c, ('',))[0] != 'discrepancy']
+        if unknown:
+            return ('These are not fuel discrepancies: ' + ', '.join(unknown) + '.')
+    if config is not None:
+        return None
+    if condition == conditions.SPEED:
+        return (f'The speed limit must be a number of km/h between '
+                f'{conditions.SPEED_LIMIT_MIN:g} and {conditions.SPEED_LIMIT_MAX:g}.')
+    if condition == conditions.OFFLINE:
+        return (f'The offline time must be a number of minutes, at least '
+                f'{conditions.OFFLINE_MIN_MINUTES}.')
+    if condition == conditions.FUEL_CONSUMPTION:
+        return ('Send "profile" to use each vehicle\'s tolerance, or a '
+                f'percentage between {conditions.CONSUMPTION_PCT_MIN} and '
+                f'{conditions.CONSUMPTION_PCT_MAX}.')
+    if condition == conditions.FUEL_FLAGGED:
+        return 'Send "all", or the fuel flags to alert on.'
+    return 'The trigger value cannot be read.'
+
+
 @devices_bp.route("/events/create", methods=["POST"])
 def create_new_device_event():
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect()
     
     try:
         payload_data = request.get_json()
@@ -1109,6 +1039,10 @@ def create_new_device_event():
             AlertChannels = json.dumps(payload_data['data']['alert_channels'])
             EventCondition_value = str(payload_data['data']['event_condition_value'])
             EventOwner = str(payload_data['data']['event_owner_uid'])
+
+            problem = _event_value_error(EventCondition, EventCondition_value)
+            if problem:
+                return reply('error', 400, problem, '')
 
             EventID = str(uuid.uuid4())
 
@@ -1132,7 +1066,7 @@ def update_event(event_uid):
 
     try:
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         payload_data = request.get_json()
 
         if(len(str(payload_data['data']['event_name'])) > 2) and (len(str(payload_data['data']['event_description'])) > 2) and (len(str(payload_data['data']['event_condition'])) > 2) and (len(str(payload_data['data']['event_condition_value'])) > 0):
@@ -1145,6 +1079,10 @@ def update_event(event_uid):
             AlertChannels = json.dumps(payload_data['data']['alert_channels'])
             EventCondition_value = str(payload_data['data']['event_condition_value'])
             Event_UID = str(event_uid)
+
+            problem = _event_value_error(EventCondition, EventCondition_value)
+            if problem:
+                return reply('error', 400, problem, '')
 
             with dbconnect:
                 with dbconnect.cursor() as cursor:
@@ -1175,7 +1113,7 @@ def get_all_events():
 
     try:
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         payload_data = request.get_json()
 
         if(len(str(payload_data['data']['load_level'])) > 2) and (len(str(payload_data['data']['owner_uid'])) > 2):
@@ -1274,7 +1212,7 @@ def GetEventDetails(event_id):
 
     try:
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
 
         if(len(str(event_id)) > 2):
 
@@ -1317,7 +1255,7 @@ def GetEventDetails(event_id):
 def delete_event(event_uid):
 
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         
         with dbconnect:
             with dbconnect.cursor() as cursor:
@@ -1345,7 +1283,7 @@ def UpdateMileage():
 
     try:
 
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         payload_data = request.get_json()
 
         if(len(str(payload_data['data']['device_imei'])) > 5) and (len(str(payload_data['data']['updated_mileage'])) > 0):
@@ -1380,9 +1318,12 @@ def UpdateMileage():
 @devices_bp.route("/devices/update/properties", methods=['POST'])
 def update_device():
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        dbconnect = db_pool.connect()
         update_payload = request.get_json()
         _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            logging.warning('update_device: Cassandra session unavailable')
+            return reply('error', 503, STORE_UNAVAILABLE, '')
 
         if (
             len(str(update_payload['data']['device_imei'])) > 4
@@ -1467,52 +1408,114 @@ def update_device():
         return reply('error', 500, str(error), '')
     
 
+# ── Rules attached to a unit ────────────────────────────────────────────────
+# A unit's rules live in its registry row: Cassandra dll_device_basic_data
+# .events_attached, a JSON list of rule uids. The alert engine, the vehicle
+# lists and the console's rule editor all read them there.
+#
+# These three routes used to read and write the Postgres copy of that table,
+# which is no longer kept current: a rule attached to a vehicle never reached
+# the alert engine, and a vehicle missing from the copy was skipped while the
+# reply said it was attached. The copy is still updated where it has the
+# vehicle, for anything that reads it.
+
+_RULES_OF = "SELECT events_attached FROM dll_device_basic_data WHERE device_imei = ?"
+_SET_RULES = "UPDATE dll_device_basic_data SET events_attached = ? WHERE device_imei = ?"
+
+
+def _rule_uids(raw):
+    """events_attached as a list of rule uids: [] when empty or unreadable."""
+    if isinstance(raw, (list, tuple, set)):
+        return [str(e) for e in raw]
+    try:
+        value = json.loads(raw or '[]')
+    except (TypeError, ValueError):
+        return []
+    return [str(e) for e in value] if isinstance(value, list) else []
+
+
+def _registered_rules(session, statement, imei):
+    """The unit's rule uids from the registry; None when it is not registered.
+    (The UPDATE below would create a row for an unknown IMEI, so this is asked
+    first.)"""
+    row = session.execute(statement, (imei,)).one()
+    return None if row is None else _rule_uids(row.events_attached)
+
+
+def _save_rules(session, statement, cursor, imei, rules):
+    """The unit's rules to the registry, and to the Postgres copy if it has
+    the unit."""
+    value = json.dumps(rules)
+    session.execute(statement, (value, imei))
+    cursor.execute("UPDATE dll_device_basic_data SET events_attached=%s WHERE device_imei=%s",
+                   (value, imei))
+
+
+def _add_to_device_count(cursor, event_uid, change):
+    """dll_device_events.device_count, kept as it was: a count in text."""
+    cursor.execute("SELECT device_count FROM dll_device_events WHERE event_local_uid=%s",
+                   (str(event_uid),))
+    row = cursor.fetchone()
+    if row is None:
+        return  # the rule was deleted: nothing to count against
+    try:
+        count = int(row[0] or 0)
+    except (TypeError, ValueError):
+        count = 0
+    cursor.execute("UPDATE dll_device_events SET device_count=%s WHERE event_local_uid=%s",
+                   (str(max(0, count + change)), str(event_uid)))
+
+
 #Attach Device to Event
 @devices_bp.route("/devices/events/<string:event_uid>/attach", methods=["POST"])
 def AttachDevice(event_uid):
-
+    """Attach a rule to units. data says which units were attached, which
+    already had the rule and which are not registered; when none could be
+    attached for that last reason, it is an error."""
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
-        devices_payload = request.get_json()
-        _devicesAttached = devices_payload['data']['device_list']
+        payload = request.get_json(silent=True) or {}
+        device_list = (payload.get('data') or {}).get('device_list') or []
+        if len(str(event_uid)) <= 10 or not isinstance(device_list, list) or not device_list:
+            return reply("error", 400, "Some data Is Missing", "")
+        event_uid = str(event_uid)
 
-        if(len(str(event_uid)) > 10) and (len(_devicesAttached) > 0):
+        _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            return reply('error', 503, STORE_UNAVAILABLE, '')
+        rules_of = _cassandra_session.prepare(_RULES_OF)
+        set_rules = _cassandra_session.prepare(_SET_RULES)
 
+        outcome = {'attached': [], 'already_attached': [], 'not_found': []}
+        dbconnect = db_pool.connect()
+        try:
             with dbconnect:
                 with dbconnect.cursor() as cursor:
-                    cursor.execute("SELECT device_count FROM dll_device_events WHERE event_local_uid=%s", (str(event_uid),))
-
-                    if(cursor.rowcount == 1):
-                        for _FocusDevice in _devicesAttached:
-                            cursor.execute("SELECT events_attached FROM dll_device_basic_data WHERE device_imei=%s", (str(_FocusDevice),))
-
-                            if(cursor.rowcount == 1):
-                                _dataTunnelLink = cursor.fetchone()
-                                _AttachedExisting_Events = json.loads(_dataTunnelLink[0])
-
-                                if(event_uid not in _AttachedExisting_Events):
-                                    _AttachedExisting_Events.append(event_uid)
-                                    _NewAttachedEvents_Objt = json.dumps(_AttachedExisting_Events)
-                                    cursor.execute("UPDATE dll_device_basic_data SET events_attached=%s WHERE device_imei=%s", (str(_NewAttachedEvents_Objt), str(_FocusDevice),))
-
-                                    cursor.execute("SELECT device_count FROM dll_device_events WHERE event_local_uid=%s", (str(event_uid),))
-                                    _dataTunnel = cursor.fetchone()
-                                    _EventDevice_Count = _dataTunnel[0]
-                                    _NewDevice_Count = int(_EventDevice_Count) + 1
-                                    cursor.execute("UPDATE dll_device_events SET device_count=%s WHERE event_local_uid=%s", (str(_NewDevice_Count), str(event_uid),))
-                                
-                            else:
-                                pass
-
-                        return reply("success", 200, "Devices Attached SuccessFuly", "")
-                    
-                    elif(cursor.rowcount == 0):
+                    cursor.execute("SELECT device_count FROM dll_device_events WHERE event_local_uid=%s",
+                                   (event_uid,))
+                    if cursor.rowcount != 1:
                         return reply('error', 400, "Event Route Not Found", "")
-                    
-        else:
-            return reply("error", 400, "Some data Is Missing", "")
+
+                    for imei in dict.fromkeys(str(d) for d in device_list):
+                        rules = _registered_rules(_cassandra_session, rules_of, imei)
+                        if rules is None:
+                            outcome['not_found'].append(imei)
+                        elif event_uid in rules:
+                            outcome['already_attached'].append(imei)
+                        else:
+                            _save_rules(_cassandra_session, set_rules, cursor, imei, rules + [event_uid])
+                            outcome['attached'].append(imei)
+
+                    if outcome['attached']:
+                        _add_to_device_count(cursor, event_uid, len(outcome['attached']))
+        finally:
+            dbconnect.close()
+
+        if not outcome['attached'] and not outcome['already_attached']:
+            return reply("error", 400, "Device Not Found", outcome)
+        return reply("success", 200, "Devices Attached SuccessFuly", outcome)
 
     except Exception as error:
+        logging.exception('devices: attaching rule %s failed', event_uid)
         return reply('error', 500, str(error), "")
 
 
@@ -1522,87 +1525,67 @@ def AttachDevice(event_uid):
 def RemoveEvent(device_id, event_uid):
 
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
         _EventID_Focus = str(event_uid)
         _Device_Focus = str(device_id)
 
-        with dbconnect:
-            with dbconnect.cursor() as cursor:
-                cursor.execute("SELECT events_attached FROM dll_device_basic_data WHERE device_imei=%s", (_Device_Focus,))
+        _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            return reply('error', 503, STORE_UNAVAILABLE, '')
+        rules = _registered_rules(_cassandra_session, _cassandra_session.prepare(_RULES_OF), _Device_Focus)
+        if rules is None:
+            return reply('error', 400, "Device Not Found", "")
+        if _EventID_Focus not in rules:
+            return reply("error", 400, "Event Is Not Attached", "")
 
-                if(cursor.rowcount == 1):
-
-                    _dataTunnelLink = cursor.fetchone()
-                    _ExistingEvents = _dataTunnelLink[0]
-                    _TheEventsObject = json.loads(_ExistingEvents)
-
-                    if(_EventID_Focus in _TheEventsObject):
-                        _TheEventsObject.remove(_EventID_Focus)
-
-                        _UpdatedEvents_Object = json.dumps(_TheEventsObject)
-                        cursor.execute("UPDATE dll_device_basic_data SET events_attached=%s WHERE device_imei=%s", (str(_UpdatedEvents_Object) ,str(_Device_Focus),))
-                        
-                        cursor.execute("SELECT device_count FROM dll_device_events WHERE event_local_uid=%s", (str(_EventID_Focus),))
-                        _dataTunnelPipe = cursor.fetchone()
-                        _EventCurrentDevice_Count = int(_dataTunnelPipe[0])
-                        _NewEventDevice_Count = _EventCurrentDevice_Count - 1
-
-                        cursor.execute("UPDATE dll_device_events SET device_count=%s WHERE event_local_uid=%s", (str(_NewEventDevice_Count), str(_EventID_Focus),))
-
-                        return reply('success', 200, "Event Removed", _TheEventsObject)
-                    
-                    else:
-                        return reply("error", 400, "Event Is Not Attached", "")
-
-                else:
-                    return reply('error', 400, "Device Not Found", "")
+        rules = [r for r in rules if r != _EventID_Focus]
+        dbconnect = db_pool.connect()
+        try:
+            with dbconnect:
+                with dbconnect.cursor() as cursor:
+                    _save_rules(_cassandra_session, _cassandra_session.prepare(_SET_RULES),
+                                cursor, _Device_Focus, rules)
+                    _add_to_device_count(cursor, _EventID_Focus, -1)
+        finally:
+            dbconnect.close()
+        return reply('success', 200, "Event Removed", rules)
 
     except Exception as error:
+        logging.exception('devices: removing rule %s from %s failed', event_uid, device_id)
         return reply('error', 500, str(error), "")
 
 
 @devices_bp.route("/devices/<string:device_imei>/events", methods=["GET"])
 def GetDevice_Events(device_imei):
-
+    """The rules attached to a unit, by name. A rule that has since been
+    deleted is left out (it used to fail the whole request)."""
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
-        _FocusedDevice_ID = str(device_imei)
+        _cassandra_session = get_cassandra_session()
+        if not _cassandra_session:
+            return reply('error', 503, STORE_UNAVAILABLE, '')
+        rules = _registered_rules(_cassandra_session, _cassandra_session.prepare(_RULES_OF), str(device_imei))
+        if rules is None:
+            return reply("error", 400, "Device Not Found", "")
+        if not rules:
+            return reply("error", 400, "No Events Attached", "")
 
-        with dbconnect:
-            with dbconnect.cursor() as cursor:
-                cursor.execute("SELECT events_attached FROM dll_device_basic_data WHERE device_imei=%s", (str(_FocusedDevice_ID),))
+        dbconnect = db_pool.connect()
+        try:
+            with dbconnect:
+                with dbconnect.cursor() as cursor:
+                    cursor.execute("SELECT event_local_uid, event_display_name FROM dll_device_events "
+                                   "WHERE event_local_uid = ANY(%s)", (rules,))
+                    names = {str(uid): name for uid, name in cursor.fetchall()}
+        finally:
+            dbconnect.close()
 
-                if(cursor.rowcount == 1):
-
-                    _dataTunnelLink = cursor.fetchone()
-                    _deviceEventsList = json.loads(_dataTunnelLink[0])
-                    _AttachedEvents = []
-
-                    if(len(_deviceEventsList) > 0):
-
-                        for EventFound in _deviceEventsList:
-
-                            cursor.execute("SELECT event_display_name FROM dll_device_events WHERE event_local_uid=%s", (str(EventFound),))
-                            _dataTunnelRoute = cursor.fetchone()
-                            _EventName = _dataTunnelRoute[0]
-                            _SingleEvent = {
-                                "event_name": _EventName,
-                                "event_id": EventFound
-                            }
-                            _AttachedEvents.append(_SingleEvent)
-
-                        _AttachedEvents = resource_policy().apply('event_rule', _AttachedEvents, 'event_id')
-                        if not _AttachedEvents:
-                            return reply("error", 400, "No Events Attached", "")
-                        return reply("success", 200, "Found Events", _AttachedEvents)
-                    
-                    elif(len(_deviceEventsList) == 0):
-                        return reply("error", 400, "No Events Attached", "")
-                    
-                elif(cursor.rowcount == 0):
-                    return reply("error", 400, "Device Not Found", "")
+        _AttachedEvents = [{"event_name": names[uid], "event_id": uid} for uid in rules if uid in names]
+        _AttachedEvents = resource_policy().apply('event_rule', _AttachedEvents, 'event_id')
+        if not _AttachedEvents:
+            return reply("error", 400, "No Events Attached", "")
+        return reply("success", 200, "Found Events", _AttachedEvents)
 
     except Exception as error:
+        logging.exception('devices: listing rules of %s failed', device_imei)
         return reply("error", 500, str(error), "")
 
 
@@ -1617,7 +1600,7 @@ def sync_client_devices():
     """
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
 
     try:
         rows = _cassandra_session.execute(

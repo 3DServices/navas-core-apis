@@ -578,6 +578,57 @@ def retire_answer(cur, who, answer_uid, reason):
     return get_answer(cur, answer_uid)
 
 
+def delete_answer(cur, who, answer_uid):
+    """Delete a draft for good. Anything that was ever submitted is retired
+    instead, so its approval history stays."""
+    current = get_answer(cur, answer_uid, lock=True)
+    if current['status'] != 'draft' or current['submitted_at']:
+        raise RuleError('Only an unsubmitted draft can be deleted. Retire it '
+                        'instead; that keeps its history.', 409)
+    if current['authored_by'] != who['account_uid'] and not who['is_admin']:
+        raise RuleError('Only the author can delete a draft.', 403)
+    cur.execute("DELETE FROM dll_waswa_answers WHERE answer_uid = %s",
+                (answer_uid,))
+    # The flag this draft was answering goes back to the queue, unless
+    # another correction is still working on it.
+    if current['source_feedback_uid']:
+        cur.execute("UPDATE dll_waswa_feedback SET status = 'open', "
+                    "updated_at = NOW() WHERE feedback_uid = %s "
+                    "AND status = 'in_review' AND NOT EXISTS ("
+                    "  SELECT 1 FROM dll_waswa_answers "
+                    "  WHERE source_feedback_uid = %s "
+                    "    AND status IN ('draft', 'pending'))",
+                    (current['source_feedback_uid'],
+                     current['source_feedback_uid']))
+    log(cur, who, 'knowledge_change', 'correction_deleted',
+        f'Deleted draft: {current["question"][:200]}',
+        {'answer_uid': answer_uid},
+        message_uid=current['source_message_uid'])
+    return {'answer_uid': answer_uid, 'question': current['question'],
+            'deleted': True}
+
+
+def set_conversation_archived(cur, who, conversation_uid, archived, reason=None):
+    """Hide a conversation from the console list, or bring it back. Nothing
+    is removed: its messages, evidence and flags stay."""
+    cur.execute("SELECT status FROM dll_waswa_conversations "
+                "WHERE conversation_uid = %s FOR UPDATE", (conversation_uid,))
+    row = cur.fetchone() if cur.rowcount else None
+    if not row:
+        raise RuleError('No such conversation.', 404)
+    if archived and not _clean(reason):
+        raise RuleError('Say why it is being archived.')
+    status = 'archived' if archived else 'open'
+    if row[0] != status:
+        cur.execute("UPDATE dll_waswa_conversations SET status = %s "
+                    "WHERE conversation_uid = %s", (status, conversation_uid))
+        log(cur, who, 'knowledge_change',
+            'conversation_archived' if archived else 'conversation_restored',
+            _clean(reason) or 'Restored to the conversation list',
+            {'previous_status': row[0]}, conversation_uid=conversation_uid)
+    return {'conversation_uid': conversation_uid, 'status': status}
+
+
 def confirm_answer(cur, who, answer_uid, review_due=None, note=None):
     """Recheck done: the approved correction is still right."""
     current = get_answer(cur, answer_uid, lock=True)

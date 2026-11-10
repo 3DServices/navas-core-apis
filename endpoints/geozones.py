@@ -10,16 +10,25 @@ from flask import current_app
 import base64
 from decimal import Decimal
 from .globals import reply
+from .globals import require_auth, log_audit_event
+from flask import g
+import logging
+import psycopg2.errors
 import base64
 import uuid
 import re
 from . import geozone_shapes
+from .owner_root import client_root
 from .resources import resource_policy
 
 
 geozones_bp = Blueprint('GeoZones', __name__)
 
 _HEX_COLOR = re.compile(r'^#[0-9A-Fa-f]{6}$')
+
+# What a geofence is for (migration 048). Entering a restricted one is a
+# critical alert (alert_severity.py).
+GEOZONE_CATEGORIES = ('general', 'depot', 'customer', 'restricted')
 
 
 def _color(value):
@@ -41,6 +50,8 @@ def _shape_fields(columns, row):
     fields = {
         "geozone_shape": record.get('geozone_shape') or 'polygon',
         "geozone_shape_params": params,
+        # Before migration 048 every zone reads as general.
+        "geozone_category": record.get('geozone_category') or 'general',
     }
     if record.get('geozone_color'):
         fields["geozone_color"] = record['geozone_color']
@@ -111,6 +122,11 @@ def CreateGezone():
 
         with _dbconnect:
             with _dbconnect.cursor() as cursor:
+                # Filed under the client (account_root): the zone lists, the
+                # fleet summary and the alert engine all read by client, so a
+                # zone saved under one login's account_uid was invisible.
+                _GeoZoneOwner = client_root(cursor, _GeoZoneOwner)
+
                 # Scoped to the owner: two clients may each have a "main
                 # depot", and a clash across clients used to tell one of
                 # them that the other had a zone by that name.
@@ -181,6 +197,53 @@ def UpdateGeozone(geozone_id):
     except Exception as error:
         return _shape_error_reply(error)
     
+
+@geozones_bp.route("/geozones/<string:geozone_id>/category", methods=["PUT"])
+@require_auth
+def set_geozone_category(geozone_id):
+    """Set what a geofence is for: general, depot, customer or restricted.
+
+    Body: { "data": { "geozone_category": "restricted" } }
+    Kept apart from /update, which needs the name, description and shape
+    resent. Needs migration 048; before it, answers 503 rather than failing.
+    """
+    payload = request.get_json(silent=True) or {}
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    category = str(data.get("geozone_category") or data.get("category") or "").strip().lower()
+    if category not in GEOZONE_CATEGORIES:
+        return reply("error", 400, "geozone_category must be one of: "
+                     + ", ".join(GEOZONE_CATEGORIES) + ".", "")
+
+    try:
+        connection = psycopg2.connect(current_app.config['db_link'])
+        try:
+            with connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE dll_geozones SET geozone_category = %s "
+                        "WHERE geozone_uid = %s RETURNING geozone_name",
+                        (category, str(geozone_id)))
+                    row = cursor.fetchone()
+        finally:
+            connection.close()
+    except psycopg2.errors.UndefinedColumn:
+        return reply("error", 503,
+                     "Geofence categories are not enabled on this server yet", "")
+    except Exception as error:
+        logging.getLogger("geozones").exception(
+            "set_geozone_category failed: %s", error)
+        return reply("error", 500, "Could not change the geofence category", "")
+
+    if row is None:
+        return reply("error", 404, "Geozone Not Found", "")
+
+    log_audit_event(g.current_user["account_uid"], "UPDATE",
+                    f"geozone {geozone_id} category {category}", "CLIENT",
+                    tenant_id=g.current_user.get("account_root"),
+                    ip_address=request.remote_addr)
+    return reply("success", 200, "Geofence category updated",
+                 {"geozone_uid": str(geozone_id), "geozone_category": category})
+
 
 @geozones_bp.route("/geozones/<string:owner_uid>/list/<string:access_level>/load", methods=["GET"])
 def GetGeoZone(owner_uid, access_level):

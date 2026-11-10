@@ -15,6 +15,7 @@ from decimal import Decimal
 from .globals import (reply, require_permission, require_permission_or_self,
                       require_auth, log_audit_event)
 import uuid
+from . import profile_rules
 import requests
 from .jwt_utils import create_access_token, create_refresh_token
 from config import JWT_REFRESH_EXPIRY_DAYS
@@ -889,38 +890,89 @@ def _can_edit_profile(caller, user_uid):
 @users_bp.route("/users/<user_uid>/profile", methods=["PUT"])
 @require_auth
 def update_profile(user_uid):
-    """Update editable profile fields for a user. Currently: date_of_birth.
+    """Update editable profile fields: display_name, email, date_of_birth.
 
-    Regular users may only edit their own profile.
-    Body: { "data": { "date_of_birth": "YYYY-MM-DD" | "" } }
+    Regular users may only edit their own profile. Only the fields in the
+    body change (profile_rules.py). Changing your own email needs your
+    current password, as the email is where password resets go; the username
+    is not editable, as it is what the account signs in with.
+
+    Body: { "data": { "display_name": "Jane Achieng",
+                      "email": "jane@example.com",
+                      "current_password": "...",   # with a new email, for self
+                      "date_of_birth": "YYYY-MM-DD" | "" } }
+    Returns the saved value of each field that was sent.
     """
     try:
-        if not _can_edit_profile(g.current_user, user_uid):
+        caller = g.current_user
+        if not _can_edit_profile(caller, user_uid):
             return reply('error', 403, 'You can only edit your own profile', '')
 
-        payload = request.get_json() or {}
+        payload = request.get_json(silent=True) or {}
         data = payload.get('data', {}) if isinstance(payload, dict) else {}
-        raw_dob = str(data.get('date_of_birth', '')).strip()
+        try:
+            changes = profile_rules.changes_from(data)
+        except profile_rules.ProfileError as error:
+            return reply('error', 400, str(error), '')
 
-        dob_value = None
-        if raw_dob:
-            try:
-                dob_value = datetime.datetime.strptime(raw_dob, "%Y-%m-%d").date()
-            except ValueError:
-                return reply('error', 400, 'date_of_birth must be YYYY-MM-DD', '')
-
+        is_self = str(user_uid) == caller.get('account_uid')
         dbconnect = psycopg2.connect(current_app.config["db_link"])
-        with dbconnect:
-            with dbconnect.cursor() as cursor:
-                cursor.execute(
-                    "UPDATE dll_access_relay SET date_of_birth=%s WHERE account_uid=%s",
-                    (dob_value, str(user_uid),)
-                )
-                if cursor.rowcount == 0:
-                    return reply('error', 404, 'User not found', '')
+        try:
+            with dbconnect:
+                with dbconnect.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT email, log_password, display_name, date_of_birth "
+                        "FROM dll_access_relay WHERE account_uid=%s", (str(user_uid),))
+                    row = cursor.fetchone()
+                    if row is None:
+                        return reply('error', 404, 'User not found', '')
+                    saved = dict(zip(profile_rules.COLUMNS, (row[2], row[0], row[3])))
+                    stored_hash = row[1]
+
+                    if changes.get('email') == str(row[0] or '').strip().lower():
+                        del changes['email']  # unchanged: no password needed
+                    if 'email' in changes:
+                        if is_self:
+                            password = str(data.get('current_password') or '')
+                            if not password:
+                                return reply('error', 400, 'Enter your current password '
+                                             'to change your email.', '')
+                            if not stored_hash or not str(stored_hash).startswith('$2') \
+                                    or not bcrypt.checkpw(password.encode(),
+                                                          str(stored_hash).encode()):
+                                return reply('error', 400,
+                                             'Your current password is not right.', '')
+                        cursor.execute(
+                            "SELECT 1 FROM dll_access_relay WHERE LOWER(email)=%s "
+                            "AND account_uid<>%s AND access_status='active' LIMIT 1",
+                            (changes['email'], str(user_uid)))
+                        if cursor.fetchone():
+                            return reply('error', 409, 'Another account already '
+                                         'uses that email address.', '')
+
+                    if changes:
+                        # Column names come from profile_rules.COLUMNS, never
+                        # from the body.
+                        assignments = ", ".join(
+                            "%s=%%s" % column for column in changes
+                            if column in profile_rules.COLUMNS)
+                        cursor.execute(
+                            "UPDATE dll_access_relay SET " + assignments
+                            + " WHERE account_uid=%s",
+                            (*changes.values(), str(user_uid)))
+                        saved.update(changes)
+        finally:
+            dbconnect.close()
+
+        if 'email' in changes:
+            log_audit_event(caller['account_uid'], 'UPDATE',
+                            f'user {user_uid} email', 'RBAC',
+                            tenant_id=caller.get('account_root'),
+                            ip_address=request.remote_addr)
+
         return reply('success', 200, 'Profile updated', {
-            "date_of_birth": raw_dob
-        })
+            field: '' if saved[field] is None else str(saved[field])
+            for field in profile_rules.COLUMNS if field in data})
 
     except Exception as error:
         logging.getLogger('users').exception('update_profile failed: %s', error)

@@ -1,3 +1,4 @@
+from .globals import STORE_UNAVAILABLE
 from flask import Flask
 from flask import Blueprint
 from flask import request
@@ -45,41 +46,19 @@ from config import (
     CASSANDRA_LOCAL_DC,
 )
 
-_cassandra_cluster = None
-_cassandra_session = None
+# B9: one Cassandra session per PROCESS, not one per module. This module
+# used to define its own get_cassandra_session() over its own globals and
+# its own Cluster(); six identical copies meant a worker could hold six
+# pools to the same database, each paying its own 6-7s handshake. The
+# name is re-exported so this module's callers and importers are unchanged.
+from .cassandra_store import get_cassandra_session
 
-def get_cassandra_session():
-    global _cassandra_cluster, _cassandra_session
-    if _cassandra_session and not _cassandra_session.is_shutdown:
-        return _cassandra_session
-    try:
-        auth_provider = PlainTextAuthProvider(
-            username=CASSANDRA_USERNAME,
-            password=CASSANDRA_PASSWORD
-        )
-        profile = ExecutionProfile(
-            load_balancing_policy=TokenAwarePolicy(DCAwareRoundRobinPolicy(local_dc=CASSANDRA_LOCAL_DC)),
-            consistency_level=ConsistencyLevel.ONE
-        )
-        _cassandra_cluster = Cluster(
-            contact_points=CASSANDRA_CONTACT_POINTS,
-            port=CASSANDRA_PORT,
-            auth_provider=auth_provider,
-            protocol_version=4,
-            execution_profiles={EXEC_PROFILE_DEFAULT: profile}
-        )
-        _cassandra_session = _cassandra_cluster.connect(CASSANDRA_KEYSPACE)
-        print("Successfully connected to Cassandra cluster")
-        return _cassandra_session
-    except Exception as e:
-        print(f"Error connecting to Cassandra: {e}")
-        return None
 
 @device_config.route("/configurations/new", methods=["POST"])
 def new_configs():
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     dbconnect = psycopg2.connect(current_app.config["db_link"])
 
     payload_data = request.get_json()
@@ -431,7 +410,7 @@ def SubscriptionInitialize(ImeiNumber, TokenSubscriptionIdg):
 def create_new_device_configuration():
     cassandra = get_cassandra_session()
     if not cassandra:
-        return reply("error", 500, "Failed to connect to Cassandra", "")
+        return reply("error", 503, STORE_UNAVAILABLE, "")
 
     try:
         _ensure_cassandra_keyspace(cassandra)
@@ -609,7 +588,7 @@ def create_new_device_configuration():
 def update_configs():
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
     dbconnect = psycopg2.connect(current_app.config["db_link"])
 
     payload_data = request.get_json()
@@ -743,7 +722,7 @@ def update_configs():
 def get_config(device_imei, parameter_load, parameter_type):
     _cassandra_session = get_cassandra_session()
     if not _cassandra_session:
-        return reply('error', 500, 'Failed to connect to Cassandra', '')
+        return reply('error', 503, STORE_UNAVAILABLE, '')
 
     try:
         select_config_query = _cassandra_session.prepare(

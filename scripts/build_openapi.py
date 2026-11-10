@@ -285,18 +285,33 @@ add("/team/audit", "get", T, "Sign-ins and team changes",
 
 # ── Alerts ───────────────────────────────────────────────────────────────────
 A = "Alerts"
-add("/alerts/run", "post", A, "Run one geofence sweep",
-    "Internal (X-Service-Key) or a staff login. live=false is a dry run.",
+add("/alerts/run", "post", A, "Run one alert sweep",
+    "Internal (X-Service-Key) or a staff login. Checks speed_threshold, "
+    "ignition_change, device_offline and geofence_breach rules; low_battery "
+    "rules are counted under rules_not_checked. live=false is a dry run.",
     req=body({"live": S["bool"]}, example={"live": True}),
     security=[{"bearerAuth": []}, {"serviceKey": []}],
-    responses=ok(example={"rules": 12, "units_checked": 240,
-                          "units_skipped_no_position": 3, "units_skipped_stale": 5,
-                          "units_skipped_unchanged": 180, "first_seen": 0,
-                          "alerts": 2, "live": True, "errors": []}))
+    responses=ok(example={"rules": 14, "rules_by_condition": {
+                              "geofence_breach": 8, "speed_threshold": 4,
+                              "device_offline": 2},
+                          "rules_not_checked": {"low_battery": "1 rule(s): battery "
+                              "readings from the trackers do not reach the server"},
+                          "units_checked": 240, "units_no_new_positions": 31,
+                          "units_without_ignition_input": 0, "first_seen": 0,
+                          "alerts": 3, "alerts_by_condition": {
+                              "speed_threshold": 2, "geofence_breach": 1},
+                          "live": True, "errors": []}))
 add("/alerts/health", "get", A, "What the alert engine knows",
     "Staff only (alarms.view or devices.view).",
-    responses=ok(example={"geofence_rules": 12, "tracked_unit_zones": 480,
-                          "last_sweep": "2026-09-22 14:03:11", "alerts_last_24h": 7}))
+    responses=ok(example={"rules_by_condition": {"geofence_breach": 8,
+                                                 "speed_threshold": 4},
+                          "rules_not_checked": {"low_battery": 1, "invalid_value": 0,
+                                                "unknown_condition": 0},
+                          "geofence_rules": 8, "tracked_unit_zones": 480,
+                          "tracked_units": 230, "migration_054_applied": True,
+                          "last_sweep": "2026-10-29 14:03:11",
+                          "alerts_last_24h": {"speed_threshold": 5,
+                                              "geofence_breach": 2}}))
 
 # ── Geofences (changed) ──────────────────────────────────────────────────────
 G = "Geofences"
@@ -348,6 +363,23 @@ add("/data-stream/trips/history", "post", P, "Trip history for a unit",
 add("/data-stream/trips/history/replay", "post", P, "Positions for playback",
     "Same fields. Page with offset_log; records come back newest first.",
     req=body(PLAYBACK, required=["device_imei", "from_date", "to_date"], example=EX))
+add("/data-stream/trips/engine-time", "post", P, "Engine-on time at stops",
+    "For each span (a stop the app's trip history found, local times), how "
+    "long the ignition was on, from the unit's ignition_detection input. "
+    "engine_on_seconds is null when no fix in the span had a reading. "
+    "ignition is 'not_configured' when the unit has no ignition input. At "
+    "most 50 spans, within 3 days.",
+    req=body({"device_imei": S["str"],
+              "spans": {"type": "array", "items": {
+                  "type": "object",
+                  "properties": {"from": S["str"], "to": S["str"]}}}},
+             required=["device_imei", "spans"],
+             example={"device_imei": "354002396040196", "spans": [
+                 {"from": "2026-10-30 00:00:00", "to": "2026-10-30 12:19:00"},
+                 {"from": "2026-10-30 15:50:00", "to": "2026-10-30 22:01:00"}]}),
+    responses=ok(example={"ignition": "configured", "spans": [
+        {"from": "2026-10-30 00:00:00", "to": "2026-10-30 12:19:00",
+         "engine_on_seconds": 56, "readings": 41}]}))
 
 # ── Profile (changed) ────────────────────────────────────────────────────────
 add("/rbac/users/{user_uid}/permissions", "get", "Profile",

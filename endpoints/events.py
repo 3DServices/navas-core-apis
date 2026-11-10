@@ -1,7 +1,12 @@
 from flask import Flask
 from flask import Blueprint
 from flask import request
+from flask import g
+import logging
 import psycopg2
+import psycopg2.errors
+from . import db_pool
+from .owner_root import client_root
 from flask import json
 from flask import jsonify
 import datetime
@@ -12,6 +17,10 @@ from decimal import Decimal
 from .globals import reply
 import base64
 from .globals import check_device
+from .globals import require_auth, log_audit_event
+from .globals import require_service_or_staff, require_signed_in
+from .alert_severity import severity_of
+from .notification_window import BadSince, window as notification_window
 import uuid
 
 device_eventsbp = Blueprint("Device Events", __name__)
@@ -33,13 +42,21 @@ device_eventsbp = Blueprint("Device Events", __name__)
 #     alert_channels     TEXT,
 #     owner_uid          VARCHAR(64) NOT NULL,
 #     is_read            BOOLEAN DEFAULT FALSE,
-#     date_triggered     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+#     date_triggered     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+#     acknowledged_at    TIMESTAMP,       -- migration 047
+#     acknowledged_by    VARCHAR(64),     -- migration 047
+#     acknowledge_note   TEXT             -- migration 047
 # );
+# The list also returns a severity (critical / warning / info), worked out
+# from the row by alert_severity.severity_of -- it is not a column.
 # CREATE INDEX idx_notif_owner ON dll_event_notifications(owner_uid);
 # CREATE INDEX idx_notif_event ON dll_event_notifications(event_uid);
 
 
 @device_eventsbp.route("/notifications/log", methods=["POST"])
+# Machine-to-machine (access_guard.INTERNAL_RULES): anyone else could write
+# alerts into a customer's feed.
+@require_service_or_staff
 def log_notification():
     """Log a triggered event notification."""
     try:
@@ -65,6 +82,10 @@ def log_notification():
         dbconnect = psycopg2.connect(current_app.config['db_link'])
         cur = dbconnect.cursor()
 
+        # Filed under the client the console and the app read, whichever of
+        # its logins the caller named (usually the rule owner's account_uid).
+        owner_uid = client_root(cur, owner_uid)
+
         cur.execute("""
             INSERT INTO dll_event_notifications
                 (notification_uid, event_uid, event_name, device_imei, device_name,
@@ -87,23 +108,52 @@ def log_notification():
 
 
 @device_eventsbp.route("/notifications/<owner_uid>/list", methods=["GET"])
+@require_signed_in
 def get_notifications(owner_uid):
-    """Fetch notification history for an owner, most recent first."""
+    """Fetch notification history for an owner, most recent first.
+
+    ?since=YYYY-MM-DD (or a date and time) returns every alert from then on,
+    up to notification_window.SINCE_CAP, instead of the latest 200; see
+    notification_window.py. X-Truncated: true says the cap was hit.
+    """
+    try:
+        since, limit = notification_window(request.args.get("since"))
+    except BadSince:
+        return reply("error", 400,
+                     "since must be a date (YYYY-MM-DD) or a date and time "
+                     "(YYYY-MM-DD HH:MM:SS)", "")
     try:
         dbconnect = psycopg2.connect(current_app.config['db_link'])
         cur = dbconnect.cursor()
 
+        # The acknowledgement columns are read through to_jsonb so the list
+        # keeps working on a database that has not run migration 047 yet:
+        # a missing key reads as NULL where a missing column would fail.
         cur.execute("""
             SELECT notification_uid, event_uid, event_name, device_imei, device_name,
                    "condition", trigger_value, geozone_name, breach_type, alert_channels,
-                   is_read, date_triggered
-            FROM dll_event_notifications
+                   is_read, date_triggered,
+                   to_jsonb(n) ->> 'acknowledged_at',
+                   to_jsonb(n) ->> 'acknowledged_by',
+                   to_jsonb(n) ->> 'acknowledge_note'
+            FROM dll_event_notifications n
             WHERE owner_uid = %s
+              AND (%s::timestamp IS NULL OR date_triggered >= %s::timestamp)
             ORDER BY date_triggered DESC
-            LIMIT 200
-        """, (owner_uid,))
+            LIMIT %s
+        """, (owner_uid, since, since, limit))
 
         rows = cur.fetchall()
+
+        # Geofence categories (migration 048), for the severity of crossings.
+        # Read through to_jsonb like the acknowledgement columns, so a
+        # database without them reads every zone as general.
+        cur.execute("""
+            SELECT LOWER(geozone_name), to_jsonb(z) ->> 'geozone_category'
+            FROM dll_geozones z
+            WHERE geozone_owner = %s
+        """, (owner_uid,))
+        zone_categories = {name: category for name, category in cur.fetchall()}
         cur.close()
         dbconnect.close()
 
@@ -122,15 +172,26 @@ def get_notifications(owner_uid):
                 "alert_channels": row[9],
                 "is_read": row[10],
                 "date_triggered": row[11].strftime("%Y-%m-%d %H:%M:%S") if row[11] else "",
+                "acknowledged_at": _json_stamp(row[12]),
+                "acknowledged_by": row[13] or "",
+                "acknowledge_note": row[14] or "",
+                # Worked out here, not stored: see alert_severity.py.
+                "severity": severity_of(
+                    row[2], row[5], row[6], row[8],
+                    zone_categories.get((row[7] or "").strip().lower(), "")),
             })
 
-        return reply("success", 200, "Notifications loaded", notifications)
+        response, status = reply("success", 200, "Notifications loaded", notifications)
+        if since is not None and len(rows) >= limit:
+            response.headers["X-Truncated"] = "true"
+        return response, status
 
     except Exception as e:
         return reply("error", 500, f"Error fetching notifications: {str(e)}", "")
 
 
 @device_eventsbp.route("/notifications/<notification_uid>/read", methods=["PUT"])
+@require_signed_in
 def mark_notification_read(notification_uid):
     """Mark a single notification as read."""
     try:
@@ -152,7 +213,79 @@ def mark_notification_read(notification_uid):
         return reply("error", 500, f"Error updating notification: {str(e)}", "")
 
 
+def _json_stamp(value):
+    """A timestamp read through to_jsonb ('2026-10-12T09:41:07.123456') in the
+    list's own format, 'YYYY-MM-DD HH:MM:SS'; '' when there is none."""
+    return str(value)[:19].replace("T", " ") if value else ""
+
+
+@device_eventsbp.route("/notifications/<notification_uid>/acknowledge", methods=["PUT"])
+@require_auth
+def acknowledge_notification(notification_uid):
+    """Acknowledge an alert: somebody has seen it and is dealing with it.
+
+    Acknowledging also marks the alert read. The first acknowledgement stands:
+    calling again changes nothing and answers with who acknowledged it and
+    when, so two people acknowledging at once cannot overwrite each other.
+
+    Body (optional): { "data": { "note": "Called the driver" } }
+    Needs migration 047; before it, answers 503 rather than failing.
+    """
+    payload = request.get_json(silent=True) or {}
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    note = str(data.get("note") or "").strip()[:500] or None
+    actor = g.current_user["account_uid"]
+
+    try:
+        dbconnect = db_pool.connect()
+        try:
+            with dbconnect:
+                with dbconnect.cursor() as cur:
+                    cur.execute("""
+                        UPDATE dll_event_notifications
+                        SET acknowledged_at = NOW(), acknowledged_by = %s,
+                            acknowledge_note = %s, is_read = TRUE
+                        WHERE notification_uid = %s AND acknowledged_at IS NULL
+                    """, (actor, note, notification_uid))
+                    newly = cur.rowcount == 1
+                    cur.execute("""
+                        SELECT acknowledged_at, acknowledged_by, acknowledge_note
+                        FROM dll_event_notifications
+                        WHERE notification_uid = %s
+                    """, (notification_uid,))
+                    row = cur.fetchone()
+        finally:
+            dbconnect.close()
+    except psycopg2.errors.UndefinedColumn:
+        return reply("error", 503,
+                     "Alert acknowledgement is not enabled on this server yet", "")
+    except Exception as error:
+        logging.getLogger("events").exception(
+            "acknowledge_notification failed: %s", error)
+        return reply("error", 500, "Could not acknowledge the alert", "")
+
+    if row is None:
+        return reply("error", 404, "Alert not found", "")
+
+    if newly:
+        log_audit_event(actor, "ACKNOWLEDGE", f"alert {notification_uid}", "ALARM",
+                        tenant_id=g.current_user.get("account_root"),
+                        ip_address=request.remote_addr,
+                        meta={"note": note} if note else None)
+
+    return reply("success", 200,
+                 "Alert acknowledged" if newly else "Alert was already acknowledged",
+                 {
+                     "notification_uid": notification_uid,
+                     "acknowledged_at": row[0].strftime("%Y-%m-%d %H:%M:%S") if row[0] else "",
+                     "acknowledged_by": row[1] or "",
+                     "acknowledge_note": row[2] or "",
+                     "already_acknowledged": not newly,
+                 })
+
+
 @device_eventsbp.route("/notifications/<owner_uid>/mark-all-read", methods=["PUT"])
+@require_signed_in
 def mark_all_notifications_read(owner_uid):
     """Mark all notifications as read for an owner."""
     try:
@@ -176,10 +309,12 @@ def mark_all_notifications_read(owner_uid):
 
 
 @device_eventsbp.route("/notifications/<owner_uid>/unread-count", methods=["GET"])
+@require_signed_in
 def get_unread_count(owner_uid):
     """Get the count of unread notifications for an owner."""
     try:
-        dbconnect = psycopg2.connect(current_app.config['db_link'])
+        # Read-only: one SELECT COUNT(*).
+        dbconnect = db_pool.connect(readonly=True)
         cur = dbconnect.cursor()
 
         cur.execute("""

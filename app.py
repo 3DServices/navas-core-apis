@@ -3,7 +3,7 @@ from endpoints import Sentinel_Fleet
 from flask_cors import CORS, cross_origin
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-from config import DB_LINK, BASE_URL, CORS_ORIGINS
+from config import DB_LINK, WASWA_DB_LINK, BASE_URL, CORS_ORIGINS
 
 app = Sentinel_Fleet()
 
@@ -90,6 +90,43 @@ def _method_not_allowed(error):
     }), 405
 
 app.config['db_link'] = DB_LINK
+app.config['waswa_db_link'] = WASWA_DB_LINK
+
+
+# Close the shared read-only connection (endpoints/globals.py) when the app
+# context ends, instead of leaving it to refcounting.
+from endpoints.globals import close_read_connection as _close_read_connection
+app.teardown_appcontext(_close_read_connection)
+
+
+# Return this request's pooled connections, however the route left them.
+# 310 call sites in endpoints/ use `with conn:` -- which commits but does NOT
+# close -- so without this hook a pooled connection is never given back and
+# the pool drains to nothing within seconds of real traffic. See
+# endpoints/db_pool.py. close() is idempotent, so routes that DO close are
+# unaffected.
+from endpoints import db_pool as _db_pool
+app.teardown_appcontext(_db_pool.release_all)
+
+
+# Build the connection pool on a background thread, and again in each forked
+# worker. A connection to this database costs ~2,027 ms (TCP 284 ms + startup
+# and auth), against 282 ms for a query on an open one, so the pool is the
+# difference between a dashboard that loads and one that times out. Opening
+# the warm set inline would stall startup for ~16 s, hence the thread -- the
+# same shape as the Cassandra warm-up below. Never raises, never blocks; until
+# it is ready, connections are direct, exactly as before.
+_db_pool.start_warmup(DB_LINK)
+
+
+# B9: connect to Cassandra on a background thread now, and again in each
+# forked worker, so the first request that needs the store does not pay the
+# 6-7s handshake (or time out and answer 503, which was observed twice).
+# Works whether gunicorn runs with preload_app on or off; see
+# endpoints/cassandra_store.py. Never raises and never blocks startup.
+from endpoints.cassandra_store import start_warmup as _start_cassandra_warmup
+_start_cassandra_warmup()
+
 app.config['base_url'] = BASE_URL
 
 
@@ -128,7 +165,8 @@ def _start_auto_renew_scheduler():
 
 
 def _start_alert_scheduler():
-    """Geofence alerts are decided on the server (endpoints/alert_engine.py).
+    """Event-rule alerts (speed, ignition, offline, geofence) are decided on
+    the server (endpoints/alert_engine.py).
     Off by default; set ALERT_ENGINE_ENABLED=true to sweep on a timer, or call
     POST /alerts/run from cron instead (better with several workers)."""
     import os
@@ -157,13 +195,20 @@ def _start_alert_scheduler():
         scheduler.add_job(_sweep, 'interval', minutes=interval,
                           id='geofence_alert_sweep', replace_existing=True)
         scheduler.start()
-        print(f"[alerts] geofence sweep started (every {interval}m)")
+        print(f"[alerts] alert sweep started (every {interval}m)")
     except Exception as error:
         print(f"[alerts] scheduler failed to start: {error}")
 
 
 _start_auto_renew_scheduler()
 _start_alert_scheduler()
+
+# Nightly daily-token-usage reading (on by default; see usage_scheduler.py).
+try:
+    from endpoints.usage_scheduler import start_nightly_snapshot
+    start_nightly_snapshot(app)
+except Exception as _usage_error:      # noqa: BLE001 — never blocks startup
+    print(f"[usage] nightly reading not scheduled: {_usage_error}")
 
 
 if __name__ == '__main__':

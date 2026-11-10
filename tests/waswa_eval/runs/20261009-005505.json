@@ -1,0 +1,393 @@
+{
+  "_what_this_is": "one run of the Waswa eval set. The ids under \"created\" are the rows this run added to your database; scripts/waswa_eval_cleanup.py removes exactly those and nothing else.",
+  "started_at": "2026-10-09T00:55:05",
+  "transport": "app.test_client()",
+  "crashed": null,
+  "rows": 8,
+  "created": {
+    "conversations": [
+      "b05fdfac-c072-4385-a3e2-7245827b621f",
+      "84fb3ed7-0a0a-4a56-9501-358bc391b4f2",
+      "71a3c2b5-195e-497a-8476-21b6d5017c9e",
+      "90aeba12-bd45-4263-bb1a-7f732bc979a4",
+      "3bc5eb9b-f644-495e-afc8-de8561facbaf",
+      "ec4c6c65-c5f5-4be1-bd5d-bbfef1a56458",
+      "0ea9bdc0-2247-4f60-ac93-5060d675f58a",
+      "18e8a091-aa7e-490e-878f-df2c16e272e1"
+    ],
+    "messages": [
+      "d8107149-2fe9-4652-b46b-c84358c0b098",
+      "5eae3b72-20d9-4478-9d48-2ab2d478cc3b",
+      "dd694067-cb1d-45ca-a108-9e0e30581929",
+      "a36fd3a7-080f-4485-a2b9-fdda2999e7cd",
+      "2d1bcf77-b09c-4e47-aae4-8ef4bf0406d5",
+      "75287ac6-81cb-4c85-9236-882bbd895604",
+      "0af6a34b-3ef9-4d25-a222-cf98355ac9af",
+      "0a46712f-fa60-4740-b360-e127c496a6cb"
+    ]
+  },
+  "results": [
+    {
+      "id": "fb-001",
+      "question": "What happens when a SIM goes offline?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 200,
+      "seconds": 28.71,
+      "answer": "I couldn't find information in the approved documents about what happens when a SIM goes offline. I can connect you with someone who can provide more details on this procedure if you need.",
+      "tools_used": [
+        "waswa_context",
+        "unit_find(all, prefetched)",
+        "knowledge_search(SIM goes offline)"
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "conversation_uid": "b05fdfac-c072-4385-a3e2-7245827b621f",
+      "message_uid": "d8107149-2fe9-4652-b46b-c84358c0b098",
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": true,
+          "detail": "tools used: waswa_context, unit_find(all, prefetched), knowledge_search(SIM goes offline)"
+        },
+        {
+          "check": "must_cite_document",
+          "result": true,
+          "detail": "document evidence: yes, authority levels: [None]"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "fb-002",
+      "question": "How are SIM bundles managed?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 200,
+      "seconds": 26.6,
+      "answer": "SIM bundles are managed through a combination of local SIMs, multi-SIM configurations, and roaming detection. The system supports automated usage alerts and AI-based billing risk detection, ensuring that SIM policies are enforced and usage is monitored effectively. This includes multi-SIM bundle rules to handle roaming and unmonitored SIM usage.\n\nSource: Sales Procedures 3DS-QMS-PR-09 ver26 (Uganda & Kenya) — this is the documented procedure; I can't confirm from here which parts are live.",
+      "tools_used": [
+        "waswa_context",
+        "knowledge_search(SIM bundles management)"
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "conversation_uid": "84fb3ed7-0a0a-4a56-9501-358bc391b4f2",
+      "message_uid": "5eae3b72-20d9-4478-9d48-2ab2d478cc3b",
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": true,
+          "detail": "tools used: waswa_context, knowledge_search(SIM bundles management)"
+        },
+        {
+          "check": "must_cite_document",
+          "result": true,
+          "detail": "document evidence: yes, authority levels: [2]"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "fb-003",
+      "question": "How are devices registered?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 200,
+      "seconds": 26.74,
+      "answer": "I couldn't find the device registration process in the approved NAVAS documents. If you need detailed guidance, I can put you in touch with someone who can help.",
+      "tools_used": [
+        "waswa_context",
+        "knowledge_search(device registration process)"
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "conversation_uid": "71a3c2b5-195e-497a-8476-21b6d5017c9e",
+      "message_uid": "dd694067-cb1d-45ca-a108-9e0e30581929",
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": true,
+          "detail": "tools used: waswa_context, knowledge_search(device registration process)"
+        },
+        {
+          "check": "must_cite_document",
+          "result": true,
+          "detail": "document evidence: yes, authority levels: [None]"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "fb-004",
+      "question": "What is IVMS?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 200,
+      "seconds": 24.83,
+      "answer": "IVMS, or In-Vehicle Monitoring System, is part of the vehicle telematics offerings. It provides core functionalities such as location tracking, trip history, and geofencing. Additionally, IVMS can be enhanced with add-ons like driver behavior monitoring (ECO) and business intelligence dashboards. \n\nSource: NAVAS CMS User Manual — this is the documented design; I can't confirm from here which parts are live.",
+      "tools_used": [
+        "waswa_context",
+        "knowledge_search(IVMS)"
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "conversation_uid": "90aeba12-bd45-4263-bb1a-7f732bc979a4",
+      "message_uid": "a36fd3a7-080f-4485-a2b9-fdda2999e7cd",
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": true,
+          "detail": "tools used: waswa_context, knowledge_search(IVMS)"
+        },
+        {
+          "check": "must_cite_document",
+          "result": true,
+          "detail": "document evidence: yes, authority levels: [2]"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "fb-005",
+      "question": "How do tracking tokens work?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 200,
+      "seconds": 25.51,
+      "answer": "Tracking tokens in the NAVAS ecosystem are used to bill for GPS tracking based on time. Customers pay for tracking by the hour, day, or month, ensuring they only incur costs when assets are actively being tracked. This model supports the ability to pause and resume tracking as needed, allowing for flexible billing aligned with asset usage.\n\nSource: NAVAS Token Billing Strategy — this is the documented design; I can't confirm from here which parts are live.",
+      "tools_used": [
+        "waswa_context",
+        "knowledge_search(tracking tokens)"
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "conversation_uid": "3bc5eb9b-f644-495e-afc8-de8561facbaf",
+      "message_uid": "2d1bcf77-b09c-4e47-aae4-8ef4bf0406d5",
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": true,
+          "detail": "tools used: waswa_context, knowledge_search(tracking tokens)"
+        },
+        {
+          "check": "must_cite_document",
+          "result": true,
+          "detail": "document evidence: yes, authority levels: [4]"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "fb-006",
+      "question": "What is VEBA escrow?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "1a1db65e-52d5-493b-a1a9-7e495005530a",
+      "http_status": 200,
+      "seconds": 26.09,
+      "answer": "VEBA escrow holds a renter's payment in tokens when they book an asset, and releases it to the owner only once telematics proves the asset was used as agreed — engine hours, geofence-confirmed possession, duration, and usage class.\n\nA booking moves through reserved, active, and released states. It can also become disputed, refunded, or partially adjusted when the usage doesn't match the booking.\n\nSource: NAVAS Ecosystem Vision Scope Document — this is the documented design; I can't confirm from here which parts are live.",
+      "tools_used": [
+        "waswa_context",
+        "knowledge_search(VEBA escrow)"
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "conversation_uid": "ec4c6c65-c5f5-4be1-bd5d-bbfef1a56458",
+      "message_uid": "75287ac6-81cb-4c85-9236-882bbd895604",
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": true,
+          "detail": "tools used: waswa_context, knowledge_search(VEBA escrow)"
+        },
+        {
+          "check": "must_cite_document",
+          "result": true,
+          "detail": "document evidence: yes, authority levels: [4]"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "fb-007",
+      "question": "what is veba?",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": null,
+      "asked_as": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+      "http_status": 200,
+      "seconds": 24.76,
+      "answer": "VEBA is a system within the NAVAS platform that introduces marketplace behaviors such as asset listings, booking approvals, conflict alerts, and payments. It supports booking idle assets, real-time availability, and allows owners to approve or reject bookings. VEBA also manages usage history for scheduling maintenance and includes features like passenger booking flow, driver fatigue alert handling, and commission processing. It requires KYC verification, token deduction audits, and specific rules for handling payment disputes.",
+      "tools_used": [
+        "waswa_context",
+        "knowledge_search(VEBA)"
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "conversation_uid": "0ea9bdc0-2247-4f60-ac93-5060d675f58a",
+      "message_uid": "0af6a34b-3ef9-4d25-a222-cf98355ac9af",
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": true,
+          "detail": "tools used: waswa_context, knowledge_search(VEBA)"
+        },
+        {
+          "check": "must_cite_document",
+          "result": true,
+          "detail": "document evidence: yes, authority levels: [3]"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    },
+    {
+      "id": "fb-010",
+      "question": "how do I created a new geofence",
+      "shape": "document",
+      "guard": "fix",
+      "blocked_on": "oliwa-ui-corpus",
+      "asked_as": "f8e17a96-b5b1-483b-938d-7cf4673692f6",
+      "http_status": 200,
+      "seconds": 26.68,
+      "answer": "I couldn't find specific instructions on creating a new geofence in the NAVAS system. However, it seems that geofences are typically uploaded and configured by a team that includes sales, pre-sales, and the NAVAS/Wialon team.\n\nFor detailed steps or assistance, I recommend reaching out to the technical support team who can guide you through the process or handle the setup for you.",
+      "tools_used": [
+        "waswa_context",
+        "unit_find(all, prefetched)",
+        "knowledge_search(create a new geofence)"
+      ],
+      "intent": null,
+      "router_tier": 3,
+      "prompt_version": 9,
+      "conversation_uid": "18e8a091-aa7e-490e-878f-df2c16e272e1",
+      "message_uid": "0a46712f-fa60-4740-b360-e127c496a6cb",
+      "checks": [
+        {
+          "check": "must_call:knowledge_search",
+          "result": true,
+          "detail": "tools used: waswa_context, unit_find(all, prefetched), knowledge_search(create a new geofence)"
+        },
+        {
+          "check": "must_cite_document",
+          "result": true,
+          "detail": "document evidence: yes, authority levels: [2]"
+        },
+        {
+          "check": "must_not_refuse",
+          "result": true,
+          "detail": "no refusal wording"
+        },
+        {
+          "check": "must_not_contain_price",
+          "result": true,
+          "detail": "no currency in the answer"
+        }
+      ],
+      "not_scored": [],
+      "passed": true,
+      "undecided": 0
+    }
+  ]
+}

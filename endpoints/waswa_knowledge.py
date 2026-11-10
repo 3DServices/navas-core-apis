@@ -79,7 +79,7 @@ _FIELDS = (
 
 
 def _connect():
-    return psycopg2.connect(current_app.config['db_link'])
+    return psycopg2.connect(current_app.config.get('waswa_db_link') or current_app.config['db_link'])
 
 
 _FIELD_COUNT = 15       # _FIELDS above; the score is appended after them
@@ -145,6 +145,20 @@ def _search(cur, query, filters, limit, include_unapproved,
     if filters.get('document_type'):
         where.append("c.document_type = %(document_type)s")
         params['document_type'] = filters['document_type']
+    if filters.get('app_guide'):
+        # The guide's newest version of each article, and the version it
+        # replaces: while a new version awaits review the old one is still
+        # the live one, and the article must not vanish from search for that
+        # window. vw_waswa_retrievable drops whichever of the two is not live.
+        where.append(
+            "c.source_uid IN ("
+            " SELECT g.source_uid FROM dll_waswa_app_guide g"
+            "  WHERE g.app = %(app_guide)s"
+            " UNION"
+            " SELECT s.replaces_source_uid FROM dll_waswa_app_guide g"
+            "  JOIN dll_waswa_sources s ON s.source_uid = g.source_uid"
+            "  WHERE g.app = %(app_guide)s AND s.replaces_source_uid IS NOT NULL)")
+        params['app_guide'] = filters['app_guide']
     if filters.get('max_authority_level'):
         where.append("c.authority_level <= %(max_authority_level)s")
         params['max_authority_level'] = filters['max_authority_level']
@@ -223,8 +237,14 @@ def _corpus_state(cur, audience='everyone'):
 
 
 def knowledge_search(query, product=None, document_type=None, limit=None,
-                     include_unapproved=False, audience='everyone'):
-    """Search approved company documents for text answering a question."""
+                     include_unapproved=False, audience='everyone',
+                     app_guide=None):
+    """Search approved company documents for text answering a question.
+
+    app_guide narrows the search to one app's synced guide (see
+    waswa_app_guide). It is how app_guide_search is built, not a filter the
+    model is told about.
+    """
     query = (query or '').strip()
     if not query:
         return {'found': False, 'reason': 'no query given', 'results': []}
@@ -234,7 +254,8 @@ def knowledge_search(query, product=None, document_type=None, limit=None,
     try:
         conn.autocommit = True
         with conn.cursor() as cur:
-            filters = {'document_type': document_type}
+            filters = {'document_type': document_type,
+                       'app_guide': app_guide}
             notes = []
 
             if product:
@@ -253,6 +274,35 @@ def knowledge_search(query, product=None, document_type=None, limit=None,
 
             rows, how = _search(cur, query, filters, limit, include_unapproved,
                                 audience)
+
+            # The model chooses document_type itself, and guesses: "what
+            # happens when a SIM goes offline?" was searched as a "procedure"
+            # when the only document covering it is a specification, and the
+            # filter turned an answerable question into "not covered". A wrong
+            # guess at the type must not hide the answer, so widen once -- and
+            # say so, as for an unknown product.
+            if not rows and filters.get('document_type'):
+                widened = dict(filters, document_type=None)
+                rows, how = _search(cur, query, widened, limit,
+                                    include_unapproved, audience)
+                if rows:
+                    notes.append(
+                        f"nothing of type '{document_type}' matched, so these "
+                        f"results come from other document types")
+
+            # Same failure, product side: "ivms" with product="Ivms" found
+            # nothing, because none of the 49 approved chunks about iVMS is
+            # tagged with a product_uid -- the manual covers products without
+            # being filed under one. Narrowing to a product must not hide the
+            # documents that describe it, so widen once here too.
+            if not rows and filters.get('product_uid'):
+                widened = dict(filters, product_uid=None, document_type=None)
+                rows, how = _search(cur, query, widened, limit,
+                                    include_unapproved, audience)
+                if rows:
+                    notes.append(
+                        f"no document is filed under '{product}', so these "
+                        f"results are passages that mention it")
 
             if not rows:
                 total, approved, visible = _corpus_state(cur, audience)
@@ -448,6 +498,34 @@ TOOL_SPECS = [
     {
         'type': 'function',
         'function': {
+            'name': 'app_guide_search',
+            'description': (
+                'Step-by-step instructions for doing something in the OLIWA '
+                'mobile app: which screen, which button, what to enter, what '
+                'happens next. Use this FIRST for any "how do I ...", "where '
+                'is ...", "why can\'t I ..." question about using the app. '
+                'It searches only the app guide, which is kept in step with '
+                'the app itself. Returns found: false when the guide does not '
+                'cover it.'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'query': {
+                        'type': 'string',
+                        'description': (
+                            'What the person wants to do, in the words the '
+                            'app uses, e.g. "add a vehicle", "top up tokens", '
+                            '"export a trip report".')},
+                    'limit': {'type': 'integer',
+                              'description': 'Results to return, 1-8. Default 4.'},
+                },
+                'required': ['query'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
             'name': 'knowledge_sources',
             'description': (
                 'List the approved documents available to search, with their '
@@ -464,9 +542,176 @@ TOOL_SPECS = [
     },
 ]
 
+APP_GUIDE_APP = 'oliwa-mobile'
+
+
+# Where a question's words are found in an app-guide article, and what each
+# place is worth. One article is one task, so what names the task counts most:
+#   title + "Also asked as" phrasings   1.0  ("Create a geofence", "add a geofence")
+#   rest of the opening (summary)       0.5
+#   section headings                    0.25
+#   body                                0.1
+# Each distinct question word counts once per place -- coverage, not
+# frequency. ts_rank counted repeats, so an article whose title and three
+# phrasings all say "vehicle" beat the one whose phrasing was the question.
+# A title or phrasing that contains the question as a phrase adds 1.0.
+_ARTICLE_PLACE_WEIGHTS = (('lead', 1.0), ('opening_vec', 0.5),
+                          ('heading_vec', 0.25), ('body_vec', 0.1))
+_ARTICLE_MAX_CHARS = 6000
+_ARTICLE_DEFAULT_LIMIT = 3
+
+
+def _article_search(cur, query, app, limit, audience):
+    """Rank whole app-guide articles, not chunks.
+
+    Chunk ranking failed these articles in a specific way: the words that say
+    WHICH task an article is about sit in its title and opening, while its
+    steps sit in another chunk, and proximity scoring inside the long steps
+    chunk drowned them -- "create a new geofence" ranked the Edit article,
+    whose body happens to contain that phrase, above the Create article. An
+    article is short and is one task, so it is ranked as one document and
+    returned whole, which also gives the model every step, in order.
+
+    A match needs at least half of the question's distinctive terms (two,
+    for questions of two or more) somewhere in the article. One shared word
+    is not enough: "fix my car engine" matched "Track a vehicle live" on
+    "car" alone.
+    """
+    terms = _terms(query)
+    if terms:
+        # Words PostgreSQL ignores ("now", "where") can never match, so they
+        # must not count toward the words a match needs: "where is my vehicle
+        # now" needed two of {vehicle, now} and could only ever find one.
+        cur.execute("SELECT t FROM unnest(%s::text[]) AS t "
+                    "WHERE plainto_tsquery('english', t)::text <> ''", (terms,))
+        searchable = {r[0] for r in cur.fetchall()}
+        terms = [t for t in terms if t in searchable]
+    if not terms:
+        return []
+    or_terms = ' | '.join(
+        re.sub(r"[^A-Za-z0-9]", ' ', t).strip().replace(' ', '') or 'x'
+        for t in terms)
+    need = min(len(terms), max(2, (len(terms) + 1) // 2))
+    term_hits = ' + '.join(
+        f"(a.doc @@ plainto_tsquery('english', %(t{i})s))::int"
+        for i in range(len(terms)))
+    coverage = ' + '.join(
+        f"{weight} * (a.{place} @@ plainto_tsquery('english', %(t{i})s))::int"
+        for place, weight in _ARTICLE_PLACE_WEIGHTS
+        for i in range(len(terms)))
+    params = {'app': app, 'audiences': _audiences(audience), 'q': or_terms,
+              'phrase': query, 'need': need, 'limit': limit}
+    params.update({f't{i}': t for i, t in enumerate(terms)})
+    cur.execute(f"""
+        WITH chunks AS (
+            SELECT c.* FROM vw_waswa_retrievable c
+            WHERE c.review_status = 'approved'
+              AND c.audience = ANY(%(audiences)s)
+              AND c.source_uid IN (
+                  SELECT g.source_uid FROM dll_waswa_app_guide g
+                   WHERE g.app = %(app)s
+                  UNION
+                  SELECT s.replaces_source_uid FROM dll_waswa_app_guide g
+                    JOIN dll_waswa_sources s ON s.source_uid = g.source_uid
+                   WHERE g.app = %(app)s AND s.replaces_source_uid IS NOT NULL)
+        ), articles AS (
+            SELECT source_uid, source_title, authority_level, authority_label,
+                   document_type, version_label, document_date, category,
+                   review_status,
+                   string_agg(body, E'\n\n' ORDER BY ordinal) AS body,
+                   string_agg(coalesce(heading_path, ''), ' ' ORDER BY ordinal)
+                       AS headings,
+                   max(body) FILTER (WHERE ordinal = 1) AS opening
+            FROM chunks
+            GROUP BY source_uid, source_title, authority_level,
+                     authority_label, document_type, version_label,
+                     document_date, category, review_status
+        ), a AS (
+            SELECT articles.*,
+                   to_tsvector('english', source_title || ' ' ||
+                       coalesce(substring(opening
+                                from 'Also asked as: ([^\\n]*)'), '')) AS lead,
+                   to_tsvector('english', coalesce(opening, '')) AS opening_vec,
+                   to_tsvector('english', headings) AS heading_vec,
+                   to_tsvector('english', body) AS body_vec,
+                   to_tsvector('english', source_title || ' ' ||
+                       coalesce(opening, '') || ' ' || headings || ' ' || body)
+                       AS doc
+            FROM articles
+        )
+        SELECT a.source_uid, a.source_title, a.authority_level,
+               a.authority_label, a.document_type, a.version_label,
+               a.document_date, a.category, a.review_status, a.body,
+               ({coverage})
+               + (a.lead @@ phraseto_tsquery('english', %(phrase)s))::int
+               + 0.01 * ts_rank(a.doc, to_tsquery('english', %(q)s)) AS score
+        FROM a
+        WHERE ({term_hits}) >= %(need)s
+        ORDER BY score DESC
+        LIMIT %(limit)s""", params)
+    return cur.fetchall() if cur.rowcount > 0 else []
+
+
+def app_guide_search(query, limit=None, audience='everyone'):
+    """Search the OLIWA mobile app's own guide, and nothing else.
+
+    Separate from knowledge_search on purpose. Asked how to do something in
+    the app, a general search ranks the CMS manual -- 54 passages on
+    geofences, all of them about a different application -- above anything
+    about the app, and the model then presents CMS steps as app steps. This
+    tool cannot return them. It returns whole articles; see _article_search.
+    """
+    query = (query or '').strip()
+    if not query:
+        return {'found': False, 'reason': 'no query given', 'results': []}
+    limit = max(1, min(int(limit or _ARTICLE_DEFAULT_LIMIT), _MAX_LIMIT))
+    conn = _connect()
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            rows = _article_search(cur, query, APP_GUIDE_APP, limit, audience)
+    finally:
+        conn.close()
+    if not rows:
+        return {'found': False, 'results': [], 'notes': [], 'reason': (
+            'The OLIWA mobile app guide does not cover this. Do not answer '
+            'with steps from another application (such as the NAVAS CMS) as '
+            'if they were app steps; say the app guide does not cover it and '
+            'offer who can help.')}
+    results = []
+    for (source_uid, title, level, label, doc_type, version, doc_date,
+         category, review, body, score) in rows:
+        text = body if len(body) <= _ARTICLE_MAX_CHARS else (
+            body[:_ARTICLE_MAX_CHARS] + '\n[...]')
+        results.append({
+            'chunk_uid': f'{source_uid}-article',
+            'heading': title,
+            'text': text,
+            'source': title,
+            'source_ref': ' '.join(filter(None, (title, version))),
+            'document_type': doc_type,
+            'pages': None,
+            'authority_level': level,
+            'authority': label,
+            'document_date': str(doc_date) if doc_date else None,
+            'product_uid': None,
+            'category': category,
+            'review_status': review,
+            'score': round(float(score), 4),
+        })
+    notes = ['each result is a whole app guide article: give its steps in '
+             'order, with the app\'s own labels']
+    if len(results) > 1 and results[1]['score'] >= 0.8 * results[0]['score']:
+        notes.append('more than one article matches closely; if the question '
+                     'could mean either task, ask which one they mean')
+    return {'found': True, 'matched_on': 'article', 'count': len(results),
+            'results': results, 'notes': notes}
+
+
 _DISPATCH = {
     'knowledge_search': knowledge_search,
     'knowledge_sources': knowledge_sources,
+    'app_guide_search': app_guide_search,
 }
 
 

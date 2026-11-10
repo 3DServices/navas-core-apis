@@ -1,0 +1,51 @@
+imei,billing,day,verdict,basis,fixes,travelled_km,speed_claims_km,ratio,median_gap_s,coverage,note
+353691849593826,running,21-12-2025,SILENT,last-seen-only,0,,,,,,last fix 21-12-2025 (290 days ago)
+860922040855599,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+860922040927190,running,07-10-2026,REPORTING,last-seen-only,0,,,,,,last fix 07-10-2026 (0 days ago)
+860922040928156,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+860922040944427,running,06-10-2026,REPORTING,last-seen-only,0,,,,,,last fix 06-10-2026 (1 days ago)
+862095054500944,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+862846042581515,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+862846042584741,running,24-07-2026,SILENT,last-seen-only,0,,,,,,last fix 24-07-2026 (75 days ago)
+862846042584758,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+862846042584766,running,,READ FAILED,last-seen-only,0,,,,,,errors={'165.232.128.208:9042': 'Client request timeout. See Session.e
+862846042584774,running,,READ FAILED,last-seen-only,0,,,,,,"('Unable to complete the operation against any hosts', {<Host: 165.232"
+862846042584808,running,03-12-2025,SILENT,last-seen-only,0,,,,,,last fix 03-12-2025 (308 days ago)
+862846042585268,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+862846042585284,running,14-08-2025,SILENT,last-seen-only,0,,,,,,last fix 14-08-2025 (419 days ago)
+862846042585318,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+862846042590755,running,10-08-2026,SILENT,last-seen-only,0,,,,,,last fix 10-08-2026 (58 days ago)
+862846042590839,running,20-08-2026,SILENT,last-seen-only,0,,,,,,last fix 20-08-2026 (48 days ago)
+862846042590904,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+862846042591118,running,05-08-2026,SILENT,last-seen-only,0,,,,,,last fix 05-08-2026 (63 days ago)
+862846042591605,running,14-08-2026,SILENT,last-seen-only,0,,,,,,last fix 14-08-2026 (54 days ago)
+862846042591639,running,25-09-2026,REPORTING,last-seen-only,0,,,,,,last fix 25-09-2026 (12 days ago)
+862846042591712,running,05-08-2026,SILENT,last-seen-only,0,,,,,,last fix 05-08-2026 (63 days ago)
+862846042591720,running,27-07-2026,SILENT,last-seen-only,0,,,,,,last fix 27-07-2026 (72 days ago)
+862846042591811,running,09-09-2026,SILENT,last-seen-only,0,,,,,,last fix 09-09-2026 (28 days ago)
+862846042591852,running,06-01-2026,SILENT,last-seen-only,0,,,,,,last fix 06-01-2026 (274 days ago)
+862846042591860,running,04-01-2026,SILENT,last-seen-only,0,,,,,,last fix 04-01-2026 (276 days ago)
+862846042591878,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+862846042591894,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+862846042592926,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+862846042592934,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+862846042592942,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+862846042592959,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+862846042592975,running,02-10-2026,REPORTING,last-seen-only,0,,,,,,last fix 02-10-2026 (5 days ago)
+862846042593007,running,18-03-2026,SILENT,last-seen-only,0,,,,,,last fix 18-03-2026 (203 days ago)
+862846042593031,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+862846042593049,running,09-09-2026,SILENT,last-seen-only,0,,,,,,last fix 09-09-2026 (28 days ago)
+862846042593064,running,29-07-2026,SILENT,last-seen-only,0,,,,,,last fix 29-07-2026 (70 days ago)
+862846042593148,running,09-09-2026,SILENT,last-seen-only,0,,,,,,last fix 09-09-2026 (28 days ago)
+862846042593163,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+862846042593213,running,07-10-2026,REPORTING,last-seen-only,0,,,,,,last fix 07-10-2026 (0 days ago)
+862846042593221,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+862846042620180,running,24-06-2026,SILENT,last-seen-only,0,,,,,,last fix 24-06-2026 (105 days ago)
+862846042620255,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+862846042620826,running,27-10-2025,SILENT,last-seen-only,0,,,,,,last fix 27-10-2025 (345 days ago)
+862846042620909,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+862846042620933,running,09-09-2026,SILENT,last-seen-only,0,,,,,,last fix 09-09-2026 (28 days ago)
+862846042620974,running,06-08-2026,SILENT,last-seen-only,0,,,,,,last fix 06-08-2026 (62 days ago)
+862846042621188,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all
+862846042621261,running,23-06-2026,SILENT,last-seen-only,0,,,,,,last fix 23-06-2026 (106 days ago)
+862846042621626,running,,NEVER SEEN,last-seen-only,0,,,,,,no fix in the store at all

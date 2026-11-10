@@ -40,6 +40,7 @@ import re
 import json
 
 import psycopg2
+from . import db_pool
 from flask import request, g, current_app
 
 from .globals import (
@@ -94,7 +95,11 @@ INTERNAL_RULES = frozenset({
     '/devices/sync-client-devices',
     '/subscriptions/auto-renew/run',
     '/alerts/run',
+    '/tokens/usage/snapshot/run',
 })
+
+# The Waswa data API (waswa_data_api.PREFIX): authenticated by its own token.
+DATA_API_PREFIX = '/waswa/data'
 
 # Never available to customer logins.
 STAFF_ONLY_PREFIXES = (
@@ -109,6 +114,7 @@ STAFF_ONLY_PREFIXES = (
     '/billing/revenue/',
     '/billing/subscriptions/',
     '/resources/admin/',
+    '/referrals/admin/',
 )
 STAFF_ONLY_RULES = frozenset({
     # whole-platform numbers (the per-client versions stay available)
@@ -131,7 +137,10 @@ STAFF_ONLY_RULES = frozenset({
     '/configurations/new',
     '/gateways/mobile-money/update',
     '/tokens/subscriptions/update',
-    '/subscriptions/token/<token_billing_uid>/devices',
+    # /subscriptions/token/<token_billing_uid>/devices used to be listed here,
+    # which made the app's per-token usage screen fail for every customer.
+    # It is open to customers now, for their own tokens only: _TOKEN below
+    # checks the token's client against the caller's account.
     '/finance/subscriptions/devices/<device_imei>/period/<renewal_period>/account/<account_uid_renewing>/renew',
 }) | INTERNAL_RULES
 
@@ -188,6 +197,8 @@ _NOTIFICATION = ('dll_event_notifications', 'notification_uid', 'owner_uid')
 _REPORT = ('dll_reports_downloadable_files', 'request_uid', 'report_caller')
 _PAYMENT = ('dll_payment_logs', 'payment_uid', 'payment_account')
 _PAUSE_RULE = ('dll_pause_rules', 'id', 'owner_uid')
+# A token pack belongs to the client that bought it.
+_TOKEN = ('dll_user_token_accounts', 'token_billing_uid', 'client_uid')
 
 
 def _object_kind(rule, param):
@@ -205,6 +216,8 @@ def _object_kind(rule, param):
         return _PAYMENT
     if param == 'rule_id' and rule.startswith('/pause/'):
         return _PAUSE_RULE
+    if param == 'token_billing_uid':
+        return _TOKEN
     return None
 
 
@@ -233,7 +246,7 @@ class _Scope:
     # database
     def conn(self):
         if self._conn is None:
-            self._conn = psycopg2.connect(current_app.config['db_link'])
+            self._conn = db_pool.connect()
         return self._conn
 
     def close(self):
@@ -462,6 +475,13 @@ def access_guard():
         return None
     rule = _norm(request.url_rule.rule)
     if rule in PUBLIC_RULES:
+        return None
+
+    # The Waswa data API takes no user token and no service key: only its own
+    # short-lived data token, which its blueprint verifies on every request,
+    # always enforced whatever AUTH_GATE_MODE says. Running the user checks
+    # here as well would only log every agent call as unauthenticated.
+    if rule.startswith(DATA_API_PREFIX + '/'):
         return None
 
     key = _service_key()
