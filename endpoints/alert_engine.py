@@ -13,6 +13,9 @@ Conditions checked: speed_threshold, ignition_change, device_offline and
 geofence_breach. low_battery rules are counted but not checked — battery
 readings from the trackers do not reach the server (alert_conditions.UNSUPPORTED).
 
+Each sweep also sends driver permit reminders (permit_reminders.py) — built
+in for every client, no rule needed.
+
 Where the facts come from
 -------------------------
 Positions are read from Cassandra (location_store), from where this unit was
@@ -496,6 +499,28 @@ def sweep_unit(cur, session, unit, unit_rules, zones, now_local, live, summary,
         save_cursor(cur, imei, cursor)
 
 
+def _permit_reminders(connection, cur, live, summary):
+    """Driver permit reminders (permit_reminders.py), counted in the summary
+    like any other alert. A failure is reported, not raised."""
+    from . import permit_reminders
+    try:
+        if not permit_reminders.tables_ready(cur):
+            summary['errors'].append(
+                'migration 056 has not been applied (dll_driver_permit_reminders)')
+            connection.rollback()
+            return
+        result = permit_reminders.send_reminders(cur, _now_local().date(), live=live)
+        connection.commit()
+    except Exception as error:          # noqa: BLE001
+        connection.rollback()
+        summary['errors'].append(f'permit reminders: {error}')
+        return
+    summary['permit_reminders'] = result
+    if result['sent']:
+        _count(summary, 'alerts_by_condition', permit_reminders.CONDITION, result['sent'])
+        summary['alerts'] += result['sent']
+
+
 def run_alert_sweep(live=True):
     """Check every unit attached to a rule once.
 
@@ -514,6 +539,10 @@ def run_alert_sweep(live=True):
     connection = psycopg2.connect(current_app.config['db_link'])
     try:
         with connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Driver permits first, in their own transaction: they need no
+            # rules or units, so the early returns below must not skip them.
+            _permit_reminders(connection, cur, live, summary)
+
             if not _tables_ready(cur):
                 summary['errors'].append(
                     'migration 054 has not been applied (dll_alert_rule_state)')
