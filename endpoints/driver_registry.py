@@ -11,6 +11,8 @@ again against the unit register.
   POST /drivers/registry                      {data:{...}} register a driver
   GET  /drivers/registry/<driver_uid>         one driver
   PUT  /drivers/registry/<driver_uid>         {data:{...}} edit (fields sent)
+  DELETE /drivers/registry/<driver_uid>       only a driver with no history;
+                                              409 otherwise (deactivate)
   PUT  /drivers/registry/<driver_uid>/status  {data:{status, reason}}
   POST /drivers/registry/<driver_uid>/assign  {data:{device_imei}}
   POST /drivers/registry/<driver_uid>/unassign
@@ -92,10 +94,16 @@ def _body():
 
 
 def _driver(cursor, client, driver_uid, lock=False):
-    """One of the client's drivers, with their current unit, or None."""
+    """One of the client's drivers, with their current unit and whether they
+    can be deleted (no history), or None."""
     cursor.execute(
         f"""SELECT d.{_COLUMNS.replace(', ', ', d.')},
-                   a.device_imei AS current_imei, a.assigned_at
+                   a.device_imei AS current_imei, a.assigned_at,
+                   NOT EXISTS (SELECT 1 FROM dll_driver_assignments h
+                                WHERE h.driver_uid = d.driver_uid)
+                   AND NOT EXISTS (SELECT 1 FROM dll_fuel_issues f
+                                    WHERE f.driver_uid = d.driver_uid)
+                   AS deletable
               FROM dll_drivers d
               LEFT JOIN dll_driver_assignments a
                 ON a.driver_uid = d.driver_uid AND a.ended_at IS NULL
@@ -276,6 +284,54 @@ def change_status(driver_uid):
     except Exception:                   # noqa: BLE001
         log.exception('driver status failed')
         return reply('error', 500, "Could not change the driver's status.", '')
+
+
+@driver_registry_bp.route('/drivers/registry/<driver_uid>', methods=['DELETE'])
+@require_auth
+def delete_driver(driver_uid):
+    """Only a driver with no history (driver_rules.deletion_refusal); anyone
+    else answers 409 and is deactivated instead."""
+    try:
+        with _cursor() as cur:
+            client = _client(cur)
+            if not client:
+                return reply('error', 403, _NO_CLIENT, '')
+            # The lock holds back an assignment or fuel issue for this driver
+            # until the delete is done; theirs then fails its foreign key.
+            row = _driver(cur, client, driver_uid, lock=True)
+            if not row:
+                return reply('error', 404, _NOT_FOUND, '')
+            cur.execute(
+                """SELECT (SELECT COUNT(*) FROM dll_driver_assignments
+                            WHERE driver_uid = %s) AS assignments,
+                          (SELECT COUNT(*) FROM dll_fuel_issues
+                            WHERE driver_uid = %s) AS fuel_issues""",
+                (driver_uid, driver_uid))
+            held = cur.fetchone()
+            refusal = rules.deletion_refusal(held['assignments'], held['fuel_issues'])
+            if refusal:
+                return reply('error', 409, refusal,
+                             {'assignments': held['assignments'],
+                              'fuel_issues': held['fuel_issues']})
+            cur.execute(
+                "DELETE FROM dll_drivers WHERE driver_uid = %s AND client_uid = %s",
+                (driver_uid, client))
+        if row['photo_file']:
+            try:
+                os.remove(os.path.join(PHOTO_DIR, os.path.basename(row['photo_file'])))
+            except OSError:
+                pass
+        _audit('DRIVER_DELETE', driver_uid, client,
+               {'full_name': row['full_name'], 'phone': row['phone'],
+                'permit_number': row['permit_number']})
+        return reply('success', 200, 'Driver deleted', {'driver_uid': driver_uid})
+    except psycopg2.errors.ForeignKeyViolation:
+        return reply('error', 409,
+                     'This driver was just given a vehicle or fuel. '
+                     'Deactivate them instead.', '')
+    except Exception:                   # noqa: BLE001
+        log.exception('driver delete failed')
+        return reply('error', 500, 'Could not delete the driver.', '')
 
 
 # ── assignment ───────────────────────────────────────────────────────────────
