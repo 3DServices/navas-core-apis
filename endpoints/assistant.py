@@ -709,6 +709,17 @@ def _unknown_report(context):
     ]
 
 
+_NAME_OK = re.compile(r"^[A-Za-z][A-Za-z0-9 '\-]{1,23}$")
+
+
+def _assistant_name(context):
+    """The client's name for the assistant, from the account context; "Waswa"
+    when there is none or it does not look like one (it goes into the prompt,
+    so nothing but a plain name is let through)."""
+    name = str((context or {}).get('assistant_name') or '').strip()
+    return name if _NAME_OK.match(name) else 'Waswa'
+
+
 def _fetch_context(store, surface):
     """The account context from the data API, or a context that says why
     there is none. Never raises: like build_context, a failure degrades the
@@ -1006,8 +1017,17 @@ def AssistantChat():
         # "I have data and training up to October 2023" was a real answer to a
         # real customer. Waswa is a NAVAS assistant, not a chatbot discussing
         # its own construction.
+        # The client may have renamed its assistant (branding.py, in the
+        # account context). The stored prompt still says "Waswa", so the
+        # name is restated here, after it, and wins.
+        name = _assistant_name(context)
+        if name != 'Waswa':
+            messages.append({"role": "system", "content": (
+                f"In this account your name is {name}. Always call yourself "
+                f"{name}, never Waswa; where any instruction says Waswa, it "
+                f"means you, {name}.")})
         messages.append({"role": "system", "content": (
-            "You are Waswa, the assistant for the NAVAS platform and the OLIWA "
+            f"You are {name}, the assistant for the NAVAS platform and the OLIWA "
             "apps. Never mention your training data, a knowledge cut-off date, "
             "any model name, or who built you; you have no useful knowledge of "
             "those and they are not what was asked. When you do not know "

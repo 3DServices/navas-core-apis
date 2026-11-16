@@ -12,8 +12,9 @@ A fuel issue
               when it has one)
   Optional    driver_uid (when left out, fuel_registry uses whoever was
               assigned to the vehicle at issued_at, if anyone), full_tank,
-              odometer_km, receipt_number, notes (the receipt photo is
-              uploaded separately)
+              odometer_km, receipt_number, voucher_number (the fuel
+              voucher the driver handed over, migration 057), notes (the
+              receipt photo is uploaded separately)
   total_cost  litres x unit_price, worked out here -- UGX, whole shillings
 
 The checks (assess)
@@ -290,6 +291,12 @@ def validate_issue(data, now, profile_fuel=None):
     else:
         clean['receipt_number'] = receipt or None
 
+    voucher = _text(data.get('voucher_number')).upper()
+    if len(voucher) > RECEIPT_MAX:
+        errors['voucher_number'] = f'At most {RECEIPT_MAX} characters.'
+    else:
+        clean['voucher_number'] = voucher or None
+
     notes = str(data.get('notes') or '').strip()
     if len(notes) > NOTES_MAX:
         errors['notes'] = f'At most {NOTES_MAX} characters.'
@@ -523,6 +530,7 @@ def public_issue(row):
         'odometer_km': _float(row.get('odometer_km')),
         'station_name': row.get('station_name'),
         'receipt_number': row.get('receipt_number'),
+        'voucher_number': row.get('voucher_number'),
         'payment_method': row.get('payment_method'),
         'notes': row.get('notes'),
         'has_receipt': bool(row.get('receipt_file')),
@@ -637,6 +645,8 @@ RECEIPT_MAX_BYTES = 5 * 1024 * 1024
 DUPLICATE_FIELDS = {
     'uq_fuel_receipt': ('receipt_number',
                         'This receipt number is already recorded.'),
+    'uq_fuel_voucher': ('voucher_number',
+                        'This voucher number is already recorded.'),
 }
 
 

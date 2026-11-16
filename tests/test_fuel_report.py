@@ -23,7 +23,7 @@ def issue(**over):
         'driver_name': 'Okello John', 'issued_at': '2026-10-28T09:05:00',
         'fuel_type': 'diesel', 'litres': 40.0, 'unit_price': 5150.0,
         'total_cost': 206000.0, 'full_tank': True, 'station_name': 'Shell Jinja Road',
-        'receipt_number': 'R-1', 'payment_method': 'fuel_card',
+        'receipt_number': 'R-1', 'voucher_number': 'V-77', 'payment_method': 'fuel_card',
         'km_since_full': 320.0, 'litres_since_full': 40.0, 'km_per_l': 8.0,
         'flags': [{'code': 'not_stopped', 'kind': 'discrepancy', 'message': 'x'},
                   {'code': 'no_profile', 'kind': 'notice', 'message': 'y'}],
@@ -55,7 +55,7 @@ class Issuance(unittest.TestCase):
             'driver': 'Okello John', 'fuel_type': 'Diesel', 'litres': '40',
             'unit_price': '5,150', 'total_cost': '206,000',
             'payment_method': 'Fuel card', 'receipt_number': 'R-1',
-            'station_name': 'Shell Jinja Road', 'full_tank': 'Yes',
+            'voucher_number': 'V-77', 'station_name': 'Shell Jinja Road', 'full_tank': 'Yes',
             'review': 'Needs review',
         })
 
