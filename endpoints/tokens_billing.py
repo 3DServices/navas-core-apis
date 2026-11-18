@@ -82,6 +82,14 @@ def _fetch_product(cursor, product_uid):
     }
 
 
+def _optional_text(value):
+    """Strip an optional text field; None when absent or blank."""
+    if value is None:
+        return None
+    value = str(value).strip()
+    return value or None
+
+
 def _compose_token_name(product_name, token_name):
     """Prefix the entered token name with the product name in caps, e.g. ('oliwa', 'LITE') -> 'OLIWA_LITE'.
     Idempotent: avoids double-prefixing if the name already carries the prefix."""
@@ -108,6 +116,8 @@ def CreateToken():
     _BillingConditions    = data.get('billing_conditions', [])
     _BillingScope         = data.get('billing_scope', 'asset')
     _TokenCurrency        = str(data.get('token_currency', '')).strip().upper()
+    _TokenSku             = _optional_text(data.get('token_sku'))
+    _TokenDescription     = _optional_text(data.get('token_description'))
     _TokenID              = str(uuid.uuid4())
     _CreatedAt            = datetime.now(timezone).strftime("%d-%m-%Y %I:%M:%S%p")
 
@@ -151,12 +161,12 @@ def CreateToken():
                 "INSERT INTO dll_tokens_registry "
                 "(token_id, token_name, token_type, token_product_uid, token_parameters, "
                 " billing_unit, billing_trigger, billing_conditions, billing_scope, "
-                " token_amount, token_currency, date_created) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                " token_amount, token_currency, token_sku, token_description, date_created) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (_TokenID, _TokenName, _TokenType, str(_Token_Product),
                  json.dumps(_TokenParameters), _BillingUnit, _BillingTrigger,
                  json.dumps(_BillingConditions), _BillingScope,
-                 _TokenAmount, _TokenCurrency, _CreatedAt)
+                 _TokenAmount, _TokenCurrency, _TokenSku, _TokenDescription, _CreatedAt)
             )
             dbconnect.commit()
             return response_out("success", "Token created successfully", 201, {"token_id": _TokenID, "token_name": _TokenName})
@@ -164,16 +174,24 @@ def CreateToken():
 
 @_token_billing.route("/tokens", methods=["GET"])
 def ListTokens():
-
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    # Read-only: one SELECT. The product comes from a join instead of one
+    # _fetch_product round trip per token, which against the remote database
+    # cost ~0.3 s each (125 tokens -> ~40 s, long enough for clients to give up).
+    dbconnect = db_pool.connect(readonly=True)
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
             cursor.execute(
-                "SELECT token_id, token_name, token_type, token_parameters, date_created, "
-                "token_product_uid, billing_unit, billing_trigger, billing_conditions, billing_scope, "
-                "token_amount, token_currency "
-                "FROM dll_tokens_registry ORDER BY id DESC"
+                "SELECT t.token_id, t.token_name, t.token_type, t.token_parameters, t.date_created, "
+                "t.token_product_uid, t.billing_unit, t.billing_trigger, t.billing_conditions, t.billing_scope, "
+                "t.token_amount, t.token_currency, t.token_sku, t.token_description, "
+                "p.product_uid, p.product_name "
+                "FROM dll_tokens_registry t "
+                "LEFT JOIN LATERAL ("
+                "  SELECT product_uid, product_name FROM abi_products_manager "
+                "  WHERE product_uid = t.token_product_uid LIMIT 1"
+                ") p ON TRUE "
+                "ORDER BY t.id DESC"
             )
 
             if cursor.rowcount == 0:
@@ -183,7 +201,9 @@ def ListTokens():
             _tokensBusket = []
             for token in tokens:
                 _product_uid = token[5]
-                product = _fetch_product(cursor, _product_uid)
+                # Same shape _fetch_product returns: dict, or None when missing.
+                product = ({"product_uid": token[14], "product_name": token[15]}
+                           if token[14] is not None else None)
                 _tokensBusket.append({
                     "token_id": token[0],
                     "token_name": token[1],
@@ -197,6 +217,8 @@ def ListTokens():
                     "billing_scope": token[9],
                     "token_amount": float(token[10]) if token[10] is not None else None,
                     "token_currency": token[11],
+                    "token_sku": token[12],
+                    "token_description": token[13],
                     "product": product
                 })
             return response_out("success", "Tokens retrieved successfully", 200, _tokensBusket)
@@ -208,14 +230,14 @@ def ListTokensByProduct(product_uid):
     if not product_uid or str(product_uid).strip() == "":
         return response_out("error", "product_uid is required", 400, [])
 
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect(readonly=True)  # read-only: SELECTs only
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
             cursor.execute(
                 "SELECT token_id, token_name, token_type, token_parameters, date_created, "
                 "token_product_uid, billing_unit, billing_trigger, billing_conditions, billing_scope, "
-                "token_amount, token_currency "
+                "token_amount, token_currency, token_sku, token_description "
                 "FROM dll_tokens_registry WHERE token_product_uid = %s ORDER BY id DESC",
                 (str(product_uid).strip(),)
             )
@@ -240,6 +262,8 @@ def ListTokensByProduct(product_uid):
                     "billing_scope": token[9],
                     "token_amount": float(token[10]) if token[10] is not None else None,
                     "token_currency": token[11],
+                    "token_sku": token[12],
+                    "token_description": token[13],
                     "product": product
                 })
             return response_out("success", "Tokens retrieved successfully", 200, _tokensList)
@@ -249,7 +273,7 @@ def ListTokensByProduct(product_uid):
 def TokensBudgetOffer():
     """Given a currency and an amount, return the available tokens whose price
     (same currency, defined at token level) fits within that budget."""
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect(readonly=True)  # read-only: SELECTs only
     _payload = request.get_json()
     data = (_payload or {}).get('data', {})
 
@@ -277,7 +301,8 @@ def TokensBudgetOffer():
             cursor.execute(
                 "SELECT t.token_id, t.token_name, t.token_type, t.token_product_uid, "
                 "       t.billing_unit, t.billing_trigger, t.billing_scope, "
-                "       t.token_amount, t.token_currency, p.product_name "
+                "       t.token_amount, t.token_currency, p.product_name, "
+                "       t.token_sku, t.token_description "
                 "FROM dll_tokens_registry t "
                 "LEFT JOIN abi_products_manager p ON t.token_product_uid = p.product_uid "
                 "WHERE UPPER(t.token_currency) = %s "
@@ -307,6 +332,8 @@ def TokensBudgetOffer():
                     "token_amount": float(_price),
                     "token_currency": row[8],
                     "product_name": row[9],
+                    "token_sku": row[10],
+                    "token_description": row[11],
                     "max_quantity_affordable": int(_Budget // _price)
                 })
 
@@ -319,14 +346,14 @@ def TokensBudgetOffer():
 
 @_token_billing.route("/tokens/<string:token_id>", methods=["GET"])
 def GetSingleToken(token_id):
-    dbconnect = psycopg2.connect(current_app.config['db_link'])
+    dbconnect = db_pool.connect(readonly=True)  # read-only: SELECTs only
 
     with dbconnect:
         with dbconnect.cursor() as cursor:
             cursor.execute(
                 "SELECT token_id, token_name, token_type, token_parameters, date_created, "
                 "token_product_uid, billing_unit, billing_trigger, billing_conditions, billing_scope, "
-                "token_amount, token_currency "
+                "token_amount, token_currency, token_sku, token_description "
                 "FROM dll_tokens_registry WHERE token_id=%s",
                 (token_id,)
             )
@@ -351,6 +378,8 @@ def GetSingleToken(token_id):
                 "billing_scope": row[9],
                 "token_amount": float(row[10]) if row[10] is not None else None,
                 "token_currency": row[11],
+                "token_sku": row[12],
+                "token_description": row[13],
                 "product": product
             }
             return response_out("success", "Token retrieved successfully", 200, token)
@@ -388,6 +417,8 @@ def UpdateToken(token_id):
     _BillingConditions    = data.get('billing_conditions', [])
     _BillingScope         = data.get('billing_scope', 'asset')
     _TokenCurrency        = str(data.get('token_currency', '')).strip().upper()
+    _TokenSku             = _optional_text(data.get('token_sku'))
+    _TokenDescription     = _optional_text(data.get('token_description'))
 
     if _TokenType not in _VALID_TYPES:
         return response_out("error", f"Invalid token_type. Allowed: {sorted(_VALID_TYPES)}", 400, "")
@@ -413,12 +444,14 @@ def UpdateToken(token_id):
                 "UPDATE dll_tokens_registry "
                 "SET token_name=%s, token_type=%s, token_product_uid=%s, token_parameters=%s, "
                 "    billing_unit=%s, billing_trigger=%s, billing_conditions=%s, billing_scope=%s, "
-                "    token_amount=%s, token_currency=%s "
+                "    token_amount=%s, token_currency=%s, "
+                "    token_sku=COALESCE(%s, token_sku), "
+                "    token_description=COALESCE(%s, token_description) "
                 "WHERE token_id=%s",
                 (_TokenName, _TokenType, str(_Token_Product),
                  json.dumps(_TokenParameters), _BillingUnit, _BillingTrigger,
                  json.dumps(_BillingConditions), _BillingScope,
-                 _TokenAmount, _TokenCurrency, token_id)
+                 _TokenAmount, _TokenCurrency, _TokenSku, _TokenDescription, token_id)
             )
 
             if cursor.rowcount == 0:
