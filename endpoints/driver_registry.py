@@ -11,6 +11,8 @@ again against the unit register.
   POST /drivers/registry                      {data:{...}} register a driver
   GET  /drivers/registry/<driver_uid>         one driver
   PUT  /drivers/registry/<driver_uid>         {data:{...}} edit (fields sent)
+  DELETE /drivers/registry/<driver_uid>       only a driver with no history;
+                                              409 otherwise (deactivate)
   PUT  /drivers/registry/<driver_uid>/status  {data:{status, reason}}
   POST /drivers/registry/<driver_uid>/assign  {data:{device_imei}}
   POST /drivers/registry/<driver_uid>/unassign
@@ -19,6 +21,11 @@ again against the unit register.
   POST /drivers/registry/<driver_uid>/photo   multipart "photo"
   GET  /drivers/registry/<driver_uid>/photo   the photo, to signed-in users
                                               of the same client only
+  POST /data-stream/reports/drivers/<kind>/generate-data
+                                              registry, assignments,
+                                              compliance, fuel or scorecard
+                                              report rows
+                                              (driver_report.py)
 """
 
 import logging
@@ -92,10 +99,16 @@ def _body():
 
 
 def _driver(cursor, client, driver_uid, lock=False):
-    """One of the client's drivers, with their current unit, or None."""
+    """One of the client's drivers, with their current unit and whether they
+    can be deleted (no history), or None."""
     cursor.execute(
         f"""SELECT d.{_COLUMNS.replace(', ', ', d.')},
-                   a.device_imei AS current_imei, a.assigned_at
+                   a.device_imei AS current_imei, a.assigned_at,
+                   NOT EXISTS (SELECT 1 FROM dll_driver_assignments h
+                                WHERE h.driver_uid = d.driver_uid)
+                   AND NOT EXISTS (SELECT 1 FROM dll_fuel_issues f
+                                    WHERE f.driver_uid = d.driver_uid)
+                   AS deletable
               FROM dll_drivers d
               LEFT JOIN dll_driver_assignments a
                 ON a.driver_uid = d.driver_uid AND a.ended_at IS NULL
@@ -114,6 +127,20 @@ def _duplicate(error):
 def _invalid(errors):
     first = next(iter(errors.values()))
     return reply('error', 400, first, {'errors': errors})
+
+
+def _blocked_alerts(cursor, client, driver, imei, refusal):
+    """Tell the client's driver_unauthorised rules about a refused assignment
+    (alert_engine.blocked_assignment_alerts). Never fails the request: the
+    alerts are written in a savepoint, and dropped if anything goes wrong."""
+    from . import alert_engine
+    try:
+        cursor.execute('SAVEPOINT blocked_alerts')
+        alert_engine.blocked_assignment_alerts(cursor, client, driver, imei, refusal)
+        cursor.execute('RELEASE SAVEPOINT blocked_alerts')
+    except Exception:                   # noqa: BLE001
+        cursor.execute('ROLLBACK TO SAVEPOINT blocked_alerts')
+        log.exception('blocked-assignment alert failed')
 
 
 def _end_open(cursor, where, value, reason):
@@ -278,6 +305,54 @@ def change_status(driver_uid):
         return reply('error', 500, "Could not change the driver's status.", '')
 
 
+@driver_registry_bp.route('/drivers/registry/<driver_uid>', methods=['DELETE'])
+@require_auth
+def delete_driver(driver_uid):
+    """Only a driver with no history (driver_rules.deletion_refusal); anyone
+    else answers 409 and is deactivated instead."""
+    try:
+        with _cursor() as cur:
+            client = _client(cur)
+            if not client:
+                return reply('error', 403, _NO_CLIENT, '')
+            # The lock holds back an assignment or fuel issue for this driver
+            # until the delete is done; theirs then fails its foreign key.
+            row = _driver(cur, client, driver_uid, lock=True)
+            if not row:
+                return reply('error', 404, _NOT_FOUND, '')
+            cur.execute(
+                """SELECT (SELECT COUNT(*) FROM dll_driver_assignments
+                            WHERE driver_uid = %s) AS assignments,
+                          (SELECT COUNT(*) FROM dll_fuel_issues
+                            WHERE driver_uid = %s) AS fuel_issues""",
+                (driver_uid, driver_uid))
+            held = cur.fetchone()
+            refusal = rules.deletion_refusal(held['assignments'], held['fuel_issues'])
+            if refusal:
+                return reply('error', 409, refusal,
+                             {'assignments': held['assignments'],
+                              'fuel_issues': held['fuel_issues']})
+            cur.execute(
+                "DELETE FROM dll_drivers WHERE driver_uid = %s AND client_uid = %s",
+                (driver_uid, client))
+        if row['photo_file']:
+            try:
+                os.remove(os.path.join(PHOTO_DIR, os.path.basename(row['photo_file'])))
+            except OSError:
+                pass
+        _audit('DRIVER_DELETE', driver_uid, client,
+               {'full_name': row['full_name'], 'phone': row['phone'],
+                'permit_number': row['permit_number']})
+        return reply('success', 200, 'Driver deleted', {'driver_uid': driver_uid})
+    except psycopg2.errors.ForeignKeyViolation:
+        return reply('error', 409,
+                     'This driver was just given a vehicle or fuel. '
+                     'Deactivate them instead.', '')
+    except Exception:                   # noqa: BLE001
+        log.exception('driver delete failed')
+        return reply('error', 500, 'Could not delete the driver.', '')
+
+
 # ── assignment ───────────────────────────────────────────────────────────────
 
 def _unit_client(imei):
@@ -311,6 +386,7 @@ def assign(driver_uid):
             refusal = rules.assignment_refusal(
                 row['status'], row['permit_expiry'], _today())
             if refusal:
+                _blocked_alerts(cur, client, row, imei, refusal)
                 return reply('error', 400, refusal, '')
             if row['current_imei'] == imei:
                 return reply('success', 200, 'Already assigned',
@@ -476,3 +552,134 @@ def get_photo(driver_uid):
     except Exception:                   # noqa: BLE001
         log.exception('driver photo get failed')
         return reply('error', 500, 'Could not load the photo.', '')
+
+
+# ── driver reports ───────────────────────────────────────────────────────────
+
+_REPORT_MAX_DAYS = 366
+
+
+@driver_registry_bp.route('/data-stream/reports/drivers/<kind>/generate-data',
+                          methods=['POST'])
+@require_auth
+def driver_report_data(kind):
+    """The driver reports, in the shape every report route returns:
+    [{section: [row, ...]}, ...] (driver_report.py).
+
+    kind      registry | assignments | compliance | fuel
+    Body {data: {
+        report_drivers: [driver_uid, ...]   optional; all the client's drivers
+                                            when empty or left out
+        status: active|suspended|...        optional (registry, compliance)
+        start_date, end_date: DD-MM-YYYY    required for assignments and fuel
+    }}
+    Registry and compliance describe drivers as they are today."""
+    from datetime import timedelta
+    from . import driver_report, fuel_report, fuel_rules
+    from .fuel_registry import _ISSUE_SELECT, _device_names
+
+    if kind not in driver_report.KINDS:
+        return reply('error', 404, 'No such driver report.', '')
+    data = _body()
+    wanted = data.get('report_drivers') or []
+    if isinstance(wanted, str):
+        wanted = [wanted]
+    wanted = list(dict.fromkeys(str(w).strip() for w in wanted if str(w).strip()))
+    status = str(data.get('status') or '').strip().lower()
+
+    start = end = None
+    if kind in driver_report.DATED:
+        try:
+            start = datetime.strptime(str(data.get('start_date')), '%d-%m-%Y').date()
+            end = datetime.strptime(str(data.get('end_date')), '%d-%m-%Y').date()
+        except ValueError:
+            return reply('error', 400, 'Invalid date format. Use DD-MM-YYYY', '')
+        if end < start:
+            start, end = end, start
+        if (end - start).days > _REPORT_MAX_DAYS:
+            return reply('error', 400, 'Choose at most a year.', '')
+
+    try:
+        with _cursor() as cur:
+            client = _client(cur)
+            if not client:
+                return reply('error', 403, _NO_CLIENT, '')
+
+            if kind == 'scorecard':
+                # Scored by drivers.load_scorecards, ranked among the
+                # chosen drivers.
+                from .drivers import load_scorecards
+                cards, _ = load_scorecards(cur, client, start, end, wanted or None)
+                sections = driver_report.scorecard_rows(cards)
+                if not sections:
+                    return reply('error', 400, driver_report.EMPTY_MESSAGES[kind], '')
+                return reply('success', 200, 'Driver scorecard report',
+                             [{name: rows} for name, rows in sections.items()])
+
+            sql = f"""SELECT d.{_COLUMNS.replace(', ', ', d.')},
+                             a.device_imei AS current_imei, a.assigned_at
+                        FROM dll_drivers d
+                        LEFT JOIN dll_driver_assignments a
+                          ON a.driver_uid = d.driver_uid AND a.ended_at IS NULL
+                       WHERE d.client_uid = %s"""
+            args = [client]
+            if wanted:
+                sql += " AND d.driver_uid = ANY(%s)"
+                args.append(wanted)
+            if status in rules.STATUSES and kind in ('registry', 'compliance'):
+                sql += " AND d.status = %s"
+                args.append(status)
+            cur.execute(sql, args)
+            drivers = cur.fetchall()
+            uids = [d['driver_uid'] for d in drivers]
+
+            assignments, issues = [], []
+            if uids and kind in driver_report.DATED:
+                since = datetime.combine(start, datetime.min.time())
+                until = datetime.combine(end + timedelta(days=1), datetime.min.time())
+                if kind == 'assignments':
+                    # Every assignment that overlaps the period.
+                    cur.execute(
+                        """SELECT driver_uid, device_imei, assigned_at, ended_at,
+                                  end_reason
+                             FROM dll_driver_assignments
+                            WHERE client_uid = %s AND driver_uid = ANY(%s)
+                              AND assigned_at < %s
+                              AND (ended_at IS NULL OR ended_at >= %s)""",
+                        (client, uids, until, since))
+                    assignments = cur.fetchall()
+                else:
+                    cur.execute(
+                        _ISSUE_SELECT + """ WHERE f.client_uid = %s
+                                             AND f.driver_uid = ANY(%s)
+                                             AND f.voided_at IS NULL
+                                             AND f.issued_at >= %s
+                                             AND f.issued_at < %s""",
+                        (client, uids, since, until))
+                    issues = [fuel_rules.public_issue(r) for r in cur.fetchall()]
+
+        imeis = {d['current_imei'] for d in drivers if d.get('current_imei')}
+        imeis |= {a['device_imei'] for a in assignments}
+        imeis |= {i['device_imei'] for i in issues if i.get('device_imei')}
+        names = _device_names(sorted(imeis)) if imeis else {}
+
+        now = datetime.now(KAMPALA).replace(tzinfo=None)
+        today = now.date()
+        if kind == 'registry':
+            sections = driver_report.registry_rows(drivers, today, names)
+        elif kind == 'compliance':
+            sections = driver_report.compliance_rows(drivers, today, names)
+        elif kind == 'assignments':
+            sections = driver_report.assignment_rows(drivers, assignments, now, names)
+        else:
+            sections = driver_report.fuel_rows(
+                drivers, issues, names, fuel_report.FLAG_LABELS,
+                fuel_report.REVIEW_LABELS, fuel_report.PAYMENT_LABELS)
+
+        if not sections:
+            return reply('error', 400, driver_report.EMPTY_MESSAGES[kind], '')
+        return reply('success', 200, f'Driver {kind} report',
+                     [{name: rows} for name, rows in sections.items()])
+    except Exception:                   # noqa: BLE001
+        log.exception('driver report failed')
+        return reply('error', 500, 'Could not build the driver report.', '')

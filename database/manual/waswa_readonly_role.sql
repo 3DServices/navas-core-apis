@@ -79,6 +79,7 @@ GRANT SELECT ON
     abi_product_segments,
     dll_access_relay,
     dll_client_accounts,
+    dll_client_branding,        -- the assistant's name per client (migration 058)
     dll_device_subscriptions,
     dll_event_notifications,
     dll_pause_rules,

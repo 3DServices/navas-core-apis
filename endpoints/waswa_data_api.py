@@ -178,10 +178,15 @@ def context():
     # Imported here: assistant.py is the agent, and it imports the client,
     # not this module, so there is no cycle -- but keep it obviously so.
     from .assistant import _unknown_report, _zero_state_note
+    from .branding import assistant_name_for
 
     surface = str(request.args.get('surface') or 'mobile').strip().lower()[:20]
     ctx = build_context(_account_uid(), surface=surface, conn=_conn())
+    with _conn().cursor() as cur:
+        # The name the client gave its assistant (branding.py); "Waswa" if none.
+        assistant_name = assistant_name_for(cur, _account_uid())
     return reply('success', 200, 'OK', {
+        'assistant_name': assistant_name,
         'scope': _plain(ctx['scope']),
         # The raw slots, for the /assistant/context diagnostic. The agent
         # itself uses the rendered text below.

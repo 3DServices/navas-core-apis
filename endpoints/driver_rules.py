@@ -230,6 +230,70 @@ def permit_state(expiry, today):
     return 'valid'
 
 
+# ── Permit reminders (permit_reminders.py sends them) ───────────────────────
+# The client is told this many days before a permit expires, once at each
+# stage; 0 is the day it expires, or the first check after it has.
+REMINDER_DAYS = (30, 14, 7, 1, 0)
+
+# Drivers who may drive again are reminded. An inactive or blacklisted
+# driver's permit is not the client's concern.
+REMINDED_STATUSES = ('active', 'suspended')
+
+
+def reminder_stage(expiry, today):
+    """The reminder stage a permit is in today (one of REMINDER_DAYS), or None
+    while it is further off than the first one."""
+    if expiry is None:
+        return None
+    days = (expiry - today).days
+    if days < 0:
+        return 0
+    if days > REMINDER_DAYS[0]:
+        return None
+    return min(d for d in REMINDER_DAYS if days <= d)
+
+
+def reminder_due(expiry, today, sent_for, sent_stage):
+    """The stage to remind about now, or None.
+
+    sent_for, sent_stage  the expiry date and stage of the last reminder sent
+                          for this driver (None, None if never). A reminder
+                          for another expiry date was for the old permit: a
+                          renewed permit starts again.
+
+    Only the most urgent stage reached is sent: a permit first seen 5 days
+    from expiry gets the 7-day reminder, not the 30- and 14-day ones too."""
+    stage = reminder_stage(expiry, today)
+    if stage is None:
+        return None
+    if sent_for == expiry and sent_stage is not None and stage >= sent_stage:
+        return None
+    return stage
+
+
+def _day_text(d):
+    return f'{d.day} {d:%b %Y}'
+
+
+def reminder_message(full_name, expiry, today):
+    """(title, sentence) for the client's alert list."""
+    days = (expiry - today).days
+    when = _day_text(expiry)
+    if days < 0:
+        return ('Driver permit expired',
+                f"{full_name}'s driving permit expired on {when}. They cannot "
+                'be assigned a vehicle until it is renewed.')
+    if days == 0:
+        left = 'today'
+    elif days == 1:
+        left = 'tomorrow'
+    else:
+        left = f'in {days} days'
+    return ('Driver permit expiring',
+            f"{full_name}'s driving permit expires {left} ({when}). Renew it "
+            'to keep them on the road.')
+
+
 def assignment_refusal(status, permit_expiry, today):
     """Why this driver may not be put in a unit, or None when they may."""
     if status != 'active':
@@ -261,6 +325,24 @@ def ends_assignment(status):
     return status != 'active'
 
 
+def deletion_refusal(assignments, fuel_issues):
+    """Why a driver may not be deleted, or None when they may.
+
+    Only a driver with no history -- never put in a vehicle, no fuel issued
+    to them -- is deleted: one registered by mistake. Anyone else is part of
+    the record (assignment history, fuel reports), so they are deactivated
+    instead, which keeps them out of every vehicle."""
+    held = []
+    if assignments:
+        held.append('vehicle history')
+    if fuel_issues:
+        held.append('fuel issues')
+    if not held:
+        return None
+    return ('This driver has ' + ' and '.join(held) + ', so they are kept '
+            'in the record. Deactivate them instead.')
+
+
 def public(row, today):
     """A stored driver (dict of columns) as the app receives it."""
     expiry = row.get('permit_expiry')
@@ -285,6 +367,9 @@ def public(row, today):
         'current_imei': row.get('current_imei'),
         'assigned_at': row['assigned_at'].isoformat() if row.get('assigned_at') else None,
         'created_at': row['created_at'].isoformat() if row.get('created_at') else None,
+        # No history, so DELETE is allowed (deletion_refusal). Only the
+        # single-driver reads work it out; a list leaves it False.
+        'deletable': bool(row.get('deletable')),
     }
 
 

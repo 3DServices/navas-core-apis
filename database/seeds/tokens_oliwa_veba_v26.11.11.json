@@ -1,0 +1,1025 @@
+{
+  "source": "Navas_IoT_Unit_Cost_v26.06.12.xlsx — sheets NVS.TKN.v26.11.11 (Oliwa, Oliwa+) and Token_SKUs_v26.06.23 (VEBA)",
+  "tokens": [
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.T01",
+      "suffix": "T01",
+      "name": "1-Hr Spot",
+      "scenario": "Spot Checks - 1 Hour",
+      "dsl": "BILL PARAMETER(name=\"OLI_live\") BY hour",
+      "multiplier": 1.0,
+      "price_usd": 0.25,
+      "price_ugx": 913,
+      "price_kes": 32.5,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Quick 1-hour spot check for OLIWA / UKO. Pay only for what you use."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.T12",
+      "suffix": "T12",
+      "name": "12-Hr Shift",
+      "scenario": "Shift Ops - 12 Hours",
+      "dsl": "BILL PARAMETER(name=\"OLI_live\") BY hour FOR 12h",
+      "multiplier": 1.0,
+      "price_usd": 0.38,
+      "price_ugx": 1369,
+      "price_kes": 48.75,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "12-hour shift tracking for OLIWA / UKO. Ideal for temporary field staff."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.T24",
+      "suffix": "T24",
+      "name": "24-Hr Daily",
+      "scenario": "Daily Ops - 24 Hours",
+      "dsl": "BILL PARAMETER(name=\"OLI_live\") BY day",
+      "multiplier": 1.0,
+      "price_usd": 0.5,
+      "price_ugx": 1825,
+      "price_kes": 65.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Full 24-hour daily operations tracking for OLIWA / UKO."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.T07",
+      "suffix": "T07",
+      "name": "7-Day Weekly",
+      "scenario": "Weekly Ops - 7 Days",
+      "dsl": "BILL PARAMETER(name=\"OLI_live\") BY week",
+      "multiplier": 1.0,
+      "price_usd": 1.25,
+      "price_ugx": 4563,
+      "price_kes": 162.5,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "7-day weekly operations tracking for OLIWA / UKO. Perfect for short projects."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.T30",
+      "suffix": "T30",
+      "name": "30-Day Fleet",
+      "scenario": "Standard Fleet - 30 Days",
+      "dsl": "BILL PARAMETER(name=\"OLI_live\") BY month",
+      "multiplier": 1.0,
+      "price_usd": 5.0,
+      "price_ugx": 18250,
+      "price_kes": 650.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Standard 30-day fleet tracking token for OLIWA / UKO."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.T90",
+      "suffix": "T90",
+      "name": "90-Day Plan",
+      "scenario": "Quarterly Plan - 90 Days",
+      "dsl": "BILL PARAMETER(name=\"OLI_live\") BY quarter",
+      "multiplier": 1.0,
+      "price_usd": 14.7,
+      "price_ugx": 53655,
+      "price_kes": 1911.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "90-day quarterly tracking for OLIWA / UKO. Save more with longer commitments."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.T365",
+      "suffix": "T365",
+      "name": "365-Day Plan",
+      "scenario": "Annual Plan - 365 Days",
+      "dsl": "BILL PARAMETER(name=\"OLI_live\") BY year",
+      "multiplier": 1.0,
+      "price_usd": 56.4,
+      "price_ugx": 205860,
+      "price_kes": 7332.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Annual 365-day tracking token for OLIWA / UKO. Best value for long-term tracking."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.E100",
+      "suffix": "E100",
+      "name": "100 Events",
+      "scenario": "Dispatch - Until Depleted",
+      "dsl": "BILL EVENT(\"OLI_event\") BY event LIMIT 100",
+      "multiplier": 1.0,
+      "price_usd": 0.75,
+      "price_ugx": 2738,
+      "price_kes": 97.5,
+      "parameters": [
+        "discrete_events",
+        "alerts"
+      ],
+      "description": "100 discrete dispatch events for OLIWA / UKO. Never expires until depleted."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.E500",
+      "suffix": "E500",
+      "name": "500 Events",
+      "scenario": "High-Volume Dispatch - Until Depleted",
+      "dsl": "BILL EVENT(\"OLI_event\") BY event LIMIT 500",
+      "multiplier": 1.0,
+      "price_usd": 3.0,
+      "price_ugx": 10950,
+      "price_kes": 390.0,
+      "parameters": [
+        "discrete_events",
+        "alerts"
+      ],
+      "description": "500 high-volume dispatch events for OLIWA / UKO. Cost-effective event billing."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.A50",
+      "suffix": "A50",
+      "name": "50 AI Safety",
+      "scenario": "Safety - 30 Days",
+      "dsl": "BILL AI_INFERENCE(\"OLI_ai\") BY event LIMIT 50",
+      "multiplier": 1.5,
+      "price_usd": 1.5,
+      "price_ugx": 5475,
+      "price_kes": 195.0,
+      "parameters": [
+        "ai_inference",
+        "safety_events"
+      ],
+      "description": "50 AI safety inferences for OLIWA / UKO over 30 days. Enhance fleet safety."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.A200",
+      "suffix": "A200",
+      "name": "200 AI Safety",
+      "scenario": "Premium Safety - 30 Days",
+      "dsl": "BILL AI_INFERENCE(\"OLI_ai\") BY event LIMIT 200",
+      "multiplier": 1.5,
+      "price_usd": 4.5,
+      "price_ugx": 16425,
+      "price_kes": 585.0,
+      "parameters": [
+        "ai_inference",
+        "safety_events"
+      ],
+      "description": "200 premium AI safety inferences for OLIWA / UKO over 30 days."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.ACT1",
+      "suffix": "ACT1",
+      "name": "1 Admin Cmd",
+      "scenario": "Admins - 1 Command",
+      "dsl": "BILL ACTION(\"OLI_cmd\") BY event",
+      "multiplier": 1.0,
+      "price_usd": 1.25,
+      "price_ugx": 4563,
+      "price_kes": 162.5,
+      "parameters": [
+        "discrete_events",
+        "alerts"
+      ],
+      "description": "1 administrative command execution for OLIWA / UKO."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.ACT10",
+      "suffix": "ACT10",
+      "name": "10 Admin Cmd",
+      "scenario": "Bulk Admins - 10 Commands",
+      "dsl": "BILL ACTION(\"OLI_cmd\") BY event LIMIT 10",
+      "multiplier": 1.0,
+      "price_usd": 10.0,
+      "price_ugx": 36500,
+      "price_kes": 1300.0,
+      "parameters": [
+        "discrete_events",
+        "alerts"
+      ],
+      "description": "10 bulk administrative commands for OLIWA / UKO. Manage fleets efficiently."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.RPT",
+      "suffix": "RPT",
+      "name": "1 Report",
+      "scenario": "Management - 1 Report",
+      "dsl": "BILL REPORT(\"OLI_report\") BY event",
+      "multiplier": 1.0,
+      "price_usd": 0.5,
+      "price_ugx": 1825,
+      "price_kes": 65.0,
+      "parameters": [
+        "discrete_events",
+        "alerts"
+      ],
+      "description": "Generate 1 comprehensive management report for OLIWA / UKO."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.RPT10",
+      "suffix": "RPT10",
+      "name": "10 Reports",
+      "scenario": "Deep Analysis - 10 Reports",
+      "dsl": "BILL REPORT(\"OLI_report\") BY event LIMIT 10",
+      "multiplier": 1.0,
+      "price_usd": 4.0,
+      "price_ugx": 14600,
+      "price_kes": 520.0,
+      "parameters": [
+        "discrete_events",
+        "alerts"
+      ],
+      "description": "Generate 10 deep analysis reports for OLIWA / UKO. Data-driven decisions."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.WKD",
+      "suffix": "WKD",
+      "name": "Weekend Sec",
+      "scenario": "Security - Weekend",
+      "dsl": "BILL ALL_OLI WHEN time BETWEEN fri_1800 AND mon_0600",
+      "multiplier": 1.0,
+      "price_usd": 0.75,
+      "price_ugx": 2738,
+      "price_kes": 97.5,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Weekend security tracking for OLIWA / UKO. Protect assets when idle."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.NGT",
+      "suffix": "NGT",
+      "name": "12-Hr Night",
+      "scenario": "Security - 12 Hours",
+      "dsl": "BILL ALL_OLI WHEN time BETWEEN 1800 AND 0600",
+      "multiplier": 1.0,
+      "price_usd": 0.5,
+      "price_ugx": 1825,
+      "price_kes": 65.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Night-time 12-hour security tracking for OLIWA / UKO."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.B30",
+      "suffix": "B30",
+      "name": "30-Day Prem",
+      "scenario": "Premium - 30 Days",
+      "dsl": "BILL ALL_OLI BY month",
+      "multiplier": 1.2,
+      "price_usd": 9.0,
+      "price_ugx": 32850,
+      "price_kes": 1170.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Premium 30-day unlimited tracking for OLIWA / UKO."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.B90",
+      "suffix": "B90",
+      "name": "90-Day Ent",
+      "scenario": "Enterprise Premium - 90 Days",
+      "dsl": "BILL ALL_OLI BY quarter WITH premium_sla",
+      "multiplier": 1.2,
+      "price_usd": 24.0,
+      "price_ugx": 87600,
+      "price_kes": 3120.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Enterprise 90-day premium tracking with SLA for OLIWA / UKO."
+    },
+    {
+      "product": "oliwa",
+      "sku": "NVS.TKN.OLI.ROAM",
+      "suffix": "ROAM",
+      "name": "30-Day Roam",
+      "scenario": "Cross-Border - 30 Days",
+      "dsl": "BILL ALL_OLI WHEN geofence=\"OUT_OF_COUNTRY\"",
+      "multiplier": 1.5,
+      "price_usd": 15.0,
+      "price_ugx": 54750,
+      "price_kes": 1950.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "30-day cross-border roaming token for OLIWA / UKO. Track anywhere."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.T01",
+      "suffix": "T01",
+      "name": "1-Hr Spot",
+      "scenario": "Spot Checks - 1 Hour",
+      "dsl": "BILL PARAMETER(name=\"OLI_live\") BY hour",
+      "multiplier": 1.0,
+      "price_usd": 0.3,
+      "price_ugx": 1095,
+      "price_kes": 39.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Quick 1-hour spot check for OLIWA+. Pay only for what you use."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.T12",
+      "suffix": "T12",
+      "name": "12-Hr Shift",
+      "scenario": "Shift Ops - 12 Hours",
+      "dsl": "BILL PARAMETER(name=\"OLI_live\") BY hour FOR 12h",
+      "multiplier": 1.0,
+      "price_usd": 0.45,
+      "price_ugx": 1643,
+      "price_kes": 58.5,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "12-hour shift tracking for OLIWA+. Ideal for temporary field staff."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.T24",
+      "suffix": "T24",
+      "name": "24-Hr Daily",
+      "scenario": "Daily Ops - 24 Hours",
+      "dsl": "BILL PARAMETER(name=\"OLI_live\") BY day",
+      "multiplier": 1.0,
+      "price_usd": 0.6,
+      "price_ugx": 2190,
+      "price_kes": 78.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Full 24-hour daily operations tracking for OLIWA+."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.T07",
+      "suffix": "T07",
+      "name": "7-Day Weekly",
+      "scenario": "Weekly Ops - 7 Days",
+      "dsl": "BILL PARAMETER(name=\"OLI_live\") BY week",
+      "multiplier": 1.0,
+      "price_usd": 1.5,
+      "price_ugx": 5475,
+      "price_kes": 195.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "7-day weekly operations tracking for OLIWA+. Perfect for short projects."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.T30",
+      "suffix": "T30",
+      "name": "30-Day Fleet",
+      "scenario": "Standard Fleet - 30 Days",
+      "dsl": "BILL PARAMETER(name=\"OLI_live\") BY month",
+      "multiplier": 1.0,
+      "price_usd": 6.0,
+      "price_ugx": 21900,
+      "price_kes": 780.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Standard 30-day fleet tracking token for OLIWA+."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.T90",
+      "suffix": "T90",
+      "name": "90-Day Plan",
+      "scenario": "Quarterly Plan - 90 Days",
+      "dsl": "BILL PARAMETER(name=\"OLI_live\") BY quarter",
+      "multiplier": 1.0,
+      "price_usd": 17.64,
+      "price_ugx": 64386,
+      "price_kes": 2293.2,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "90-day quarterly tracking for OLIWA+. Save more with longer commitments."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.T365",
+      "suffix": "T365",
+      "name": "365-Day Plan",
+      "scenario": "Annual Plan - 365 Days",
+      "dsl": "BILL PARAMETER(name=\"OLI_live\") BY year",
+      "multiplier": 1.0,
+      "price_usd": 67.68,
+      "price_ugx": 247032,
+      "price_kes": 8798.4,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Annual 365-day tracking token for OLIWA+. Best value for long-term tracking."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.E100",
+      "suffix": "E100",
+      "name": "100 Events",
+      "scenario": "Dispatch - Until Depleted",
+      "dsl": "BILL EVENT(\"OLI_event\") BY event LIMIT 100",
+      "multiplier": 1.0,
+      "price_usd": 0.9,
+      "price_ugx": 3285,
+      "price_kes": 117.0,
+      "parameters": [
+        "discrete_events",
+        "alerts"
+      ],
+      "description": "100 discrete dispatch events for OLIWA+. Never expires until depleted."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.E500",
+      "suffix": "E500",
+      "name": "500 Events",
+      "scenario": "High-Volume Dispatch - Until Depleted",
+      "dsl": "BILL EVENT(\"OLI_event\") BY event LIMIT 500",
+      "multiplier": 1.0,
+      "price_usd": 3.6,
+      "price_ugx": 13140,
+      "price_kes": 468.0,
+      "parameters": [
+        "discrete_events",
+        "alerts"
+      ],
+      "description": "500 high-volume dispatch events for OLIWA+. Cost-effective event billing."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.A50",
+      "suffix": "A50",
+      "name": "50 AI Safety",
+      "scenario": "Safety - 30 Days",
+      "dsl": "BILL AI_INFERENCE(\"OLI_ai\") BY event LIMIT 50",
+      "multiplier": 1.5,
+      "price_usd": 1.8,
+      "price_ugx": 6570,
+      "price_kes": 234.0,
+      "parameters": [
+        "ai_inference",
+        "safety_events"
+      ],
+      "description": "50 AI safety inferences for OLIWA+ over 30 days. Enhance fleet safety."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.A200",
+      "suffix": "A200",
+      "name": "200 AI Safety",
+      "scenario": "Premium Safety - 30 Days",
+      "dsl": "BILL AI_INFERENCE(\"OLI_ai\") BY event LIMIT 200",
+      "multiplier": 1.5,
+      "price_usd": 5.4,
+      "price_ugx": 19710,
+      "price_kes": 702.0,
+      "parameters": [
+        "ai_inference",
+        "safety_events"
+      ],
+      "description": "200 premium AI safety inferences for OLIWA+ over 30 days."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.ACT1",
+      "suffix": "ACT1",
+      "name": "1 Admin Cmd",
+      "scenario": "Admins - 1 Command",
+      "dsl": "BILL ACTION(\"OLI_cmd\") BY event",
+      "multiplier": 1.0,
+      "price_usd": 1.5,
+      "price_ugx": 5475,
+      "price_kes": 195.0,
+      "parameters": [
+        "discrete_events",
+        "alerts"
+      ],
+      "description": "1 administrative command execution for OLIWA+."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.ACT10",
+      "suffix": "ACT10",
+      "name": "10 Admin Cmd",
+      "scenario": "Bulk Admins - 10 Commands",
+      "dsl": "BILL ACTION(\"OLI_cmd\") BY event LIMIT 10",
+      "multiplier": 1.0,
+      "price_usd": 12.0,
+      "price_ugx": 43800,
+      "price_kes": 1560.0,
+      "parameters": [
+        "discrete_events",
+        "alerts"
+      ],
+      "description": "10 bulk administrative commands for OLIWA+. Manage fleets efficiently."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.RPT",
+      "suffix": "RPT",
+      "name": "1 Report",
+      "scenario": "Management - 1 Report",
+      "dsl": "BILL REPORT(\"OLI_report\") BY event",
+      "multiplier": 1.0,
+      "price_usd": 0.6,
+      "price_ugx": 2190,
+      "price_kes": 78.0,
+      "parameters": [
+        "discrete_events",
+        "alerts"
+      ],
+      "description": "Generate 1 comprehensive management report for OLIWA+."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.RPT10",
+      "suffix": "RPT10",
+      "name": "10 Reports",
+      "scenario": "Deep Analysis - 10 Reports",
+      "dsl": "BILL REPORT(\"OLI_report\") BY event LIMIT 10",
+      "multiplier": 1.0,
+      "price_usd": 4.8,
+      "price_ugx": 17520,
+      "price_kes": 624.0,
+      "parameters": [
+        "discrete_events",
+        "alerts"
+      ],
+      "description": "Generate 10 deep analysis reports for OLIWA+. Data-driven decisions."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.WKD",
+      "suffix": "WKD",
+      "name": "Weekend Sec",
+      "scenario": "Security - Weekend",
+      "dsl": "BILL ALL_OLI WHEN time BETWEEN fri_1800 AND mon_0600",
+      "multiplier": 1.0,
+      "price_usd": 0.9,
+      "price_ugx": 3285,
+      "price_kes": 117.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Weekend security tracking for OLIWA+. Protect assets when idle."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.NGT",
+      "suffix": "NGT",
+      "name": "12-Hr Night",
+      "scenario": "Security - 12 Hours",
+      "dsl": "BILL ALL_OLI WHEN time BETWEEN 1800 AND 0600",
+      "multiplier": 1.0,
+      "price_usd": 0.6,
+      "price_ugx": 2190,
+      "price_kes": 78.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Night-time 12-hour security tracking for OLIWA+."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.B30",
+      "suffix": "B30",
+      "name": "30-Day Prem",
+      "scenario": "Premium - 30 Days",
+      "dsl": "BILL ALL_OLI BY month",
+      "multiplier": 1.2,
+      "price_usd": 10.8,
+      "price_ugx": 39420,
+      "price_kes": 1404.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Premium 30-day unlimited tracking for OLIWA+."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.B90",
+      "suffix": "B90",
+      "name": "90-Day Ent",
+      "scenario": "Enterprise Premium - 90 Days",
+      "dsl": "BILL ALL_OLI BY quarter WITH premium_sla",
+      "multiplier": 1.2,
+      "price_usd": 28.8,
+      "price_ugx": 105120,
+      "price_kes": 3744.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Enterprise 90-day premium tracking with SLA for OLIWA+."
+    },
+    {
+      "product": "oliwa plus",
+      "sku": "NVS.TKN.OLI.PLUS.ROAM",
+      "suffix": "ROAM",
+      "name": "30-Day Roam",
+      "scenario": "Cross-Border - 30 Days",
+      "dsl": "BILL ALL_OLI WHEN geofence=\"OUT_OF_COUNTRY\"",
+      "multiplier": 1.5,
+      "price_usd": 18.0,
+      "price_ugx": 65700,
+      "price_kes": 2340.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "30-day cross-border roaming token for OLIWA+. Track anywhere."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.T01",
+      "suffix": "T01",
+      "name": "1-Hr Spot",
+      "scenario": "Spot Checks - 1 Hour",
+      "dsl": "BILL PARAMETER(name=\"VEB_live\") BY hour",
+      "multiplier": 1.0,
+      "price_usd": 0.05,
+      "price_ugx": 183,
+      "price_kes": 6.5,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Quick 1-hour spot check for VEBA. Pay only for what you use."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.T12",
+      "suffix": "T12",
+      "name": "12-Hr Shift",
+      "scenario": "Shift Ops - 12 Hours",
+      "dsl": "BILL PARAMETER(name=\"VEB_live\") BY hour FOR 12h",
+      "multiplier": 1.0,
+      "price_usd": 0.08,
+      "price_ugx": 274,
+      "price_kes": 9.75,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "12-hour shift tracking for VEBA. Ideal for temporary field staff."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.T24",
+      "suffix": "T24",
+      "name": "24-Hr Daily",
+      "scenario": "Daily Ops - 24 Hours",
+      "dsl": "BILL PARAMETER(name=\"VEB_live\") BY day",
+      "multiplier": 1.0,
+      "price_usd": 0.1,
+      "price_ugx": 365,
+      "price_kes": 13.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Full 24-hour daily operations tracking for VEBA."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.T07",
+      "suffix": "T07",
+      "name": "7-Day Weekly",
+      "scenario": "Weekly Ops - 7 Days",
+      "dsl": "BILL PARAMETER(name=\"VEB_live\") BY week",
+      "multiplier": 1.0,
+      "price_usd": 0.25,
+      "price_ugx": 913,
+      "price_kes": 32.5,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "7-day weekly operations tracking for VEBA. Perfect for short projects."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.T30",
+      "suffix": "T30",
+      "name": "30-Day Fleet",
+      "scenario": "Standard Fleet - 30 Days",
+      "dsl": "BILL PARAMETER(name=\"VEB_live\") BY month",
+      "multiplier": 1.0,
+      "price_usd": 1.0,
+      "price_ugx": 3650,
+      "price_kes": 130.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Standard 30-day fleet tracking token for VEBA."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.T90",
+      "suffix": "T90",
+      "name": "90-Day Plan",
+      "scenario": "Quarterly Plan - 90 Days",
+      "dsl": "BILL PARAMETER(name=\"VEB_live\") BY quarter",
+      "multiplier": 1.0,
+      "price_usd": 2.94,
+      "price_ugx": 10731,
+      "price_kes": 382.2,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "90-day quarterly tracking for VEBA. Save more with longer commitments."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.T365",
+      "suffix": "T365",
+      "name": "365-Day Plan",
+      "scenario": "Annual Plan - 365 Days",
+      "dsl": "BILL PARAMETER(name=\"VEB_live\") BY year",
+      "multiplier": 1.0,
+      "price_usd": 11.28,
+      "price_ugx": 41172,
+      "price_kes": 1466.4,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Annual 365-day tracking token for VEBA. Best value for long-term tracking."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.E100",
+      "suffix": "E100",
+      "name": "100 Events",
+      "scenario": "Dispatch - Until Depleted",
+      "dsl": "BILL EVENT(\"VEB_event\") BY event LIMIT 100",
+      "multiplier": 1.0,
+      "price_usd": 0.15,
+      "price_ugx": 548,
+      "price_kes": 19.5,
+      "parameters": [
+        "discrete_events",
+        "alerts"
+      ],
+      "description": "100 discrete dispatch events for VEBA. Never expires until depleted."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.E500",
+      "suffix": "E500",
+      "name": "500 Events",
+      "scenario": "High-Volume Dispatch - Until Depleted",
+      "dsl": "BILL EVENT(\"VEB_event\") BY event LIMIT 500",
+      "multiplier": 1.0,
+      "price_usd": 0.6,
+      "price_ugx": 2190,
+      "price_kes": 78.0,
+      "parameters": [
+        "discrete_events",
+        "alerts"
+      ],
+      "description": "500 high-volume dispatch events for VEBA. Cost-effective event billing."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.A50",
+      "suffix": "A50",
+      "name": "50 AI Safety",
+      "scenario": "Safety - 30 Days",
+      "dsl": "BILL AI_INFERENCE(\"VEB_ai\") BY event LIMIT 50",
+      "multiplier": 1.5,
+      "price_usd": 0.3,
+      "price_ugx": 1095,
+      "price_kes": 39.0,
+      "parameters": [
+        "ai_inference",
+        "safety_events"
+      ],
+      "description": "50 AI safety inferences for VEBA over 30 days. Enhance fleet safety."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.A200",
+      "suffix": "A200",
+      "name": "200 AI Safety",
+      "scenario": "Premium Safety - 30 Days",
+      "dsl": "BILL AI_INFERENCE(\"VEB_ai\") BY event LIMIT 200",
+      "multiplier": 1.5,
+      "price_usd": 0.9,
+      "price_ugx": 3285,
+      "price_kes": 117.0,
+      "parameters": [
+        "ai_inference",
+        "safety_events"
+      ],
+      "description": "200 premium AI safety inferences for VEBA over 30 days."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.ACT1",
+      "suffix": "ACT1",
+      "name": "1 Admin Cmd",
+      "scenario": "Admins - 1 Command",
+      "dsl": "BILL ACTION(\"VEB_cmd\") BY event",
+      "multiplier": 1.0,
+      "price_usd": 0.25,
+      "price_ugx": 913,
+      "price_kes": 32.5,
+      "parameters": [
+        "discrete_events",
+        "alerts"
+      ],
+      "description": "1 administrative command execution for VEBA."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.ACT10",
+      "suffix": "ACT10",
+      "name": "10 Admin Cmd",
+      "scenario": "Bulk Admins - 10 Commands",
+      "dsl": "BILL ACTION(\"VEB_cmd\") BY event LIMIT 10",
+      "multiplier": 1.0,
+      "price_usd": 2.0,
+      "price_ugx": 7300,
+      "price_kes": 260.0,
+      "parameters": [
+        "discrete_events",
+        "alerts"
+      ],
+      "description": "10 bulk administrative commands for VEBA. Manage fleets efficiently."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.RPT",
+      "suffix": "RPT",
+      "name": "1 Report",
+      "scenario": "Management - 1 Report",
+      "dsl": "BILL REPORT(\"VEB_report\") BY event",
+      "multiplier": 1.0,
+      "price_usd": 0.1,
+      "price_ugx": 365,
+      "price_kes": 13.0,
+      "parameters": [
+        "discrete_events",
+        "alerts"
+      ],
+      "description": "Generate 1 comprehensive management report for VEBA."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.RPT10",
+      "suffix": "RPT10",
+      "name": "10 Reports",
+      "scenario": "Deep Analysis - 10 Reports",
+      "dsl": "BILL REPORT(\"VEB_report\") BY event LIMIT 10",
+      "multiplier": 1.0,
+      "price_usd": 0.8,
+      "price_ugx": 2920,
+      "price_kes": 104.0,
+      "parameters": [
+        "discrete_events",
+        "alerts"
+      ],
+      "description": "Generate 10 deep analysis reports for VEBA. Data-driven decisions."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.WKD",
+      "suffix": "WKD",
+      "name": "Weekend Sec",
+      "scenario": "Security - Weekend",
+      "dsl": "BILL ALL_VEB WHEN time BETWEEN fri_1800 AND mon_0600",
+      "multiplier": 1.0,
+      "price_usd": 0.15,
+      "price_ugx": 548,
+      "price_kes": 19.5,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Weekend security tracking for VEBA. Protect assets when idle."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.NGT",
+      "suffix": "NGT",
+      "name": "12-Hr Night",
+      "scenario": "Security - 12 Hours",
+      "dsl": "BILL ALL_VEB WHEN time BETWEEN 1800 AND 0600",
+      "multiplier": 1.0,
+      "price_usd": 0.1,
+      "price_ugx": 365,
+      "price_kes": 13.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Night-time 12-hour security tracking for VEBA."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.B30",
+      "suffix": "B30",
+      "name": "30-Day Prem",
+      "scenario": "Premium - 30 Days",
+      "dsl": "BILL ALL_VEB BY month",
+      "multiplier": 1.2,
+      "price_usd": 1.8,
+      "price_ugx": 6570,
+      "price_kes": 234.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Premium 30-day unlimited tracking for VEBA."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.B90",
+      "suffix": "B90",
+      "name": "90-Day Ent",
+      "scenario": "Enterprise Premium - 90 Days",
+      "dsl": "BILL ALL_VEB BY quarter WITH premium_sla",
+      "multiplier": 1.2,
+      "price_usd": 4.8,
+      "price_ugx": 17520,
+      "price_kes": 624.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "Enterprise 90-day premium tracking with SLA for VEBA."
+    },
+    {
+      "product": "veba",
+      "sku": "TKN.VEB.ROAM",
+      "suffix": "ROAM",
+      "name": "30-Day Roam",
+      "scenario": "Cross-Border - 30 Days",
+      "dsl": "BILL ALL_VEB WHEN geofence=\"OUT_OF_COUNTRY\"",
+      "multiplier": 1.5,
+      "price_usd": 3.0,
+      "price_ugx": 10950,
+      "price_kes": 390.0,
+      "parameters": [
+        "live_tracking",
+        "telemetry"
+      ],
+      "description": "30-day cross-border roaming token for VEBA. Track anywhere."
+    }
+  ]
+}

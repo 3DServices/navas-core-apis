@@ -106,7 +106,8 @@ for name, over, field in [
         ('older than 92 days', {'issued_at': '2026-07-01T09:00'}, 'issued_at'),
         ('time will not parse', {'issued_at': '28/10/2026'}, 'issued_at'),
         ('negative odometer', {'odometer_km': '-5'}, 'odometer_km'),
-        ('receipt too long', {'receipt_number': 'X' * 61}, 'receipt_number')]:
+        ('receipt too long', {'receipt_number': 'X' * 61}, 'receipt_number'),
+        ('voucher too long', {'voucher_number': 'X' * 61}, 'voucher_number')]:
     _, errors = fr.validate_issue(dict(VALID, **over), NOW)
     check('refused: ' + name, field in errors, repr(errors))
 
@@ -115,6 +116,10 @@ eq('a phone a few minutes fast is fine', errors, {})
 clean, _ = fr.validate_issue(dict(VALID, odometer_km='', receipt_number='', full_tank='no'), NOW)
 eq('blank optional fields are None',
    (clean['odometer_km'], clean['receipt_number'], clean['full_tank']), (None, None, False))
+eq('no voucher is None', clean['voucher_number'], None)
+clean, _ = fr.validate_issue(dict(VALID, voucher_number=' v-0042 '), NOW)
+eq('voucher trimmed and upper-cased', clean['voucher_number'], 'V-0042')
+check('voucher clash named', fr.DUPLICATE_FIELDS['uq_fuel_voucher'][0] == 'voucher_number')
 
 # ── profiles ──────────────────────────────────────────────────────────────
 clean, errors = fr.validate_profile({'fuel_type': 'petrol', 'tank_capacity_l': '55',

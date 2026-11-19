@@ -110,6 +110,7 @@ def issuance_row(issue):
         'payment_method': PAYMENT_LABELS.get(issue.get('payment_method'),
                                              str(issue.get('payment_method') or '')),
         'receipt_number': str(issue.get('receipt_number') or ''),
+        'voucher_number': str(issue.get('voucher_number') or ''),
         'station_name': str(issue.get('station_name') or ''),
         'full_tank': 'Yes' if issue.get('full_tank') else 'No',
         'review': REVIEW_LABELS.get(issue.get('review_state'), ''),

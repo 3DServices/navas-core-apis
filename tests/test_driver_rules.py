@@ -133,6 +133,52 @@ check('no unknown status', dr.status_change_refusal('active', 'fired'))
 eq('suspending ends the assignment', dr.ends_assignment('suspended'), True)
 eq('staying active does not', dr.ends_assignment('active'), False)
 
+# ── deleting: only a driver with no history ───────────────────────────────
+eq('no history: may be deleted', dr.deletion_refusal(0, 0), None)
+refusal = dr.deletion_refusal(2, 0)
+check('vehicle history: kept', refusal and 'vehicle history' in refusal
+      and 'Deactivate' in refusal, repr(refusal))
+refusal = dr.deletion_refusal(0, 1)
+check('fuel issues: kept', refusal and 'fuel issues' in refusal, repr(refusal))
+refusal = dr.deletion_refusal(1, 3)
+check('both named', refusal and 'vehicle history and fuel issues' in refusal,
+      repr(refusal))
+
+# ── permit reminders: 30, 14, 7, 1 days before, and on expiry ─────────────
+def days(n):
+    return date.fromordinal(TODAY.toordinal() + n)
+
+
+for left, stage in ((31, None), (30, 30), (20, 30), (14, 14), (8, 14), (7, 7),
+                    (2, 7), (1, 1), (0, 0), (-1, 0), (-200, 0)):
+    eq(f'{left} days left: stage {stage}', dr.reminder_stage(days(left), TODAY), stage)
+eq('no expiry date: no reminder', dr.reminder_stage(None, TODAY), None)
+
+expiry = days(10)
+eq('never reminded: the stage reached', dr.reminder_due(expiry, TODAY, None, None), 14)
+eq('first seen 5 days out: only the 7-day one, not 30 and 14 too',
+   dr.reminder_due(days(5), TODAY, None, None), 7)
+eq('this stage already sent', dr.reminder_due(expiry, TODAY, expiry, 14), None)
+eq('a more urgent stage already sent', dr.reminder_due(expiry, TODAY, expiry, 7), None)
+eq('the next stage is due', dr.reminder_due(days(6), TODAY, days(6), 14), 7)
+eq('expired after the 1-day one', dr.reminder_due(days(-1), TODAY, days(-1), 1), 0)
+eq('expired once only', dr.reminder_due(days(-3), TODAY, days(-3), 0), None)
+eq('renewed permit starts again',
+   dr.reminder_due(days(25), TODAY, days(-2), 0), 30)
+eq('renewed far ahead: nothing yet', dr.reminder_due(days(400), TODAY, days(-2), 0), None)
+
+title, text = dr.reminder_message('Okello John', days(14), TODAY)
+eq('expiring title', title, 'Driver permit expiring')
+eq('says how long and the date', text,
+   "Okello John's driving permit expires in 14 days (9 Nov 2026). "
+   'Renew it to keep them on the road.')
+check('tomorrow', 'expires tomorrow' in dr.reminder_message('A', days(1), TODAY)[1])
+check('today', 'expires today' in dr.reminder_message('A', days(0), TODAY)[1])
+title, text = dr.reminder_message('Okello John', days(-2), TODAY)
+eq('expired title', title, 'Driver permit expired')
+check('expired says it blocks assignment',
+      'expired on 24 Oct 2026' in text and 'cannot be assigned' in text, text)
+
 # ── what the app receives ─────────────────────────────────────────────────
 out = dr.public({
     'driver_uid': 'd1', 'full_name': 'Okello John', 'phone': '+256772123456',
@@ -146,6 +192,9 @@ eq('permit state included', out['permit_state'], 'expiring')
 eq('photo file name not exposed, only that there is one',
    ('photo_file' in out, out['has_photo']), (False, True))
 eq('current unit', out['current_imei'], '354002396040196')
+eq('not deletable unless the read says so', out['deletable'], False)
+eq('deletable when the read says so',
+   dr.public({'deletable': True}, TODAY)['deletable'], True)
 
 # ── photos: the bytes decide, not the file name ───────────────────────────
 eq('a JPEG', dr.photo_type(b'\xff\xd8\xff\xe0' + bytes(12)), 'jpg')
