@@ -9,6 +9,8 @@ driver_report -- the rows of the driver reports
                verdict (Non-compliant, Needs attention, Compliant, Inactive)
   fuel         fuel issued to each driver: litres, cost, payment and anything
                FuelMath flagged, one section per driver
+  scorecard    each driver's score for the period (100 less their
+               violations, driver_scoring.py), ranked, one section
 
 Every report route returns [{section: [row, ...]}, ...]; the app's report
 table, PDF and Excel read it. Values are text as the app shows them. Money is
@@ -22,17 +24,18 @@ come in from fuel_report as arguments.
 
 from datetime import date, datetime
 
-KINDS = ('registry', 'assignments', 'compliance', 'fuel')
+KINDS = ('registry', 'assignments', 'compliance', 'fuel', 'scorecard')
 
 # Reports that cover a period and so need start_date/end_date. Registry and
 # compliance describe drivers as they are today.
-DATED = ('assignments', 'fuel')
+DATED = ('assignments', 'fuel', 'scorecard')
 
 EMPTY_MESSAGES = {
     'registry': 'No Drivers Found: register drivers under Drivers first',
     'assignments': 'No Driver Assignments Found for the selected drivers and dates',
     'compliance': 'No Drivers Found: register drivers under Drivers first',
     'fuel': 'No Fuel Issued to the selected drivers in these dates',
+    'scorecard': 'No Drivers Found: register drivers under Drivers first',
 }
 
 STATUS_LABELS = {
@@ -369,3 +372,30 @@ def fuel_rows(drivers, issues, names=None, flag_labels=None, review_labels=None,
                 fuel_row(i, names, flag_labels, review_labels, payment_labels)
                 for i in got]
     return out
+
+
+# ── scorecard ────────────────────────────────────────────────────────────────
+
+def scorecard_row(card):
+    """One ranked scorecard (driver_scoring.scorecard + rank)."""
+    score = card.get('score')
+    breakdown = [f"{b['label']} x{b['count']} (-{b['deducted']})"
+                 for b in card.get('breakdown') or () if b.get('count')]
+    return {
+        'rank': '' if card.get('rank') is None else str(card['rank']),
+        'driver': _text(card.get('full_name')),
+        'score': '' if score is None else str(score),
+        'grade': (f"{card['grade']} - {card['grade_label']}" if card.get('grade')
+                  else _text(card.get('grade_label'))),
+        'violations': str(card.get('violation_count') or 0),
+        'points_deducted': str(card.get('deducted') or 0),
+        'breakdown': '; '.join(breakdown) if breakdown else 'None',
+        'status': STATUS_LABELS.get(card.get('status'), _text(card.get('status'))),
+    }
+
+
+def scorecard_rows(cards):
+    """{ALL_DRIVERS: [row, ...]} in rank order (driver_scoring.rank), or {}
+    when there are no drivers."""
+    rows = [scorecard_row(c) for c in cards]
+    return {ALL_DRIVERS: rows} if rows else {}

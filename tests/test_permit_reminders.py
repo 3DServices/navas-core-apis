@@ -83,6 +83,14 @@ class SendReminders(unittest.TestCase):
         self.assertEqual(summary['sent'], 1)
         self.assertEqual(cur.writes, [])
 
+    def test_clients_with_their_own_permit_rule_are_skipped(self):
+        other = dict(driver('d', 6), client_uid='client-2')
+        cur = Cursor([driver('b', 6), other])
+        summary = pr.send_reminders(cur, TODAY, skip_clients={'client-1'})
+        self.assertEqual((summary['checked'], summary['sent']), (1, 1))
+        alerts = [a for s, a in cur.writes if 'dll_event_notifications' in s]
+        self.assertEqual([a[1] for a in alerts], ['driver_permit:d'])
+
 
 if __name__ == '__main__':
     unittest.main()

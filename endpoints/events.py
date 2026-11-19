@@ -135,7 +135,9 @@ def get_notifications(owner_uid):
                    is_read, date_triggered,
                    to_jsonb(n) ->> 'acknowledged_at',
                    to_jsonb(n) ->> 'acknowledged_by',
-                   to_jsonb(n) ->> 'acknowledge_note'
+                   to_jsonb(n) ->> 'acknowledge_note',
+                   to_jsonb(n) ->> 'driver_uid',
+                   to_jsonb(n) ->> 'driver_name'
             FROM dll_event_notifications n
             WHERE owner_uid = %s
               AND (%s::timestamp IS NULL OR date_triggered >= %s::timestamp)
@@ -175,6 +177,9 @@ def get_notifications(owner_uid):
                 "acknowledged_at": _json_stamp(row[12]),
                 "acknowledged_by": row[13] or "",
                 "acknowledge_note": row[14] or "",
+                # The driver the alert is about (migration 060), or "".
+                "driver_uid": row[15] or "",
+                "driver_name": row[16] or "",
                 # Worked out here, not stored: see alert_severity.py.
                 "severity": severity_of(
                     row[2], row[5], row[6], row[8],

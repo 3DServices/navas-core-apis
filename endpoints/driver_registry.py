@@ -23,7 +23,8 @@ again against the unit register.
                                               of the same client only
   POST /data-stream/reports/drivers/<kind>/generate-data
                                               registry, assignments,
-                                              compliance or fuel report rows
+                                              compliance, fuel or scorecard
+                                              report rows
                                               (driver_report.py)
 """
 
@@ -126,6 +127,20 @@ def _duplicate(error):
 def _invalid(errors):
     first = next(iter(errors.values()))
     return reply('error', 400, first, {'errors': errors})
+
+
+def _blocked_alerts(cursor, client, driver, imei, refusal):
+    """Tell the client's driver_unauthorised rules about a refused assignment
+    (alert_engine.blocked_assignment_alerts). Never fails the request: the
+    alerts are written in a savepoint, and dropped if anything goes wrong."""
+    from . import alert_engine
+    try:
+        cursor.execute('SAVEPOINT blocked_alerts')
+        alert_engine.blocked_assignment_alerts(cursor, client, driver, imei, refusal)
+        cursor.execute('RELEASE SAVEPOINT blocked_alerts')
+    except Exception:                   # noqa: BLE001
+        cursor.execute('ROLLBACK TO SAVEPOINT blocked_alerts')
+        log.exception('blocked-assignment alert failed')
 
 
 def _end_open(cursor, where, value, reason):
@@ -371,6 +386,7 @@ def assign(driver_uid):
             refusal = rules.assignment_refusal(
                 row['status'], row['permit_expiry'], _today())
             if refusal:
+                _blocked_alerts(cur, client, row, imei, refusal)
                 return reply('error', 400, refusal, '')
             if row['current_imei'] == imei:
                 return reply('success', 200, 'Already assigned',
@@ -588,6 +604,17 @@ def driver_report_data(kind):
             client = _client(cur)
             if not client:
                 return reply('error', 403, _NO_CLIENT, '')
+
+            if kind == 'scorecard':
+                # Scored by drivers.load_scorecards, ranked among the
+                # chosen drivers.
+                from .drivers import load_scorecards
+                cards, _ = load_scorecards(cur, client, start, end, wanted or None)
+                sections = driver_report.scorecard_rows(cards)
+                if not sections:
+                    return reply('error', 400, driver_report.EMPTY_MESSAGES[kind], '')
+                return reply('success', 200, 'Driver scorecard report',
+                             [{name: rows} for name, rows in sections.items()])
 
             sql = f"""SELECT d.{_COLUMNS.replace(', ', ', d.')},
                              a.device_imei AS current_imei, a.assigned_at

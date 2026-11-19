@@ -14,7 +14,14 @@ geofence_breach. low_battery rules are counted but not checked — battery
 readings from the trackers do not reach the server (alert_conditions.UNSUPPORTED).
 
 Each sweep also sends driver permit reminders (permit_reminders.py) — built
-in for every client, no rule needed.
+in for every client, no rule needed — and checks the client-wide driver rules
+(driver_permit_expiry, driver_unauthorised; driver_sweep below). A client with
+a driver_permit_expiry rule of its own gets that rule's alerts instead of the
+built-in reminders, so nobody is told twice.
+
+Every alert records the driver it concerns where there is one (migration
+060): the driver assigned to the unit when it fired, the driver a fuel issue
+was made to, or the driver a driver rule is about.
 
 Where the facts come from
 -------------------------
@@ -379,27 +386,72 @@ def save_presence(cur, imei, zone_uid, inside, position_ref):
     )
 
 
-def write_alert(cur, rule, unit, alert):
+# Whether dll_event_notifications has driver_uid / driver_name (migration
+# 060). Checked once per process; alerts are written without them until then.
+_DRIVER_COLUMNS = None
+
+
+def _driver_columns(cur):
+    global _DRIVER_COLUMNS
+    if _DRIVER_COLUMNS is None:
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM information_schema.columns "
+            "WHERE table_name = 'dll_event_notifications' "
+            "AND column_name IN ('driver_uid', 'driver_name')")
+        row = cur.fetchone()
+        n = row['n'] if isinstance(row, dict) else row[0]
+        if n == 2:
+            _DRIVER_COLUMNS = True      # only remember the good answer
+        else:
+            return False
+    return _DRIVER_COLUMNS
+
+
+def unit_driver(cur, imei):
+    """{'driver_uid', 'full_name'} of the driver assigned to [imei] now, or
+    None."""
+    if not imei:
+        return None
+    cur.execute(
+        """SELECT d.driver_uid, d.full_name
+             FROM dll_driver_assignments a
+             JOIN dll_drivers d ON d.driver_uid = a.driver_uid
+            WHERE a.device_imei = %s AND a.ended_at IS NULL
+            LIMIT 1""", (str(imei),))
+    row = cur.fetchone()
+    if not row:
+        return None
+    if not isinstance(row, dict):
+        row = {'driver_uid': row[0], 'full_name': row[1]}
+    return {'driver_uid': row['driver_uid'], 'full_name': row['full_name']}
+
+
+def write_alert(cur, rule, unit, alert, driver=None):
     """One row in the alerts list the console and the app read — filed under
     the client (account_root), which is what they ask for, not under the
-    user who created the rule."""
+    user who created the rule.
+
+    driver  {'driver_uid', 'full_name'} the alert is about; when None, the
+            driver assigned to the unit right now (if any)."""
+    values = [
+        str(uuid.uuid4()), rule['event_uid'], rule['name'],
+        unit['imei'], unit['name'], rule['condition'],
+        alert['trigger_value'], alert.get('geozone_name') or '',
+        alert.get('breach_type') or '',
+        json.dumps(rule['channels']),
+        client_root(cur, rule['owner_uid'] or unit['client']),
+    ]
+    columns = ('notification_uid, event_uid, event_name, device_imei, device_name, '
+               'condition, trigger_value, geozone_name, breach_type, alert_channels, '
+               'owner_uid')
+    if _driver_columns(cur):
+        who = driver if driver is not None else unit_driver(cur, unit['imei'])
+        columns += ', driver_uid, driver_name'
+        values += [(who or {}).get('driver_uid'), (who or {}).get('full_name')]
+    marks = ', '.join(['%s'] * len(values))
     cur.execute(
-        """
-        INSERT INTO dll_event_notifications
-            (notification_uid, event_uid, event_name, device_imei, device_name,
-             condition, trigger_value, geozone_name, breach_type, alert_channels,
-             owner_uid, is_read, date_triggered)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE, NOW())
-        """,
-        (
-            str(uuid.uuid4()), rule['event_uid'], rule['name'],
-            unit['imei'], unit['name'], rule['condition'],
-            alert['trigger_value'], alert.get('geozone_name') or '',
-            alert.get('breach_type') or '',
-            json.dumps(rule['channels']),
-            client_root(cur, rule['owner_uid'] or unit['client']),
-        ),
-    )
+        f"INSERT INTO dll_event_notifications ({columns}, is_read, date_triggered) "
+        f"VALUES ({marks}, FALSE, NOW())", values)
 
 
 # ── The sweep ────────────────────────────────────────────────────────────────
@@ -509,7 +561,14 @@ def _permit_reminders(connection, cur, live, summary):
                 'migration 056 has not been applied (dll_driver_permit_reminders)')
             connection.rollback()
             return
-        result = permit_reminders.send_reminders(cur, _now_local().date(), live=live)
+        # A client with its own driver_permit_expiry rule gets that rule's
+        # alerts (driver_sweep) instead, so nobody is told twice.
+        cur.execute("SELECT DISTINCT owner_org_uid FROM dll_device_events "
+                    "WHERE LOWER(event_condition) = %s", (conditions.DRIVER_PERMIT,))
+        own_rules = {client_root(cur, r['owner_org_uid']) for r in cur.fetchall()
+                     if r.get('owner_org_uid')}
+        result = permit_reminders.send_reminders(
+            cur, _now_local().date(), live=live, skip_clients=own_rules)
         connection.commit()
     except Exception as error:          # noqa: BLE001
         connection.rollback()
@@ -519,6 +578,133 @@ def _permit_reminders(connection, cur, live, summary):
     if result['sent']:
         _count(summary, 'alerts_by_condition', permit_reminders.CONDITION, result['sent'])
         summary['alerts'] += result['sent']
+
+
+# ── Drivers (client-wide rules) ──────────────────────────────────────────────
+
+def _driver_key(driver_uid):
+    """dll_alert_rule_state.device_imei for a driver: the table is keyed per
+    rule per subject, and a driver rule's subject is the driver."""
+    return f'driver:{driver_uid}'
+
+
+def rules_by_client(cur, rules):
+    """{client_uid: [rule, ...]} for the client-wide rules among [rules]."""
+    out = {}
+    for rule in rules:
+        if rule['condition'] in conditions.CLIENT_WIDE and rule['owner_uid']:
+            out.setdefault(client_root(cur, rule['owner_uid']), []).append(rule)
+    return out
+
+
+def load_drivers(cur, clients):
+    """The drivers of [clients] who may drive or hold a vehicle, with the
+    unit each holds now."""
+    cur.execute(
+        """SELECT d.driver_uid, d.client_uid, d.full_name, d.status,
+                  d.permit_expiry, a.device_imei AS current_imei
+             FROM dll_drivers d
+             LEFT JOIN dll_driver_assignments a
+               ON a.driver_uid = d.driver_uid AND a.ended_at IS NULL
+            WHERE d.client_uid = ANY(%s)
+              AND (d.status IN ('active', 'suspended') OR a.device_imei IS NOT NULL)""",
+        (list(clients),))
+    return cur.fetchall()
+
+
+def _vehicle_names(imeis):
+    if not imeis:
+        return {}
+    try:
+        from .fuel_registry import _device_names
+        return _device_names(sorted(imeis))
+    except Exception:                   # noqa: BLE001 -- names are a nicety
+        return {i: i for i in imeis}
+
+
+def driver_sweep(cur, rules, today, live, summary):
+    """Check every client-wide driver rule against the client's drivers.
+    The caller owns the transaction."""
+    by_client = rules_by_client(cur, rules)
+    if not by_client:
+        return
+    drivers = load_drivers(cur, by_client)
+    names = _vehicle_names({d['current_imei'] for d in drivers if d.get('current_imei')})
+    rule_uids = [r['event_uid'] for rs in by_client.values() for r in rs]
+    cur.execute("SELECT event_uid, device_imei, condition, state "
+                "FROM dll_alert_rule_state WHERE event_uid = ANY(%s)", (rule_uids,))
+    states = {}
+    for row in cur.fetchall():
+        state = row.get('state')
+        if isinstance(state, str):
+            try:
+                state = json.loads(state)
+            except (TypeError, ValueError):
+                state = None
+        states[(str(row['event_uid']), row['device_imei'])] = (row.get('condition'), state)
+
+    for driver in drivers:
+        imei = driver.get('current_imei') or ''
+        subject = dict(driver, current_name=names.get(imei, imei) if imei else '')
+        who = {'driver_uid': driver['driver_uid'], 'full_name': driver['full_name']}
+        unit = {'imei': imei, 'name': driver['full_name'], 'client': driver['client_uid']}
+        key = _driver_key(driver['driver_uid'])
+        summary['drivers_checked'] = summary.get('drivers_checked', 0) + 1
+        for rule in by_client.get(driver['client_uid'], ()):
+            condition, prior = states.get((rule['event_uid'], key), (None, None))
+            if condition != rule['condition']:
+                prior = None
+            if rule['condition'] == conditions.DRIVER_PERMIT:
+                if driver.get('status') not in ('active', 'suspended'):
+                    continue
+                alerts, state = conditions.evaluate_permit(rule['config'], prior, subject, today)
+            else:
+                alerts, state = conditions.evaluate_expired_assignment(
+                    rule['config'], prior, subject, today)
+            for alert in alerts:
+                _count(summary, 'alerts_by_condition', rule['condition'])
+                summary['alerts'] += 1
+                if live:
+                    write_alert(cur, rule, unit, alert, driver=who)
+            if live and state != (prior or {}):
+                save_state(cur, rule, key, state, bool(alerts))
+
+
+def _driver_rules(connection, cur, rules, live, summary):
+    """driver_sweep in its own transaction; a failure is reported, not
+    raised, so the vehicle rules still run."""
+    if not any(r['condition'] in conditions.CLIENT_WIDE for r in rules.values()):
+        return
+    try:
+        driver_sweep(cur, rules.values(), _now_local().date(), live, summary)
+        connection.commit()
+    except Exception as error:          # noqa: BLE001
+        connection.rollback()
+        summary['errors'].append(f'driver rules: {error}')
+
+
+def blocked_assignment_alerts(cur, client, driver, imei, reason):
+    """Alerts for a refused attempt to assign [driver] to [imei], from the
+    client's driver_unauthorised rules that watch for it. Written with the
+    caller's cursor (RealDictCursor) and transaction. Returns how many.
+
+    driver  a dll_drivers row (driver_uid, full_name)"""
+    cur.execute("SELECT * FROM dll_device_events WHERE LOWER(event_condition) = %s",
+                (conditions.DRIVER_UNAUTHORISED,))
+    rules = [rule for rule, _ in (parse_rule(r) for r in cur.fetchall()) if rule]
+    mine = rules_by_client(cur, rules).get(client, [])
+    if not mine:
+        return 0
+    vehicle = _vehicle_names({imei}).get(imei, imei)
+    who = {'driver_uid': driver['driver_uid'], 'full_name': driver['full_name']}
+    unit = {'imei': imei, 'name': driver['full_name'], 'client': client}
+    written = 0
+    for rule in mine:
+        for alert in conditions.blocked_assignment_alerts(
+                rule['config'], driver['full_name'], vehicle, reason):
+            write_alert(cur, rule, unit, alert, driver=who)
+            written += 1
+    return written
 
 
 def run_alert_sweep(live=True):
@@ -561,6 +747,9 @@ def run_alert_sweep(live=True):
             if not rules:
                 return summary
 
+            # Client-wide driver rules: their own transaction, no units needed.
+            _driver_rules(connection, cur, rules, live, summary)
+
             zone_uids = {z for r in rules.values()
                          if r['condition'] == conditions.GEOFENCE
                          for z in r['config']['zones']}
@@ -584,7 +773,8 @@ def run_alert_sweep(live=True):
             now_local = _now_local()
             for unit in units:
                 unit_rules = [rules[e] for e in unit['events'] if e in rules
-                              and rules[e]['condition'] not in conditions.ON_FUEL_ISSUE]
+                              and rules[e]['condition'] not in conditions.ON_FUEL_ISSUE
+                              and rules[e]['condition'] not in conditions.CLIENT_WIDE]
                 if not unit_rules:
                     continue
                 summary['units_checked'] += 1
@@ -652,8 +842,11 @@ def fuel_issue_alerts(cur, issue, profile):
             alerts = conditions.evaluate_fuel_flagged(rule['config'], issue)
         else:
             alerts = conditions.evaluate_fuel_consumption(rule['config'], issue, profile)
+        driver = ({'driver_uid': issue.get('driver_uid'),
+                   'full_name': issue.get('driver_name')}
+                  if issue.get('driver_uid') else None)
         for alert in alerts:
-            write_alert(cur, rule, unit, alert)
+            write_alert(cur, rule, unit, alert, driver=driver)
             written += 1
     return written
 

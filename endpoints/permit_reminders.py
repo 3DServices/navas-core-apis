@@ -1,7 +1,9 @@
 """
 permit_reminders -- tells a client when a driver's permit is about to expire.
 
-Every client gets these; there is no rule to set up. Each driver who may drive
+Every client gets these; there is no rule to set up. A client that sets up
+its own driver_permit_expiry rule (alert_engine.driver_sweep) gets that
+rule's alerts instead, at the days it chose and through its channels. Each driver who may drive
 (driver_rules.REMINDED_STATUSES) is reminded once at each stage of
 driver_rules.REMINDER_DAYS -- 30, 14, 7 and 1 days before, and when it
 expires. What was sent is kept in dll_driver_permit_reminders (migration 056),
@@ -75,12 +77,18 @@ def remember(cur, driver, stage):
         (driver['driver_uid'], driver['permit_expiry'], stage))
 
 
-def send_reminders(cur, today, live=True):
+def send_reminders(cur, today, live=True, skip_clients=()):
     """Send the reminders due today. Returns {'checked', 'sent', 'by_stage'}.
     live=False works out what would be sent and writes nothing. The caller
-    owns the transaction."""
+    owns the transaction.
+
+    skip_clients  clients with a driver_permit_expiry rule of their own: that
+                  rule tells them instead (alert_engine.driver_sweep)."""
     summary = {'checked': 0, 'sent': 0, 'by_stage': {}}
+    skip = set(skip_clients or ())
     for driver in due_drivers(cur, today):
+        if driver['client_uid'] in skip:
+            continue
         summary['checked'] += 1
         stage = rules.reminder_due(driver['permit_expiry'], today,
                                    driver.get('sent_for'), driver.get('sent_stage'))

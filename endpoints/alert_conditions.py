@@ -28,8 +28,31 @@ GEOFENCE = 'geofence_breach'
 BATTERY = 'low_battery'
 FUEL_FLAGGED = 'fuel_issue_flagged'
 FUEL_CONSUMPTION = 'high_fuel_consumption'
+DRIVER_PERMIT = 'driver_permit_expiry'
+DRIVER_UNAUTHORISED = 'driver_unauthorised'
 
-SUPPORTED = (SPEED, IGNITION, OFFLINE, GEOFENCE, FUEL_FLAGGED, FUEL_CONSUMPTION)
+SUPPORTED = (SPEED, IGNITION, OFFLINE, GEOFENCE, FUEL_FLAGGED, FUEL_CONSUMPTION,
+             DRIVER_PERMIT, DRIVER_UNAUTHORISED)
+
+# Rules about the client's drivers, not about a vehicle: they are never
+# attached to units. A rule covers every driver of the client that owns it
+# (alert_engine.driver_sweep, and the assign route for blocked assignments).
+CLIENT_WIDE = (DRIVER_PERMIT, DRIVER_UNAUTHORISED)
+
+# A permit rule warns this many days before expiry (0 = only when it expires).
+PERMIT_DAYS_MIN, PERMIT_DAYS_MAX = 0, 90
+
+# What an unauthorised-driver rule watches. The assign route already refuses
+# to put a suspended, blacklisted, inactive or expired-permit driver in a
+# vehicle, and a status change ends the assignment, so these are the two ways
+# it still happens:
+#   expired_while_assigned  an assigned driver's permit runs out and they keep
+#                           the vehicle (checked by the sweep)
+#   blocked_assignment      someone tried to assign a driver who may not drive
+#                           and was refused (checked when it happens)
+EXPIRED_WHILE_ASSIGNED = 'expired_while_assigned'
+BLOCKED_ASSIGNMENT = 'blocked_assignment'
+UNAUTHORISED_CHECKS = (EXPIRED_WHILE_ASSIGNED, BLOCKED_ASSIGNMENT)
 
 # Checked when FuelMath records an issue (fuel_registry.record_issue), not on
 # the sweep: the facts they need exist only at that moment.
@@ -97,8 +120,40 @@ def parse_config(condition, raw_value):
     ignition_change  {'direction': 'on' | 'off' | 'both'}
     device_offline   {'minutes': int}
     geofence_breach  {'zones': [uid, ...], 'breach_type': 'enter'|'exit'|'both'}
+    driver_permit_expiry  {'days': int}  days before expiry to warn
+    driver_unauthorised   {'checks': [check, ...]}  of UNAUTHORISED_CHECKS
     """
     condition = str(condition or '').strip().lower()
+
+    if condition == DRIVER_PERMIT:
+        days = _number(_value_text(raw_value))
+        if days is None or days != int(days):
+            return None
+        days = int(days)
+        if not PERMIT_DAYS_MIN <= days <= PERMIT_DAYS_MAX:
+            return None
+        return {'days': days}
+
+    if condition == DRIVER_UNAUTHORISED:
+        text = str(raw_value if raw_value is not None else '').strip()
+        if text.startswith('[') or text.startswith('{'):
+            try:
+                data = json.loads(text)
+            except (TypeError, ValueError):
+                return None
+            codes = data.get('checks') if isinstance(data, dict) else data
+            if codes in (None, 'all'):
+                return {'checks': list(UNAUTHORISED_CHECKS)}
+            if not isinstance(codes, list):
+                return None
+        elif text.lower() in ('', 'all', 'any'):
+            return {'checks': list(UNAUTHORISED_CHECKS)}
+        else:
+            codes = text.split(',')
+        codes = {str(c).strip().lower() for c in codes if str(c).strip()}
+        if not codes or not codes <= set(UNAUTHORISED_CHECKS):
+            return None
+        return {'checks': [c for c in UNAUTHORISED_CHECKS if c in codes]}
 
     if condition == SPEED:
         limit = _number(_value_text(raw_value))
@@ -403,3 +458,84 @@ def evaluate_fuel_consumption(config, issue, profile):
         f'High fuel consumption: {km / used:.1f} km/L over {km:.0f} km, '
         f'expected {baseline:g} km/L ({excess:.0f}% more fuel than expected, '
         f'{used - expected:.0f} L)', _issued_at(issue))]
+
+
+# ── Drivers (client-wide rules) ──────────────────────────────────────────────
+# `driver` is a dict with driver_uid, full_name, status, permit_expiry (a
+# date) and current_name (the vehicle they hold now, or '' when none).
+# `today` is the local date. State is remembered per rule per driver.
+
+def _day_text(d):
+    return f'{d.day} {d:%b %Y}'
+
+
+def _iso(d):
+    return d.isoformat() if hasattr(d, 'isoformat') else str(d or '')
+
+
+def evaluate_permit(config, state, driver, today):
+    """At most two alerts per permit: once when it comes within config['days']
+    of expiry, and once when it expires. A renewed permit (a new expiry date)
+    starts again.
+
+    Unlike the vehicle conditions this does alert on first sight: a rule set
+    up today should say which permits are already about to run out.
+    Returns (alerts, state); state is {'expiry': iso date, 'sent': 'warned' |
+    'expired'} or {} while nothing is due."""
+    expiry = driver.get('permit_expiry')
+    if expiry is None:
+        return [], {}
+    left = (expiry - today).days
+    if left < 0:
+        stage = 'expired'
+    elif left <= config['days']:
+        stage = 'warned'
+    else:
+        return [], {}
+    prior = state if isinstance(state, dict) and state.get('expiry') == _iso(expiry) else {}
+    rank = {'warned': 1, 'expired': 2}
+    if rank.get(prior.get('sent'), 0) >= rank[stage]:
+        return [], prior
+    name = driver.get('full_name') or 'A driver'
+    when = _day_text(expiry)
+    if stage == 'expired':
+        held = driver.get('current_name')
+        tail = (f' They are still assigned to {held}.' if held else
+                ' They cannot be assigned a vehicle until it is renewed.')
+        text = f"{name}'s driving permit expired on {when}.{tail}"
+    else:
+        soon = ('today' if left == 0 else 'tomorrow' if left == 1
+                else f'in {left} days')
+        text = f"{name}'s driving permit expires {soon} ({when})."
+    return [_alert(text)], {'expiry': _iso(expiry), 'sent': stage}
+
+
+def evaluate_expired_assignment(config, state, driver, today):
+    """One alert when a driver holding a vehicle has an expired permit, for
+    that permit and that vehicle. Silent once they are unassigned or renewed,
+    and again if it happens anew.
+    Returns (alerts, state); state is {'expiry', 'vehicle'} or {}."""
+    if EXPIRED_WHILE_ASSIGNED not in config['checks']:
+        return [], {}
+    expiry = driver.get('permit_expiry')
+    held = driver.get('current_name')
+    if not held or expiry is None or expiry >= today:
+        return [], {}
+    now = {'expiry': _iso(expiry), 'vehicle': held}
+    if isinstance(state, dict) and state.get('expiry') == now['expiry'] \
+            and state.get('vehicle') == held:
+        return [], state
+    name = driver.get('full_name') or 'A driver'
+    return [_alert(f'Unauthorised driver: {name} is assigned to {held} but '
+                   f'their permit expired on {_day_text(expiry)}.')], now
+
+
+def blocked_assignment_alerts(config, driver_name, vehicle_name, reason):
+    """The alert for a refused attempt to assign a driver who may not drive,
+    when the rule watches for it. `reason` is the refusal the user was shown."""
+    if BLOCKED_ASSIGNMENT not in config['checks']:
+        return []
+    reason = str(reason or '').strip().rstrip('.')
+    return [_alert(f'Unauthorised driver: an attempt to assign '
+                   f'{driver_name or "a driver"} to {vehicle_name or "a vehicle"} '
+                   f'was refused ({reason}).')]

@@ -195,7 +195,7 @@ class FuelIssueAlerts(unittest.TestCase):
         self.saved_session = devices.get_cassandra_session
         self.written = []
 
-        def write(cur, r, unit, alert):
+        def write(cur, r, unit, alert, driver=None):
             self.written.append((r['condition'], unit['name'], alert['trigger_value']))
         engine.write_alert = write
         devices.get_cassandra_session = lambda: object()

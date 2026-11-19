@@ -35,6 +35,7 @@ from .fleet import fleet_bp
 from .tokens_usage_routes import token_usage_bp
 from .referrals import referrals_bp
 from .driver_registry import driver_registry_bp
+from .drivers import driversbp
 from .fuel_registry import fuel_registry_bp
 from .stop_engine import stop_engine_bp
 from .branding import branding_bp
@@ -79,6 +80,9 @@ def Sentinel_Fleet():
     app.register_blueprint(token_usage_bp)
     app.register_blueprint(referrals_bp)
     app.register_blueprint(driver_registry_bp)
+    # Driver scoring rules and scorecards (drivers.py) -- written long ago,
+    # never registered until now.
+    app.register_blueprint(driversbp)
     app.register_blueprint(fuel_registry_bp)
     app.register_blueprint(stop_engine_bp)
     app.register_blueprint(branding_bp)

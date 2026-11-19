@@ -1018,6 +1018,12 @@ def _event_value_error(condition, value):
                 f'{conditions.CONSUMPTION_PCT_MAX}.')
     if condition == conditions.FUEL_FLAGGED:
         return 'Send "all", or the fuel flags to alert on.'
+    if condition == conditions.DRIVER_PERMIT:
+        return (f'Send the number of days before a permit expires to warn, '
+                f'{conditions.PERMIT_DAYS_MIN} to {conditions.PERMIT_DAYS_MAX}.')
+    if condition == conditions.DRIVER_UNAUTHORISED:
+        return ('Send "all", or what to watch: '
+                + ', '.join(conditions.UNAUTHORISED_CHECKS) + '.')
     return 'The trigger value cannot be read.'
 
 
@@ -1490,10 +1496,15 @@ def AttachDevice(event_uid):
         try:
             with dbconnect:
                 with dbconnect.cursor() as cursor:
-                    cursor.execute("SELECT device_count FROM dll_device_events WHERE event_local_uid=%s",
-                                   (event_uid,))
+                    cursor.execute("SELECT device_count, event_condition FROM dll_device_events "
+                                   "WHERE event_local_uid=%s", (event_uid,))
                     if cursor.rowcount != 1:
                         return reply('error', 400, "Event Route Not Found", "")
+                    from . import alert_conditions
+                    if str(cursor.fetchone()[1] or '').strip().lower() in alert_conditions.CLIENT_WIDE:
+                        return reply('error', 400,
+                                     'This rule covers all your drivers, so it is not '
+                                     'attached to vehicles.', '')
 
                     for imei in dict.fromkeys(str(d) for d in device_list):
                         rules = _registered_rules(_cassandra_session, rules_of, imei)
